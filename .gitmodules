@@ -1,0 +1,4 @@
+[submodule "libs/openamp-helper"]
+	path = libs/openamp-helper
+	url = git@github.com:Monutchee/OpenAMP-helper-RPU.git
+	branch = main

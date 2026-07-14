@@ -1,0 +1,4 @@
+domain_path: /opt/monutchee/project/msap1/MSAP1_RPU/platform/export/platform/sw/freertos_psu_cortexr5_1
+app_src_dir: /opt/Xilinx/2025.2/Vitis/data/embeddedsw/lib/sw_apps/empty_application
+template: empty_application
+lang: c

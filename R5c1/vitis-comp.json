@@ -1,0 +1,17 @@
+{
+  "name": "R5c1",
+  "type": "HOST",
+  "platform": "platform",
+  "domain": "freertos_psu_cortexr5_1",
+  "cpuInstance": "psu_cortexr5_1",
+  "cpuType": "cortex-r5",
+  "os": "freertos",
+  "configuration": {
+    "componentType": "HOST",
+    "hostToolchainConfigurations": []
+  },
+  "domainRealName": "freertos_psu_cortexr5_1",
+  "useSysrootToolchain": false,
+  "applicationFlow": "EMBEDDED",
+  "templateFlow": "VITIS"
+}
