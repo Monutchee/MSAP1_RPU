@@ -10,13 +10,21 @@
 #include "FreeRTOS.h"
 #include "task.h"
 
+#include "ad7771.hpp"
 #include "control_service.hpp"
 #include "r5c0_service.hpp"
+#include "xil_printf.h"
 
 static R5c0Service service(msap1::CoreConfig::current());
+static msap1::adc::Ad7771 adc;
+
+static constexpr std::size_t adc_packet_frames = 256;
+alignas(64) static msap1::adc::SampleFrame
+	adc_buffers[2][adc_packet_frames];
 
 static TaskHandle_t comm_task_handle;
 static TaskHandle_t led_task_handle;
+static TaskHandle_t adc_task_handle;
 
 static void comm_task(void *)
 {
@@ -28,10 +36,72 @@ static void led_task(void *)
 	service.run_heartbeat();
 }
 
+static void adc_task(void *)
+{
+	auto *completed_buffer = adc_buffers[0];
+	auto *next_buffer = adc_buffers[1];
+	auto error = adc.start_capture(completed_buffer, adc_packet_frames);
+	std::uint32_t completed_packets = 0;
+
+	while (error == msap1::adc::Error::None) {
+		while (!adc.capture_complete())
+			vTaskDelay(pdMS_TO_TICKS(1));
+
+		error = adc.finish_capture(completed_buffer);
+		if (error != msap1::adc::Error::None)
+			break;
+
+		// Re-arm before examining the completed packet. The PL FIFO absorbs
+		// samples during the short simple-DMA descriptor gap.
+		error = adc.rearm_capture(next_buffer, adc_packet_frames);
+		if (error != msap1::adc::Error::None)
+			break;
+
+		++completed_packets;
+		if ((completed_packets & 0x7fu) == 0u) {
+			const auto status = adc.status();
+			xil_printf("AD7771 packets=%lu frames=%lu ovf=%lu hdr=%lu "
+				   "ch0=%ld\r\n",
+				   static_cast<unsigned long>(completed_packets),
+				   static_cast<unsigned long>(status.frames),
+				   static_cast<unsigned long>(status.overflows),
+				   static_cast<unsigned long>(status.header_errors),
+				   static_cast<long>(completed_buffer[0].channel[0]));
+		}
+
+		auto *old_buffer = completed_buffer;
+		completed_buffer = next_buffer;
+		next_buffer = old_buffer;
+	}
+
+	adc.stop_capture();
+	xil_printf("AD7771 capture stopped: %s\r\n",
+		   msap1::adc::to_string(error));
+	vTaskDelete(nullptr);
+}
+
 int main(void)
 {
 	if (!service.init_led())
 		return -1;
+
+	msap1::adc::Configuration adc_configuration;
+	adc_configuration.sample_rate = msap1::adc::SampleRate::Sps32000;
+	adc_configuration.filter = msap1::adc::Filter::Sinc5;
+	adc_configuration.power_mode = msap1::adc::PowerMode::HighResolution;
+	adc_configuration.master_clock_hz = 8192000;
+	adc_configuration.frames_per_packet = adc_packet_frames;
+	const auto adc_error = adc.initialize(adc_configuration);
+	if (adc_error != msap1::adc::Error::None)
+		xil_printf("AD7771 initialization failed: %s\r\n",
+			   msap1::adc::to_string(adc_error));
+	else
+		xil_printf("AD7771 ready: %lu SPS, %u frames/packet\r\n",
+			   static_cast<unsigned long>(
+				   msap1::adc::sample_rate_hz(
+					   adc_configuration.sample_rate)),
+			   static_cast<unsigned int>(
+				   adc_configuration.frames_per_packet));
 
 	if (xTaskCreate(comm_task, "RPMSG", 2048, NULL, 2,
 			&comm_task_handle) != pdPASS)
@@ -39,6 +109,11 @@ int main(void)
 
 	if (xTaskCreate(led_task, "LED", 1024, NULL, 1,
 			&led_task_handle) != pdPASS)
+		return -1;
+
+	if (adc_error == msap1::adc::Error::None &&
+	    xTaskCreate(adc_task, "AD7771", 2048, NULL, 3,
+			&adc_task_handle) != pdPASS)
 		return -1;
 
 	vTaskStartScheduler();
