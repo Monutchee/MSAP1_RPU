@@ -1,6 +1,9 @@
 #include "ad7771.hpp"
 
+#include "FreeRTOS.h"
 #include "sleep.h"
+#include "task.h"
+#include "xinterrupt_wrap.h"
 #include "xil_cache.h"
 #include "xil_io.h"
 #include "xparameters.h"
@@ -78,6 +81,8 @@ const char *to_string(Error error)
 	case Error::AdcRegisterMismatch: return "AD7771 register readback mismatch";
 	case Error::DmaInitialization: return "AXI DMA initialization failed";
 	case Error::DmaIsScatterGather: return "AXI DMA is not in simple mode";
+	case Error::DmaInterruptInitialization:
+		return "AXI DMA interrupt initialization failed";
 	case Error::DmaTransfer: return "AXI DMA S2MM transfer failed";
 	case Error::CaptureNotInitialized: return "ADC capture is not initialized";
 	case Error::CaptureAlreadyActive: return "ADC capture is already active";
@@ -299,6 +304,7 @@ Error Ad7771::initialize(const Configuration &configuration)
 		return Error::InvalidConfiguration;
 
 	configuration_ = configuration;
+	spi_initialized_ = false;
 	initialized_ = false;
 	capture_active_ = false;
 
@@ -308,6 +314,7 @@ Error Ad7771::initialize(const Configuration &configuration)
 
 	Error error = initialize_spi();
 	if (error != Error::None) return error;
+	spi_initialized_ = true;
 	error = initialize_dma();
 	if (error != Error::None) return error;
 	error = reset_and_configure_adc();
@@ -317,6 +324,69 @@ Error Ad7771::initialize(const Configuration &configuration)
 		      configuration_.frames_per_packet);
 	initialized_ = true;
 	return Error::None;
+}
+
+void Ad7771::dma_interrupt_handler(void *reference)
+{
+	auto *adc = static_cast<Ad7771 *>(reference);
+	const auto irq_status = XAxiDma_IntrGetIrq(
+		&adc->dma_, XAXIDMA_DEVICE_TO_DMA);
+	XAxiDma_IntrAckIrq(&adc->dma_, irq_status, XAXIDMA_DEVICE_TO_DMA);
+	if ((irq_status & XAXIDMA_IRQ_ALL_MASK) == 0u)
+		return;
+
+	if ((irq_status & XAXIDMA_IRQ_ERROR_MASK) != 0u)
+		adc->dma_interrupt_error_ = true;
+
+	BaseType_t higher_priority_task_woken = pdFALSE;
+	if (adc->capture_waiter_ != nullptr)
+		vTaskNotifyGiveFromISR(
+			static_cast<TaskHandle_t>(adc->capture_waiter_),
+			&higher_priority_task_woken);
+	portYIELD_FROM_ISR(higher_priority_task_woken);
+}
+
+Error Ad7771::enable_capture_interrupt()
+{
+	if (!initialized_)
+		return Error::CaptureNotInitialized;
+	if (dma_interrupt_enabled_)
+		return Error::None;
+
+	capture_waiter_ = xTaskGetCurrentTaskHandle();
+	dma_interrupt_error_ = false;
+	XAxiDma_IntrDisable(&dma_, XAXIDMA_IRQ_ALL_MASK,
+			     XAXIDMA_DEVICE_TO_DMA);
+	XAxiDma_IntrAckIrq(&dma_, XAXIDMA_IRQ_ALL_MASK,
+			   XAXIDMA_DEVICE_TO_DMA);
+	if (xPortInstallInterruptHandler(XPAR_FABRIC_XAXIDMA_0_INTR,
+					 static_cast<XInterruptHandler>(dma_interrupt_handler),
+					 this) != pdPASS)
+		return Error::DmaInterruptInitialization;
+
+	XSetPriorityTriggerType(
+		XPAR_XAXIDMA_0_INTERRUPTS,
+		static_cast<u8>(portLOWEST_USABLE_INTERRUPT_PRIORITY <<
+				portPRIORITY_SHIFT),
+		XPAR_XAXIDMA_0_INTERRUPT_PARENT);
+	vPortEnableInterrupt(XPAR_FABRIC_XAXIDMA_0_INTR);
+	XAxiDma_IntrEnable(&dma_, XAXIDMA_IRQ_IOC_MASK | XAXIDMA_IRQ_ERROR_MASK,
+			    XAXIDMA_DEVICE_TO_DMA);
+	dma_interrupt_enabled_ = true;
+	return Error::None;
+}
+
+Error Ad7771::wait_for_capture()
+{
+	if (!initialized_ || !capture_active_ || !dma_interrupt_enabled_)
+		return Error::CaptureNotInitialized;
+
+	while (!capture_complete()) {
+		(void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+		if (dma_interrupt_error_)
+			return Error::DmaTransfer;
+	}
+	return dma_interrupt_error_ ? Error::DmaTransfer : Error::None;
 }
 
 std::size_t Ad7771::packet_bytes() const
@@ -412,6 +482,53 @@ CaptureStatus Ad7771::status() const
 		capture_read(capture_alert_count),
 		capture_read(capture_packet_count),
 	};
+}
+
+Error Ad7771::read_register_health(RegisterHealth &health)
+{
+	health = {};
+	health.expected_decimation = decimation_for(configuration_);
+	if (!spi_initialized_)
+		return Error::SpiInitialization;
+
+	Error error = Error::None;
+	auto read = [&](std::uint8_t address, std::uint8_t &value) {
+		if (error == Error::None)
+			error = read_adc_register(address, value);
+	};
+	read(reg_status_3, health.status_3);
+	read(reg_general_user_config_1, health.general_user_config_1);
+	read(reg_general_user_config_2, health.general_user_config_2);
+	read(reg_general_user_config_3, health.general_user_config_3);
+	read(reg_dout_format, health.dout_format);
+	read(reg_src_n_msb, health.src_n_msb);
+	read(reg_src_n_lsb, health.src_n_lsb);
+	read(reg_src_if_msb, health.src_if_msb);
+	read(reg_src_if_lsb, health.src_if_lsb);
+	read(reg_src_update, health.src_update);
+	if (error != Error::None)
+		return error;
+
+	const auto expected_config_1 =
+		configuration_.power_mode == PowerMode::HighResolution ?
+			config_1_power_mode : 0u;
+	const auto expected_config_2 = static_cast<std::uint8_t>(
+		(configuration_.filter == Filter::Sinc5 ? config_2_filter_mode : 0u) |
+		config_2_spi_sync);
+	const auto expected_decimation = health.expected_decimation;
+	health.configuration_matches =
+		(health.general_user_config_1 & config_1_power_mode) ==
+			expected_config_1 &&
+		(health.general_user_config_2 &
+		 (config_2_filter_mode | config_2_sar_spi_mode | config_2_spi_sync)) ==
+			expected_config_2 &&
+		(health.general_user_config_3 & config_3_spi_data_mode) == 0u &&
+		health.dout_format == 0u &&
+		health.src_n_msb == ((expected_decimation >> 8) & 0x0fu) &&
+		health.src_n_lsb == (expected_decimation & 0xffu) &&
+		health.src_if_msb == 0u && health.src_if_lsb == 0u &&
+		(health.src_update & src_load_update) == 0u;
+	return Error::None;
 }
 
 } // namespace msap1::adc

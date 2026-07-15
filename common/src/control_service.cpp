@@ -7,19 +7,12 @@
 #include <cstring>
 
 #include <metal/log.h>
-#include <metal/version.h>
 #include <openamp/open_amp.h>
-#include <openamp/version.h>
 
 #include "FreeRTOS.h"
 #include "task.h"
 
-#include "xil_printf.h"
 #include "xparameters.h"
-
-#define LPRINTF(fmt, ...) \
-	xil_printf("%s():%u " fmt, __func__, __LINE__, ##__VA_ARGS__)
-#define LPERROR(fmt, ...) LPRINTF("ERROR: " fmt, ##__VA_ARGS__)
 
 namespace msap1 {
 
@@ -205,22 +198,20 @@ void ControlService::on_unbind()
 
 void ControlService::run()
 {
-	LPRINTF("OpenAMP %s, libmetal %s\r\n", openamp_version(), metal_ver());
-	LPRINTF("Starting %s on R5 core %u\r\n", config_.service_name,
-		config_.core_id);
-
 	tx_mutex_ = xSemaphoreCreateMutex();
 	if (tx_mutex_ == nullptr) {
-		LPERROR("Failed to create RPMsg transmit mutex.\r\n");
 		while (1)
 			;
 	}
 
 	if (!platform_.init()) {
-		LPERROR("Failed to initialize OpenAMP platform.\r\n");
 		while (1)
 			;
 	}
+	/* Linux and the RPU share a physical UART on MSAP1. Platform startup may
+	 * emit a few early messages; suppress all subsequent OpenAMP/libmetal logs
+	 * so endpoint activity cannot corrupt the interactive Linux console. */
+	metal_set_log_handler(nullptr);
 
 	while (1) {
 		rpmsg_device *rpdev = platform_.create_rpmsg_vdev();

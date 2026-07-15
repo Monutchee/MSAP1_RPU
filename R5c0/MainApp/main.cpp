@@ -13,10 +13,9 @@
 #include "ad7771.hpp"
 #include "control_service.hpp"
 #include "r5c0_service.hpp"
-#include "xil_printf.h"
 
-static R5c0Service service(msap1::CoreConfig::current());
 static msap1::adc::Ad7771 adc;
+static R5c0Service service(msap1::CoreConfig::current(), adc);
 
 static constexpr std::size_t adc_packet_frames = 256;
 alignas(64) static msap1::adc::SampleFrame
@@ -40,13 +39,16 @@ static void adc_task(void *)
 {
 	auto *completed_buffer = adc_buffers[0];
 	auto *next_buffer = adc_buffers[1];
-	auto error = adc.start_capture(completed_buffer, adc_packet_frames);
+	auto error = adc.enable_capture_interrupt();
+	if (error == msap1::adc::Error::None)
+		error = adc.start_capture(completed_buffer, adc_packet_frames);
 	std::uint32_t completed_packets = 0;
 	std::uint32_t capture_flags = 0;
 
 	while (error == msap1::adc::Error::None) {
-		while (!adc.capture_complete())
-			vTaskDelay(pdMS_TO_TICKS(1));
+		error = adc.wait_for_capture();
+		if (error != msap1::adc::Error::None)
+			break;
 
 		error = adc.finish_capture(completed_buffer);
 		if (error != msap1::adc::Error::None)
@@ -64,17 +66,8 @@ static void adc_task(void *)
 		service.publish_adc_packet(completed_buffer, adc_packet_frames,
 					   first_frame_index, capture_flags);
 		++completed_packets;
-		if ((completed_packets & 0x7fu) == 0u) {
-			const auto status = adc.status();
-			capture_flags = status.flags;
-			xil_printf("AD7771 packets=%lu frames=%lu ovf=%lu hdr=%lu "
-				   "ch0=%ld\r\n",
-				   static_cast<unsigned long>(completed_packets),
-				   static_cast<unsigned long>(status.frames),
-				   static_cast<unsigned long>(status.overflows),
-				   static_cast<unsigned long>(status.header_errors),
-				   static_cast<long>(completed_buffer[0].channel[0]));
-		}
+		if ((completed_packets & 0x7fu) == 0u)
+			capture_flags = adc.status().flags;
 
 		auto *old_buffer = completed_buffer;
 		completed_buffer = next_buffer;
@@ -82,8 +75,6 @@ static void adc_task(void *)
 	}
 
 	adc.stop_capture();
-	xil_printf("AD7771 capture stopped: %s\r\n",
-		   msap1::adc::to_string(error));
 	vTaskDelete(nullptr);
 }
 
@@ -99,18 +90,9 @@ int main(void)
 	adc_configuration.master_clock_hz = 8192000;
 	adc_configuration.frames_per_packet = adc_packet_frames;
 	const auto adc_error = adc.initialize(adc_configuration);
-	if (adc_error != msap1::adc::Error::None)
-		xil_printf("AD7771 initialization failed: %s\r\n",
-			   msap1::adc::to_string(adc_error));
-	else {
+	if (adc_error == msap1::adc::Error::None) {
 		service.configure_adc_stream(msap1::adc::sample_rate_hz(
 			adc_configuration.sample_rate));
-		xil_printf("AD7771 ready: %lu SPS, %u frames/packet\r\n",
-			   static_cast<unsigned long>(
-				   msap1::adc::sample_rate_hz(
-					   adc_configuration.sample_rate)),
-			   static_cast<unsigned int>(
-				   adc_configuration.frames_per_packet));
 	}
 
 	if (xTaskCreate(comm_task, "RPMSG", 2048, NULL, 2,

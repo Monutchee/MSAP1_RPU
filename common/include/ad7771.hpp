@@ -63,6 +63,21 @@ struct CaptureStatus {
 	std::uint32_t packets;
 };
 
+struct RegisterHealth {
+	std::uint16_t expected_decimation = 0;
+	std::uint8_t status_3 = 0;
+	std::uint8_t general_user_config_1 = 0;
+	std::uint8_t general_user_config_2 = 0;
+	std::uint8_t general_user_config_3 = 0;
+	std::uint8_t dout_format = 0;
+	std::uint8_t src_n_msb = 0;
+	std::uint8_t src_n_lsb = 0;
+	std::uint8_t src_if_msb = 0;
+	std::uint8_t src_if_lsb = 0;
+	std::uint8_t src_update = 0;
+	bool configuration_matches = false;
+};
+
 enum class Error {
 	None,
 	InvalidConfiguration,
@@ -74,6 +89,7 @@ enum class Error {
 	AdcRegisterMismatch,
 	DmaInitialization,
 	DmaIsScatterGather,
+	DmaInterruptInitialization,
 	DmaTransfer,
 	CaptureNotInitialized,
 	CaptureAlreadyActive,
@@ -104,6 +120,11 @@ public:
 	// configuration.frames_per_packet and the buffer must be cache-line aligned.
 	Error start_capture(SampleFrame *buffer, std::size_t capacity_frames);
 
+	// Use the AXI DMA S2MM interrupt to wake the calling FreeRTOS task. Call
+	// once from the task that owns the capture loop before start_capture().
+	Error enable_capture_interrupt();
+	Error wait_for_capture();
+
 	// DMA completion is intentionally exposed as a pollable operation. This
 	// keeps the first integration independent of a board-specific GIC setup.
 	bool capture_complete() const;
@@ -116,8 +137,11 @@ public:
 
 	void stop_capture();
 	CaptureStatus status() const;
+	Error read_register_health(RegisterHealth &health);
 
 	const Configuration &configuration() const { return configuration_; }
+	bool initialized() const { return initialized_; }
+	bool capture_active() const { return capture_active_; }
 
 	Ad7771(const Ad7771 &) = delete;
 	Ad7771 &operator=(const Ad7771 &) = delete;
@@ -133,6 +157,7 @@ private:
 	Error reset_and_configure_adc();
 	Error configure_sample_rate();
 	Error synchronize_adc();
+	static void dma_interrupt_handler(void *reference);
 	Error arm_dma(SampleFrame *buffer, std::size_t capacity_frames,
 		      bool first_packet);
 
@@ -151,6 +176,10 @@ private:
 	XSpi spi_{};
 	XAxiDma dma_{};
 	std::uint32_t control_shadow_ = control_fifo_reset;
+	void *capture_waiter_ = nullptr;
+	volatile bool dma_interrupt_error_ = false;
+	bool dma_interrupt_enabled_ = false;
+	bool spi_initialized_ = false;
 	bool initialized_ = false;
 	bool capture_active_ = false;
 };
