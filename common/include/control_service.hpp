@@ -7,7 +7,7 @@
  * ControlService is a reusable BASE CLASS that owns only the rpmsg side of the
  * world: the OpenAMP platform lifecycle, an rpmsg endpoint, and the MSAP1
  * control protocol (rpu_control_protocol.h). It speaks the same wire protocol
- * as the APU-side apu-rpu-ctl utility:
+ * as the APU-side msap1-apu-app utility:
  *   PING        -> PONG
  *   GET_STATUS  -> STATUS payload
  *   SET_LED     -> ACK (or ERROR)
@@ -20,6 +20,9 @@
 
 #include <cstddef>
 #include <cstdint>
+
+#include "FreeRTOS.h"
+#include "semphr.h"
 
 #include "mnc/openamp_platform.hpp"
 #include "mnc/rpmsg_endpoint.hpp"
@@ -83,8 +86,11 @@ protected:
 				   const void *payload, std::uint16_t payload_len,
 				   std::uint32_t src);
 
+	/* Called when Linux removes its endpoint. */
+	virtual void on_transport_unbind() {}
+
 	/* Send a framed response/error back to the remote. */
-	void send_response(const msap1_rpu_msg_header *request,
+	bool send_response(const msap1_rpu_msg_header *request,
 			   std::uint32_t dst, std::uint8_t type,
 			   std::uint32_t status, const void *payload,
 			   std::uint16_t payload_len);
@@ -102,6 +108,7 @@ private:
 	CoreConfig config_;
 	mnc::OpenAmpPlatform platform_;
 	mnc::RpmsgEndpoint endpoint_;
+	SemaphoreHandle_t tx_mutex_ = nullptr;
 
 	volatile std::uint32_t rx_count_ = 0;
 	volatile std::uint32_t error_count_ = 0;

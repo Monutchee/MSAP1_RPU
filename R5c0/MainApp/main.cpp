@@ -42,6 +42,7 @@ static void adc_task(void *)
 	auto *next_buffer = adc_buffers[1];
 	auto error = adc.start_capture(completed_buffer, adc_packet_frames);
 	std::uint32_t completed_packets = 0;
+	std::uint32_t capture_flags = 0;
 
 	while (error == msap1::adc::Error::None) {
 		while (!adc.capture_complete())
@@ -57,9 +58,15 @@ static void adc_task(void *)
 		if (error != msap1::adc::Error::None)
 			break;
 
+		const auto first_frame_index =
+			static_cast<std::uint64_t>(completed_packets) *
+			adc_packet_frames;
+		service.publish_adc_packet(completed_buffer, adc_packet_frames,
+					   first_frame_index, capture_flags);
 		++completed_packets;
 		if ((completed_packets & 0x7fu) == 0u) {
 			const auto status = adc.status();
+			capture_flags = status.flags;
 			xil_printf("AD7771 packets=%lu frames=%lu ovf=%lu hdr=%lu "
 				   "ch0=%ld\r\n",
 				   static_cast<unsigned long>(completed_packets),
@@ -95,13 +102,16 @@ int main(void)
 	if (adc_error != msap1::adc::Error::None)
 		xil_printf("AD7771 initialization failed: %s\r\n",
 			   msap1::adc::to_string(adc_error));
-	else
+	else {
+		service.configure_adc_stream(msap1::adc::sample_rate_hz(
+			adc_configuration.sample_rate));
 		xil_printf("AD7771 ready: %lu SPS, %u frames/packet\r\n",
 			   static_cast<unsigned long>(
 				   msap1::adc::sample_rate_hz(
 					   adc_configuration.sample_rate)),
 			   static_cast<unsigned int>(
 				   adc_configuration.frames_per_packet));
+	}
 
 	if (xTaskCreate(comm_task, "RPMSG", 2048, NULL, 2,
 			&comm_task_handle) != pdPASS)

@@ -2,7 +2,7 @@
 #define MSAP1_RPU_CONTROL_PROTOCOL_H
 
 /*
- * Wire protocol shared between the APU control utility (apu-rpu-ctl) and the
+ * Wire protocol shared between the APU application (msap1-apu-app) and the
  * RPU firmware. This header is the single source of truth for the on-wire
  * frame layout. Identifier names are local to each side; the numeric values
  * and packed structure layout form the wire ABI and must remain compatible.
@@ -17,6 +17,9 @@ extern "C" {
 #define MSAP1_RPU_MAGIC 0x4d525055u
 #define MSAP1_RPU_VERSION 1u
 #define MSAP1_RPU_MAX_FRAME_SIZE 256u
+#define MSAP1_ADC_CHANNEL_COUNT 8u
+#define MSAP1_ADC_MAX_BATCH_FRAMES 6u
+#define MSAP1_ADC_SAMPLE_BATCH_HEADER_SIZE 24u
 
 enum msap1_rpu_msg_type {
 	MSAP1_RPU_MSG_PING = 1,
@@ -26,6 +29,9 @@ enum msap1_rpu_msg_type {
 	MSAP1_RPU_MSG_SET_LED = 5,
 	MSAP1_RPU_MSG_ACK = 6,
 	MSAP1_RPU_MSG_ERROR = 7,
+	MSAP1_RPU_MSG_ADC_STREAM_START = 8,
+	MSAP1_RPU_MSG_ADC_STREAM_STOP = 9,
+	MSAP1_RPU_MSG_ADC_SAMPLE_BATCH = 10,
 };
 
 enum msap1_rpu_status_code {
@@ -36,6 +42,7 @@ enum msap1_rpu_status_code {
 	MSAP1_RPU_STATUS_BAD_TYPE = 4,
 	MSAP1_RPU_STATUS_BAD_PAYLOAD = 5,
 	MSAP1_RPU_STATUS_INTERNAL_ERROR = 6,
+	MSAP1_RPU_STATUS_ADC_UNAVAILABLE = 7,
 };
 
 enum msap1_rpu_led_mode {
@@ -67,6 +74,35 @@ struct msap1_rpu_status_payload {
 	uint32_t uptime_ms;
 	uint32_t rx_count;
 	uint32_t error_count;
+} __attribute__((packed));
+
+/*
+ * Request a decimated copy of the full-rate ADC stream for visualization.
+ * The RPU remains the owner of SPI, ADC control, capture registers, and DMA.
+ * display_rate_hz must be a divisor of the configured ADC sample rate.
+ */
+struct msap1_adc_stream_request {
+	uint32_t display_rate_hz;
+} __attribute__((packed));
+
+/* One simultaneous conversion. Values are sign-extended AD7771 24-bit data. */
+struct msap1_adc_sample_frame {
+	int32_t channel[MSAP1_ADC_CHANNEL_COUNT];
+} __attribute__((packed));
+
+/*
+ * Variable-length payload for MSAP1_RPU_MSG_ADC_SAMPLE_BATCH. Only
+ * frame_count entries of frames[] are transmitted. Frame i has absolute
+ * index first_frame_index + i * (adc_sample_rate_hz / display_rate_hz).
+ */
+struct msap1_adc_sample_batch {
+	uint32_t adc_sample_rate_hz;
+	uint32_t display_rate_hz;
+	uint64_t first_frame_index;
+	uint32_t capture_flags;
+	uint16_t frame_count;
+	uint16_t channel_count;
+	struct msap1_adc_sample_frame frames[MSAP1_ADC_MAX_BATCH_FRAMES];
 } __attribute__((packed));
 
 #ifdef __cplusplus
