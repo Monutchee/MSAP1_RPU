@@ -9,12 +9,29 @@
 
 #include "FreeRTOS.h"
 #include "task.h"
+#include "xparameters.h"
 
 #include "ad7771.hpp"
 #include "control_service.hpp"
 #include "r5c0_service.hpp"
 
-static msap1::adc::Ad7771 adc;
+#ifndef XPAR_XSPI_0_BASEADDR
+#error "The Vitis platform does not define the AD7771 AXI Quad SPI address"
+#endif
+#ifndef XPAR_AD7771CAPTURE_WRAPPER_0_BASEADDR
+#error "The Vitis platform does not define the AD7771 capture address"
+#endif
+#ifndef XPAR_XAXIDMA_0_BASEADDR
+#error "The Vitis platform does not define the AD7771 AXI DMA address"
+#endif
+
+static constexpr msap1::adc::Hardware adc_hardware{
+	/*spi_base=*/XPAR_XSPI_0_BASEADDR,
+	/*capture_base=*/XPAR_AD7771CAPTURE_WRAPPER_0_BASEADDR,
+	/*dma_base=*/XPAR_XAXIDMA_0_BASEADDR,
+};
+
+static msap1::adc::Ad7771 adc(adc_hardware);
 static R5c0Service service(msap1::CoreConfig::current(), adc);
 
 static constexpr std::size_t adc_packet_frames = 256;
