@@ -7,19 +7,12 @@
 #include <cstring>
 
 #include <metal/log.h>
-#include <metal/version.h>
 #include <openamp/open_amp.h>
-#include <openamp/version.h>
 
 #include "FreeRTOS.h"
 #include "task.h"
 
-#include "xil_printf.h"
 #include "xparameters.h"
-
-#define LPRINTF(fmt, ...) \
-	xil_printf("%s():%u " fmt, __func__, __LINE__, ##__VA_ARGS__)
-#define LPERROR(fmt, ...) LPRINTF("ERROR: " fmt, ##__VA_ARGS__)
 
 namespace msap1 {
 
@@ -48,7 +41,7 @@ std::uint32_t ControlService::uptime_ms() const
 		(xTaskGetTickCount() * 1000u) / configTICK_RATE_HZ);
 }
 
-void ControlService::send_response(const msap1_rpu_msg_header *request,
+bool ControlService::send_response(const msap1_rpu_msg_header *request,
 				   std::uint32_t dst, std::uint8_t type,
 				   std::uint32_t status, const void *payload,
 				   std::uint16_t payload_len)
@@ -66,15 +59,26 @@ void ControlService::send_response(const msap1_rpu_msg_header *request,
 
 	if (frame_len > sizeof(tx)) {
 		error_count_++;
-		return;
+		return false;
 	}
 
 	std::memcpy(tx, &header, sizeof(header));
 	if (payload_len)
 		std::memcpy(tx + sizeof(header), payload, payload_len);
 
-	if (endpoint_.send_to(tx, frame_len, dst) < 0)
+	if (tx_mutex_ == nullptr ||
+	    xSemaphoreTake(tx_mutex_, portMAX_DELAY) != pdTRUE) {
 		error_count_++;
+		return false;
+	}
+
+	const int result = endpoint_.send_to(tx, frame_len, dst);
+	xSemaphoreGive(tx_mutex_);
+	if (result < 0) {
+		error_count_++;
+		return false;
+	}
+	return true;
 }
 
 void ControlService::send_status(const msap1_rpu_msg_header *request,
@@ -188,20 +192,26 @@ int ControlService::on_message(const void *data, std::size_t len,
 
 void ControlService::on_unbind()
 {
+	on_transport_unbind();
 	ML_INFO("remote endpoint destroyed\r\n");
 }
 
 void ControlService::run()
 {
-	LPRINTF("OpenAMP %s, libmetal %s\r\n", openamp_version(), metal_ver());
-	LPRINTF("Starting %s on R5 core %u\r\n", config_.service_name,
-		config_.core_id);
-
-	if (!platform_.init()) {
-		LPERROR("Failed to initialize OpenAMP platform.\r\n");
+	tx_mutex_ = xSemaphoreCreateMutex();
+	if (tx_mutex_ == nullptr) {
 		while (1)
 			;
 	}
+
+	if (!platform_.init()) {
+		while (1)
+			;
+	}
+	/* Linux and the RPU share a physical UART on MSAP1. Platform startup may
+	 * emit a few early messages; suppress all subsequent OpenAMP/libmetal logs
+	 * so endpoint activity cannot corrupt the interactive Linux console. */
+	metal_set_log_handler(nullptr);
 
 	while (1) {
 		rpmsg_device *rpdev = platform_.create_rpmsg_vdev();
@@ -214,7 +224,12 @@ void ControlService::run()
 		ML_INFO("Creating RPMsg endpoint %s\r\n", config_.service_name);
 		if (endpoint_.create(rpdev, config_.service_name, *this)) {
 			platform_.poll_until_reset(rpdev);
-			endpoint_.destroy();
+			/* A vdev reset may occur without a separate endpoint unbind. */
+			on_transport_unbind();
+			if (xSemaphoreTake(tx_mutex_, portMAX_DELAY) == pdTRUE) {
+				endpoint_.destroy();
+				xSemaphoreGive(tx_mutex_);
+			}
 		}
 
 		platform_.release_rpmsg_vdev(rpdev);

@@ -7,7 +7,6 @@
 #include "FreeRTOS.h"
 #include "task.h"
 
-#include "xil_printf.h"
 #include "xstatus.h"
 
 namespace msap1 {
@@ -34,7 +33,6 @@ void LedController::apply_state(std::uint8_t on)
 bool LedController::init()
 {
 	if (XGpio_Initialize(&gpio_, gpio_base_) != XST_SUCCESS) {
-		xil_printf("GPIO initialization failed\r\n");
 		return false;
 	}
 
