@@ -101,16 +101,10 @@ std::uint32_t sample_rate_hz(SampleRate rate);
 
 class Ad7771 {
 public:
-	static constexpr Hardware default_hardware()
-	{
-		return {
-			/* AXI Quad SPI */ 0xB0010000u,
-			/* PL capture   */ 0xB0020000u,
-			/* AXI DMA      */ 0xB0030000u,
-		};
-	}
-
-	explicit Ad7771(Hardware hardware = default_hardware());
+	// The application supplies addresses from its generated platform
+	// definitions. Keeping them outside this reusable library prevents an XSA
+	// address-map change from silently leaving stale literal addresses here.
+	explicit Ad7771(Hardware hardware);
 
 	// Reset the ADC, configure its SPI registers, and prepare the S2MM DMA.
 	// No samples flow until start_capture() is called.
