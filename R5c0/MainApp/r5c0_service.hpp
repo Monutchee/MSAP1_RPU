@@ -21,7 +21,7 @@ public:
 	R5c0Service(const msap1::CoreConfig &config, msap1::adc::Ad7771 &adc)
 		: msap1::ControlService(config),
 		  led_(XPAR_XGPIO_0_BASEADDR, /*led_mask=*/0x01u,
-		       /*heartbeat_period_ms=*/200u),
+		       /*heartbeat_period_ms=*/500u), // 1 Hz full cycle
 		  adc_(adc)
 	{
 	}
