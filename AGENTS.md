@@ -7,22 +7,20 @@
 - Read `docs/AD7771.md` before changing the ADC path. Treat
   `common/include/ad7771.hpp` as the public ADC abstraction; application code
   should not duplicate AD7771 register or AXI register accesses.
-- R5 core 0 owns the AD7771, the status LED heartbeat, and the APU control
-  endpoint. R5 core 1 has no ADC or KR260 status-LED ownership.
+- R5 core 0 owns AD7771 SPI configuration, reset/synchronization, PL capture
+  control/status, the status LED heartbeat, and the APU control endpoint.
+  Linux owns AXI DMA, descriptors, interrupts, and DDR sample buffers. R5 core
+  1 has no ADC or KR260 status-LED ownership.
 
 ## Hardware and software contract
 
 - The default profile is high-resolution, Sinc5, 32 kSPS, four DOUT lanes,
   eight channels, and 256 frames per DMA packet.
 - Current PL addresses are AXI Quad SPI `0xB0010000`, capture registers
-  `0xB0020000`, and AXI DMA `0xB0030000`. When the XSA changes, use its
-  implemented address map and update the driver/docs intentionally.
-- Keep DMA buffers at least 64-byte aligned. The current simple S2MM path uses
-  two buffers and must re-arm the next transfer before processing the completed
-  packet.
-- Keep high-rate work bounded. Do not perform per-frame logging or unbounded
-  blocking RPMsg sends in the ADC task; the control endpoint and heartbeat must
-  remain responsive.
+  `0xB0020000`, and Linux-owned AXI DMA `0xB0030000`. RPU code must not touch
+  the DMA registers or sample DDR buffers.
+- ADC sample payloads never travel over RPMsg. RPMsg is limited to START, STOP,
+  and health/control traffic so the endpoint and heartbeat stay responsive.
 - Linux and the RPU share a physical UART. Leave `RSPMSG_DEBUG` disabled and do
   not add routine or per-packet UART output. Prefer RPMsg health/status queries.
 
@@ -56,7 +54,7 @@ vitis -s scripts/create_platform_from_xsa.py -- --force
 
 - Do not hand-edit generated `platform/`, BSP, export, or workspace metadata.
 - After ADC/RPMsg changes, build R5c0 and execute the target procedure in the
-  APU repository. Confirm SPI health, increasing DMA counters, zero overflow,
+  APU repository. Confirm SPI health, Linux IIO DMA progress, zero overflow,
   a responsive control endpoint, and a continuing heartbeat.
 
 ## Maintaining this file

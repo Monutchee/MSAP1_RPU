@@ -15,11 +15,8 @@ extern "C" {
 #endif
 
 #define MSAP1_RPU_MAGIC 0x4d525055u
-#define MSAP1_RPU_VERSION 1u
+#define MSAP1_RPU_VERSION 2u
 #define MSAP1_RPU_MAX_FRAME_SIZE 256u
-#define MSAP1_ADC_CHANNEL_COUNT 8u
-#define MSAP1_ADC_MAX_BATCH_FRAMES 6u
-#define MSAP1_ADC_SAMPLE_BATCH_HEADER_SIZE 24u
 
 enum msap1_rpu_msg_type {
 	MSAP1_RPU_MSG_PING = 1,
@@ -29,9 +26,9 @@ enum msap1_rpu_msg_type {
 	MSAP1_RPU_MSG_SET_LED = 5,
 	MSAP1_RPU_MSG_ACK = 6,
 	MSAP1_RPU_MSG_ERROR = 7,
-	MSAP1_RPU_MSG_ADC_STREAM_START = 8,
-	MSAP1_RPU_MSG_ADC_STREAM_STOP = 9,
-	MSAP1_RPU_MSG_ADC_SAMPLE_BATCH = 10,
+	MSAP1_RPU_MSG_ADC_CAPTURE_START = 8,
+	MSAP1_RPU_MSG_ADC_CAPTURE_STOP = 9,
+	MSAP1_RPU_MSG_RESERVED_10 = 10,
 	MSAP1_RPU_MSG_ADC_HEALTH_GET = 11,
 	MSAP1_RPU_MSG_ADC_HEALTH = 12,
 };
@@ -45,6 +42,7 @@ enum msap1_rpu_status_code {
 	MSAP1_RPU_STATUS_BAD_PAYLOAD = 5,
 	MSAP1_RPU_STATUS_INTERNAL_ERROR = 6,
 	MSAP1_RPU_STATUS_ADC_UNAVAILABLE = 7,
+	MSAP1_RPU_STATUS_ADC_STATE = 8,
 };
 
 enum msap1_rpu_led_mode {
@@ -97,18 +95,9 @@ struct msap1_rpu_status_payload {
 } __attribute__((packed));
 
 /*
- * Request a decimated copy of the full-rate ADC stream for visualization.
- * The RPU remains the owner of SPI, ADC control, capture registers, and DMA.
- * display_rate_hz must be a divisor of the configured ADC sample rate.
- */
-struct msap1_adc_stream_request {
-	uint32_t display_rate_hz;
-} __attribute__((packed));
-
-/*
  * Active AD7771 SPI readback plus the current PL capture counters. The RPU
- * owns the SPI controller; Linux obtains health information only through this
- * response and must not access the AXI Quad SPI registers directly.
+ * owns SPI and capture control; Linux owns AXI DMA and obtains ADC health only
+ * through this response. START and STOP carry no payload.
  */
 struct msap1_adc_health_payload {
 	uint32_t health_flags;
@@ -131,26 +120,6 @@ struct msap1_adc_health_payload {
 	uint8_t src_if_msb;
 	uint8_t src_if_lsb;
 	uint8_t src_update;
-} __attribute__((packed));
-
-/* One simultaneous conversion. Values are sign-extended AD7771 24-bit data. */
-struct msap1_adc_sample_frame {
-	int32_t channel[MSAP1_ADC_CHANNEL_COUNT];
-} __attribute__((packed));
-
-/*
- * Variable-length payload for MSAP1_RPU_MSG_ADC_SAMPLE_BATCH. Only
- * frame_count entries of frames[] are transmitted. Frame i has absolute
- * index first_frame_index + i * (adc_sample_rate_hz / display_rate_hz).
- */
-struct msap1_adc_sample_batch {
-	uint32_t adc_sample_rate_hz;
-	uint32_t display_rate_hz;
-	uint64_t first_frame_index;
-	uint32_t capture_flags;
-	uint16_t frame_count;
-	uint16_t channel_count;
-	struct msap1_adc_sample_frame frames[MSAP1_ADC_MAX_BATCH_FRAMES];
 } __attribute__((packed));
 
 #ifdef __cplusplus

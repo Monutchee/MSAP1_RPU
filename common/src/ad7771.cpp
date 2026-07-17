@@ -1,10 +1,6 @@
 #include "ad7771.hpp"
 
-#include "FreeRTOS.h"
 #include "sleep.h"
-#include "task.h"
-#include "xinterrupt_wrap.h"
-#include "xil_cache.h"
 #include "xil_io.h"
 #include "xparameters.h"
 #include "xstatus.h"
@@ -43,8 +39,7 @@ constexpr std::uint32_t capture_packet_count = 0x20;
 constexpr std::uint32_t capture_identifier = 0x28;
 
 constexpr std::uint32_t expected_capture_identifier = 0x41443731u; // "AD71"
-constexpr std::uint16_t maximum_dma_frames = 2047;
-constexpr std::uintptr_t cache_line_mask = 63u;
+constexpr std::uint16_t maximum_packet_frames = 2047;
 constexpr std::uint32_t minimum_high_resolution_mclk_hz = 655000u;
 constexpr std::uint32_t maximum_high_resolution_mclk_hz = 8192000u;
 constexpr std::uint32_t minimum_low_power_mclk_hz = 1300000u;
@@ -79,14 +74,8 @@ const char *to_string(Error error)
 	case Error::SpiProtocol: return "AD7771 SPI response header invalid";
 	case Error::AdcNotReady: return "AD7771 initialization did not complete";
 	case Error::AdcRegisterMismatch: return "AD7771 register readback mismatch";
-	case Error::DmaInitialization: return "AXI DMA initialization failed";
-	case Error::DmaIsScatterGather: return "AXI DMA is not in simple mode";
-	case Error::DmaInterruptInitialization:
-		return "AXI DMA interrupt initialization failed";
-	case Error::DmaTransfer: return "AXI DMA S2MM transfer failed";
 	case Error::CaptureNotInitialized: return "ADC capture is not initialized";
 	case Error::CaptureAlreadyActive: return "ADC capture is already active";
-	case Error::CaptureBufferInvalid: return "ADC DMA buffer is invalid";
 	}
 	return "unknown";
 }
@@ -134,19 +123,6 @@ Error Ad7771::initialize_spi()
 	if (XSpi_Start(&spi_) != XST_SUCCESS)
 		return Error::SpiInitialization;
 	XSpi_IntrGlobalDisable(&spi_);
-	return Error::None;
-}
-
-Error Ad7771::initialize_dma()
-{
-	auto *dma_config = XAxiDma_LookupConfig(hardware_.dma_base);
-	if (dma_config == nullptr ||
-	    XAxiDma_CfgInitialize(&dma_, dma_config) != XST_SUCCESS)
-		return Error::DmaInitialization;
-	if (XAxiDma_HasSg(&dma_))
-		return Error::DmaIsScatterGather;
-	XAxiDma_IntrDisable(&dma_, XAXIDMA_IRQ_ALL_MASK,
-			     XAXIDMA_DEVICE_TO_DMA);
 	return Error::None;
 }
 
@@ -294,7 +270,7 @@ Error Ad7771::initialize(const Configuration &configuration)
 	const auto decimation = denominator == 0u ? 0u :
 		configuration.master_clock_hz / denominator;
 	if (configuration.frames_per_packet == 0 ||
-	    configuration.frames_per_packet > maximum_dma_frames ||
+	    configuration.frames_per_packet > maximum_packet_frames ||
 	    rate < 1000u || rate > 128000u ||
 	    configuration.master_clock_hz < minimum_mclk ||
 	    configuration.master_clock_hz > maximum_mclk ||
@@ -315,8 +291,6 @@ Error Ad7771::initialize(const Configuration &configuration)
 	Error error = initialize_spi();
 	if (error != Error::None) return error;
 	spi_initialized_ = true;
-	error = initialize_dma();
-	if (error != Error::None) return error;
 	error = reset_and_configure_adc();
 	if (error != Error::None) return error;
 
@@ -326,142 +300,17 @@ Error Ad7771::initialize(const Configuration &configuration)
 	return Error::None;
 }
 
-void Ad7771::dma_interrupt_handler(void *reference)
-{
-	auto *adc = static_cast<Ad7771 *>(reference);
-	const auto irq_status = XAxiDma_IntrGetIrq(
-		&adc->dma_, XAXIDMA_DEVICE_TO_DMA);
-	XAxiDma_IntrAckIrq(&adc->dma_, irq_status, XAXIDMA_DEVICE_TO_DMA);
-	if ((irq_status & XAXIDMA_IRQ_ALL_MASK) == 0u)
-		return;
-
-	if ((irq_status & XAXIDMA_IRQ_ERROR_MASK) != 0u)
-		adc->dma_interrupt_error_ = true;
-
-	BaseType_t higher_priority_task_woken = pdFALSE;
-	if (adc->capture_waiter_ != nullptr)
-		vTaskNotifyGiveFromISR(
-			static_cast<TaskHandle_t>(adc->capture_waiter_),
-			&higher_priority_task_woken);
-	portYIELD_FROM_ISR(higher_priority_task_woken);
-}
-
-Error Ad7771::enable_capture_interrupt()
+Error Ad7771::start_capture()
 {
 	if (!initialized_)
 		return Error::CaptureNotInitialized;
-	if (dma_interrupt_enabled_)
-		return Error::None;
-
-	capture_waiter_ = xTaskGetCurrentTaskHandle();
-	dma_interrupt_error_ = false;
-	XAxiDma_IntrDisable(&dma_, XAXIDMA_IRQ_ALL_MASK,
-			     XAXIDMA_DEVICE_TO_DMA);
-	XAxiDma_IntrAckIrq(&dma_, XAXIDMA_IRQ_ALL_MASK,
-			   XAXIDMA_DEVICE_TO_DMA);
-	if (xPortInstallInterruptHandler(XPAR_FABRIC_XAXIDMA_0_INTR,
-					 static_cast<XInterruptHandler>(dma_interrupt_handler),
-					 this) != pdPASS)
-		return Error::DmaInterruptInitialization;
-
-	XSetPriorityTriggerType(
-		XPAR_XAXIDMA_0_INTERRUPTS,
-		static_cast<u8>(portLOWEST_USABLE_INTERRUPT_PRIORITY <<
-				portPRIORITY_SHIFT),
-		XPAR_XAXIDMA_0_INTERRUPT_PARENT);
-	vPortEnableInterrupt(XPAR_FABRIC_XAXIDMA_0_INTR);
-	XAxiDma_IntrEnable(&dma_, XAXIDMA_IRQ_IOC_MASK | XAXIDMA_IRQ_ERROR_MASK,
-			    XAXIDMA_DEVICE_TO_DMA);
-	dma_interrupt_enabled_ = true;
-	return Error::None;
-}
-
-Error Ad7771::wait_for_capture()
-{
-	if (!initialized_ || !capture_active_ || !dma_interrupt_enabled_)
-		return Error::CaptureNotInitialized;
-
-	while (!capture_complete()) {
-		(void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-		if (dma_interrupt_error_)
-			return Error::DmaTransfer;
-	}
-	return dma_interrupt_error_ ? Error::DmaTransfer : Error::None;
-}
-
-std::size_t Ad7771::packet_bytes() const
-{
-	return static_cast<std::size_t>(configuration_.frames_per_packet) *
-	       sizeof(SampleFrame);
-}
-
-Error Ad7771::arm_dma(SampleFrame *buffer, std::size_t capacity_frames,
-			     bool first_packet)
-{
-	if (!initialized_)
-		return Error::CaptureNotInitialized;
-	if (buffer == nullptr ||
-	    capacity_frames < configuration_.frames_per_packet ||
-	    (reinterpret_cast<std::uintptr_t>(buffer) & cache_line_mask) != 0)
-		return Error::CaptureBufferInvalid;
-
-	const auto bytes = packet_bytes();
-	Xil_DCacheFlushRange(reinterpret_cast<INTPTR>(buffer),
-			     static_cast<u32>(bytes));
-	if (first_packet) {
-		set_capture_control(control_fifo_reset | control_adc_reset_n);
-		usleep(1);
-	}
-
-	if (XAxiDma_SimpleTransfer(&dma_,
-			reinterpret_cast<UINTPTR>(buffer),
-			static_cast<u32>(bytes),
-			XAXIDMA_DEVICE_TO_DMA) != XST_SUCCESS)
-		return Error::DmaTransfer;
-
-	if (first_packet) {
-		set_capture_control(control_capture_enable | control_adc_reset_n);
-		capture_active_ = true;
-	}
-	return Error::None;
-}
-
-Error Ad7771::start_capture(SampleFrame *buffer,
-			   std::size_t capacity_frames)
-{
 	if (capture_active_)
 		return Error::CaptureAlreadyActive;
-	return arm_dma(buffer, capacity_frames, true);
-}
-
-bool Ad7771::capture_complete() const
-{
-	return capture_active_ &&
-	       !XAxiDma_Busy(const_cast<XAxiDma *>(&dma_),
-			      XAXIDMA_DEVICE_TO_DMA);
-}
-
-Error Ad7771::finish_capture(SampleFrame *buffer)
-{
-	if (!initialized_ || !capture_active_)
-		return Error::CaptureNotInitialized;
-	if (buffer == nullptr)
-		return Error::CaptureBufferInvalid;
-	if (!capture_complete())
-		return Error::DmaTransfer;
-	Xil_DCacheInvalidateRange(reinterpret_cast<INTPTR>(buffer),
-				  static_cast<u32>(packet_bytes()));
+	set_capture_control(control_fifo_reset | control_adc_reset_n);
+	usleep(1);
+	set_capture_control(control_capture_enable | control_adc_reset_n);
+	capture_active_ = true;
 	return Error::None;
-}
-
-Error Ad7771::rearm_capture(SampleFrame *buffer,
-			   std::size_t capacity_frames)
-{
-	if (!capture_active_)
-		return Error::CaptureNotInitialized;
-	if (!capture_complete())
-		return Error::DmaTransfer;
-	return arm_dma(buffer, capacity_frames, false);
 }
 
 void Ad7771::stop_capture()
