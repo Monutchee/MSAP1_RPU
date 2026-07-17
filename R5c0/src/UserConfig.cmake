@@ -54,7 +54,7 @@ set(USER_COMPILE_SOURCES
 "../../common/src/control_service.cpp"
 # LED helper (R5c0 owns the board's single LED)
 "../../common/src/led_controller.cpp"
-# AD7771 control and PL-to-DDR capture library (R5c0 owns the ADC)
+# AD7771 SPI and PL capture-control library (Linux owns AXI DMA)
 "../../common/src/ad7771.cpp"
 )
 
