@@ -17,10 +17,12 @@
 - The default profile is high-resolution, Sinc5, 32 kSPS, four DOUT lanes,
   eight channels, and 256 frames per DMA packet.
 - Current PL addresses are AXI Quad SPI `0xB0010000`, capture registers
-  `0xB0020000`, and Linux-owned AXI DMA `0xB0030000`. RPU code must not touch
-  the DMA registers or sample DDR buffers.
-- ADC sample payloads never travel over RPMsg. RPMsg is limited to START, STOP,
-  and health/control traffic so the endpoint and heartbeat stay responsive.
+  `0xB0020000`, Linux-owned AXI DMA `0xB0030000`, ADC conversion registers
+  `0xB0040000`, and meter-processing registers `0xB0050000`. RPU code must not
+  touch the DMA registers or meter-record DDR buffers.
+- ADC samples and meter results never travel over RPMsg. RPMsg is limited to
+  START, STOP, runtime meter configuration, and health/control traffic so the
+  endpoint and heartbeat stay responsive.
 - Linux and the RPU share a physical UART. Leave `RSPMSG_DEBUG` disabled and do
   not add routine or per-packet UART output. Prefer RPMsg health/status queries.
 
@@ -54,8 +56,9 @@ vitis -s scripts/create_platform_from_xsa.py -- --force
 
 - Do not hand-edit generated `platform/`, BSP, export, or workspace metadata.
 - After ADC/RPMsg changes, build R5c0 and execute the target procedure in the
-  APU repository. Confirm SPI health, Linux IIO DMA progress, zero overflow,
-  a responsive control endpoint, and a continuing heartbeat.
+  APU repository. Confirm SPI health, meter DMA progress, matching
+  configuration generations, zero overflow, a responsive control endpoint,
+  and a continuing heartbeat.
 
 ## Maintaining this file
 

@@ -56,6 +56,8 @@ set(USER_COMPILE_SOURCES
 "../../common/src/led_controller.cpp"
 # AD7771 SPI and PL capture-control library (Linux owns AXI DMA)
 "../../common/src/ad7771.cpp"
+# Runtime configuration bridge for the PL conversion/meter-processing stages
+"../../common/src/metering.cpp"
 )
 
 # -----------------------------------------
