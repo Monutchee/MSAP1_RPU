@@ -10,19 +10,22 @@
  */
 
 #include <cstdint>
+#include <cstring>
 #include "xparameters.h"
 
 #include "ad7771.hpp"
 #include "control_service.hpp"
 #include "led_controller.hpp"
+#include "metering.hpp"
 
 class R5c0Service : public msap1::ControlService {
 public:
-	R5c0Service(const msap1::CoreConfig &config, msap1::adc::Ad7771 &adc)
+	R5c0Service(const msap1::CoreConfig &config, msap1::adc::Ad7771 &adc,
+		     msap1::meter::MeteringPipeline &metering)
 		: msap1::ControlService(config),
 		  led_(XPAR_XGPIO_0_BASEADDR, /*led_mask=*/0x01u,
 		       /*heartbeat_period_ms=*/500u), // 1 Hz full cycle
-		  adc_(adc)
+		  adc_(adc), metering_(metering)
 	{
 	}
 
@@ -120,8 +123,93 @@ protected:
 			if (registers.configuration_matches)
 				health.health_flags |= MSAP1_ADC_HEALTH_CONFIG_MATCH;
 
+			const auto meter = metering_.status();
+			health.meter_generation = meter.generation;
+			health.conversion_status = meter.conversion_status;
+			health.processing_status = meter.processing_status;
+			if (meter.cores_present)
+				health.meter_health_flags |=
+					MSAP1_METER_HEALTH_CORES_PRESENT;
+			if (meter.configured)
+				health.meter_health_flags |=
+					MSAP1_METER_HEALTH_CONFIGURED;
+			if (meter.generation_matches)
+				health.meter_health_flags |=
+					MSAP1_METER_HEALTH_GENERATION_MATCH;
+			if (meter.enabled)
+				health.meter_health_flags |=
+					MSAP1_METER_HEALTH_ENABLED;
+			if (meter.remove_dc)
+				health.meter_health_flags |=
+					MSAP1_METER_HEALTH_REMOVE_DC;
+
 			send_response(&request, src, MSAP1_RPU_MSG_ADC_HEALTH,
 				      MSAP1_RPU_STATUS_OK, &health, sizeof(health));
+			return true;
+		}
+		case MSAP1_RPU_MSG_METER_CONFIG_SET: {
+			if (payload_len != sizeof(msap1_meter_config_payload)) {
+				send_response(&request, src, MSAP1_RPU_MSG_ERROR,
+					      MSAP1_RPU_STATUS_BAD_PAYLOAD,
+					      nullptr, 0);
+				return true;
+			}
+
+			msap1_meter_config_payload wire = {};
+			std::memcpy(&wire, payload, sizeof(wire));
+			if ((wire.valid_mask & ~0xffu) != 0u ||
+			    (wire.flags & ~(MSAP1_METER_CONFIG_ENABLE |
+					    MSAP1_METER_CONFIG_REMOVE_DC)) != 0u ||
+			    wire.sample_rate_hz != msap1::adc::sample_rate_hz(
+				adc_.configuration().sample_rate)) {
+				send_response(&request, src, MSAP1_RPU_MSG_ERROR,
+					      MSAP1_RPU_STATUS_BAD_PAYLOAD,
+					      nullptr, 0);
+				return true;
+			}
+
+			msap1::meter::Configuration configuration;
+			configuration.generation = wire.generation;
+			configuration.sample_rate_hz = wire.sample_rate_hz;
+			configuration.rms_window_samples =
+				wire.rms_window_samples;
+			configuration.valid_mask =
+				static_cast<std::uint8_t>(wire.valid_mask);
+			for (std::size_t channel = 0;
+			     channel < configuration.scale_micro_units_q16.size();
+			     ++channel)
+				configuration.scale_micro_units_q16[channel] =
+					wire.scale_micro_units_q16[channel];
+			configuration.enable =
+				(wire.flags & MSAP1_METER_CONFIG_ENABLE) != 0u;
+			configuration.remove_dc =
+				(wire.flags & MSAP1_METER_CONFIG_REMOVE_DC) != 0u;
+
+			const auto error = metering_.configure(configuration);
+			if (error != msap1::meter::Error::None) {
+				const auto status =
+					error == msap1::meter::Error::CoreNotFound ?
+					MSAP1_RPU_STATUS_METER_UNAVAILABLE :
+					MSAP1_RPU_STATUS_METER_CONFIG;
+				send_response(&request, src, MSAP1_RPU_MSG_ERROR,
+					      status, nullptr, 0);
+				return true;
+			}
+
+			const auto meter = metering_.status();
+			msap1_meter_config_ack_payload acknowledgement = {};
+			acknowledgement.generation = configuration.generation;
+			acknowledgement.conversion_active_generation =
+				meter.conversion_active_generation;
+			acknowledgement.processing_active_generation =
+				meter.processing_active_generation;
+			acknowledgement.conversion_status =
+				meter.conversion_status;
+			acknowledgement.processing_status =
+				meter.processing_status;
+			send_response(&request, src, MSAP1_RPU_MSG_ACK,
+				      MSAP1_RPU_STATUS_OK, &acknowledgement,
+				      sizeof(acknowledgement));
 			return true;
 		}
 		case MSAP1_RPU_MSG_ADC_CAPTURE_START: {
@@ -178,14 +266,17 @@ protected:
 	}
 
 private:
-	static_assert(sizeof(msap1_adc_health_payload) == 48,
+	static_assert(sizeof(msap1_adc_health_payload) == 64,
 		      "ADC health wire layout must match the APU");
+	static_assert(sizeof(msap1_meter_config_payload) == 52,
+		      "meter configuration wire layout must match the APU");
 	static_assert(sizeof(msap1_rpu_msg_header) +
 		      sizeof(msap1_adc_health_payload) <= MSAP1_RPU_MAX_FRAME_SIZE,
 		      "ADC health response exceeds protocol frame size");
 
 	msap1::LedController led_;
 	msap1::adc::Ad7771 &adc_;
+	msap1::meter::MeteringPipeline &metering_;
 };
 
 #endif /* MSAP1_R5C0_SERVICE_HPP */

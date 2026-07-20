@@ -21,6 +21,7 @@ constexpr std::uint8_t reg_src_update = 0x64;
 
 constexpr std::uint8_t status_init_complete = 1u << 4;
 constexpr std::uint8_t config_1_power_mode = 1u << 6;
+constexpr std::uint8_t config_1_refout_buffer = 1u << 4;
 constexpr std::uint8_t config_2_filter_mode = 1u << 6;
 constexpr std::uint8_t config_2_sar_spi_mode = 1u << 5;
 constexpr std::uint8_t config_2_spi_sync = 1u << 0;
@@ -47,6 +48,7 @@ constexpr std::uint32_t maximum_low_power_mclk_hz = 4096000u;
 constexpr std::uint32_t minimum_decimation = 16u;
 constexpr std::uint32_t maximum_sinc3_integer_decimation = 4095u;
 constexpr std::uint32_t maximum_sinc5_integer_decimation = 2048u;
+constexpr unsigned long reference_output_settling_us = 2000u;
 
 std::uint32_t modulator_clock_divisor(const Configuration &configuration)
 {
@@ -231,11 +233,18 @@ Error Ad7771::reset_and_configure_adc()
 	if ((status & status_init_complete) == 0)
 		return Error::AdcNotReady;
 
+	// The sensor board routes REF_OUT through its VREF net to REF1+ and
+	// REF2+. PDB_REFOUT_BUF is active low and resets to zero, so explicitly
+	// deassert power-down and allow the 2.5 V reference to settle before the
+	// filters are configured and synchronized.
+	const auto config_1_value = static_cast<std::uint8_t>(
+		config_1_refout_buffer |
+		(configuration_.power_mode == PowerMode::HighResolution ?
+			config_1_power_mode : 0u));
 	Error error = update_adc_register(reg_general_user_config_1,
-		config_1_power_mode,
-		configuration_.power_mode == PowerMode::HighResolution ?
-			config_1_power_mode : 0u);
+		config_1_power_mode | config_1_refout_buffer, config_1_value);
 	if (error != Error::None) return error;
+	usleep(reference_output_settling_us);
 	error = update_adc_register(reg_general_user_config_2,
 		config_2_filter_mode | config_2_sar_spi_mode,
 		configuration_.filter == Filter::Sinc5 ?
@@ -358,15 +367,17 @@ Error Ad7771::read_register_health(RegisterHealth &health)
 	if (error != Error::None)
 		return error;
 
-	const auto expected_config_1 =
-		configuration_.power_mode == PowerMode::HighResolution ?
-			config_1_power_mode : 0u;
+	const auto expected_config_1 = static_cast<std::uint8_t>(
+		config_1_refout_buffer |
+		(configuration_.power_mode == PowerMode::HighResolution ?
+			config_1_power_mode : 0u));
 	const auto expected_config_2 = static_cast<std::uint8_t>(
 		(configuration_.filter == Filter::Sinc5 ? config_2_filter_mode : 0u) |
 		config_2_spi_sync);
 	const auto expected_decimation = health.expected_decimation;
 	health.configuration_matches =
-		(health.general_user_config_1 & config_1_power_mode) ==
+		(health.general_user_config_1 &
+		 (config_1_power_mode | config_1_refout_buffer)) ==
 			expected_config_1 &&
 		(health.general_user_config_2 &
 		 (config_2_filter_mode | config_2_sar_spi_mode | config_2_spi_sync)) ==

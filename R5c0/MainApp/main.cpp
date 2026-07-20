@@ -13,6 +13,7 @@
 
 #include "ad7771.hpp"
 #include "control_service.hpp"
+#include "metering.hpp"
 #include "r5c0_service.hpp"
 
 #ifndef XPAR_XSPI_0_BASEADDR
@@ -21,13 +22,38 @@
 #ifndef XPAR_AD7771CAPTURE_WRAPPER_0_BASEADDR
 #error "The Vitis platform does not define the AD7771 capture address"
 #endif
+#if defined(XPAR_ADCCONVERSION_WRAPPER_0_BASEADDR)
+static constexpr std::uintptr_t adc_conversion_base =
+	XPAR_ADCCONVERSION_WRAPPER_0_BASEADDR;
+#elif defined(XPAR_ADCCONVERSION_0_ADCCONVERSION_WRAPPER_0_BASEADDR)
+static constexpr std::uintptr_t adc_conversion_base =
+	XPAR_ADCCONVERSION_0_ADCCONVERSION_WRAPPER_0_BASEADDR;
+#else
+#error "The Vitis platform does not define the ADC conversion address"
+#endif
+
+#if defined(XPAR_VOLTAGERMS_WRAPPER_0_BASEADDR)
+static constexpr std::uintptr_t meter_processing_base =
+	XPAR_VOLTAGERMS_WRAPPER_0_BASEADDR;
+#elif defined(XPAR_METERPROCESSING_0_VOLTAGERMS_WRAPPER_0_BASEADDR)
+static constexpr std::uintptr_t meter_processing_base =
+	XPAR_METERPROCESSING_0_VOLTAGERMS_WRAPPER_0_BASEADDR;
+#else
+#error "The Vitis platform does not define the meter processing address"
+#endif
+
 static constexpr msap1::adc::Hardware adc_hardware{
 	/*spi_base=*/XPAR_XSPI_0_BASEADDR,
 	/*capture_base=*/XPAR_AD7771CAPTURE_WRAPPER_0_BASEADDR,
 };
+static constexpr msap1::meter::Hardware meter_hardware{
+	/*conversion_base=*/adc_conversion_base,
+	/*processing_base=*/meter_processing_base,
+};
 
 static msap1::adc::Ad7771 adc(adc_hardware);
-static R5c0Service service(msap1::CoreConfig::current(), adc);
+static msap1::meter::MeteringPipeline metering(meter_hardware);
+static R5c0Service service(msap1::CoreConfig::current(), adc, metering);
 
 static constexpr std::uint16_t adc_packet_frames = 256;
 
