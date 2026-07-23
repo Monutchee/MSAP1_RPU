@@ -19,32 +19,29 @@
 #ifndef XPAR_XSPI_0_BASEADDR
 #error "The Vitis platform does not define the AD7771 AXI Quad SPI address"
 #endif
-#ifndef XPAR_AD7771CAPTURE_WRAPPER_0_BASEADDR
-#error "The Vitis platform does not define the AD7771 capture address"
-#endif
-#if defined(XPAR_ADCCONVERSION_WRAPPER_0_BASEADDR)
-static constexpr std::uintptr_t adc_conversion_base =
-	XPAR_ADCCONVERSION_WRAPPER_0_BASEADDR;
-#elif defined(XPAR_ADCCONVERSION_0_ADCCONVERSION_WRAPPER_0_BASEADDR)
-static constexpr std::uintptr_t adc_conversion_base =
-	XPAR_ADCCONVERSION_0_ADCCONVERSION_WRAPPER_0_BASEADDR;
-#else
-#error "The Vitis platform does not define the ADC conversion address"
+#ifndef XPAR_METERCORE_WRAPPER_0_BASEADDR
+#error "The Vitis platform does not define the MeterCore address"
 #endif
 
-#if defined(XPAR_VOLTAGERMS_WRAPPER_0_BASEADDR)
+/*
+ * SDT describes MeterCore as one node with three reg regions. Vitis emits the
+ * canonical xparameters macro for the first region only, so derive the other
+ * two from the preserved TopDesign address layout:
+ *
+ *   capture     0xB0020000
+ *   conversion  0xB0040000
+ *   processing  0xB0050000
+ */
+static constexpr std::uintptr_t meter_core_capture_base =
+	XPAR_METERCORE_WRAPPER_0_BASEADDR;
+static constexpr std::uintptr_t adc_conversion_base =
+	meter_core_capture_base + 0x00020000u;
 static constexpr std::uintptr_t meter_processing_base =
-	XPAR_VOLTAGERMS_WRAPPER_0_BASEADDR;
-#elif defined(XPAR_METERPROCESSING_0_VOLTAGERMS_WRAPPER_0_BASEADDR)
-static constexpr std::uintptr_t meter_processing_base =
-	XPAR_METERPROCESSING_0_VOLTAGERMS_WRAPPER_0_BASEADDR;
-#else
-#error "The Vitis platform does not define the meter processing address"
-#endif
+	meter_core_capture_base + 0x00030000u;
 
 static constexpr msap1::adc::Hardware adc_hardware{
 	/*spi_base=*/XPAR_XSPI_0_BASEADDR,
-	/*capture_base=*/XPAR_AD7771CAPTURE_WRAPPER_0_BASEADDR,
+	/*capture_base=*/meter_core_capture_base,
 };
 static constexpr msap1::meter::Hardware meter_hardware{
 	/*conversion_base=*/adc_conversion_base,

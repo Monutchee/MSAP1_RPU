@@ -168,6 +168,53 @@ protected:
 				return true;
 			}
 
+			std::array<msap1::adc::PgaGain,
+				   msap1::adc::channel_count> gains{};
+			bool gains_valid = true;
+			for (std::size_t channel = 0; channel < gains.size();
+			     ++channel) {
+				switch (wire.adc_pga_gain[channel]) {
+				case 1u:
+					gains[channel] = msap1::adc::PgaGain::X1;
+					break;
+				case 2u:
+					gains[channel] = msap1::adc::PgaGain::X2;
+					break;
+				case 4u:
+					gains[channel] = msap1::adc::PgaGain::X4;
+					break;
+				case 8u:
+					gains[channel] = msap1::adc::PgaGain::X8;
+					break;
+				default:
+					gains_valid = false;
+					break;
+				}
+			}
+			if (!gains_valid) {
+				send_response(&request, src, MSAP1_RPU_MSG_ERROR,
+					      MSAP1_RPU_STATUS_BAD_PAYLOAD,
+					      nullptr, 0);
+				return true;
+			}
+			if (adc_.capture_active()) {
+				send_response(&request, src, MSAP1_RPU_MSG_ERROR,
+					      MSAP1_RPU_STATUS_ADC_STATE,
+					      nullptr, 0);
+				return true;
+			}
+			const auto adc_error = adc_.configure_pga(gains);
+			if (adc_error != msap1::adc::Error::None) {
+				const auto status =
+					adc_error ==
+						msap1::adc::Error::CaptureNotInitialized ?
+					MSAP1_RPU_STATUS_ADC_UNAVAILABLE :
+					MSAP1_RPU_STATUS_INTERNAL_ERROR;
+				send_response(&request, src, MSAP1_RPU_MSG_ERROR,
+					      status, nullptr, 0);
+				return true;
+			}
+
 			msap1::meter::Configuration configuration;
 			configuration.generation = wire.generation;
 			configuration.sample_rate_hz = wire.sample_rate_hz;
@@ -268,7 +315,7 @@ protected:
 private:
 	static_assert(sizeof(msap1_adc_health_payload) == 64,
 		      "ADC health wire layout must match the APU");
-	static_assert(sizeof(msap1_meter_config_payload) == 52,
+	static_assert(sizeof(msap1_meter_config_payload) == 60,
 		      "meter configuration wire layout must match the APU");
 	static_assert(sizeof(msap1_rpu_msg_header) +
 		      sizeof(msap1_adc_health_payload) <= MSAP1_RPU_MAX_FRAME_SIZE,
