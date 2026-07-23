@@ -1,6 +1,7 @@
 #ifndef MSAP1_AD7771_HPP
 #define MSAP1_AD7771_HPP
 
+#include <array>
 #include <cstdint>
 
 #include "xspi.h"
@@ -28,12 +29,25 @@ enum class PowerMode {
 	LowPower,
 };
 
+enum class PgaGain : std::uint8_t {
+	X1 = 1,
+	X2 = 2,
+	X4 = 4,
+	X8 = 8,
+};
+
+inline constexpr std::size_t channel_count = 8;
+
 struct Configuration {
 	SampleRate sample_rate = SampleRate::Sps32000;
 	Filter filter = Filter::Sinc5;
 	PowerMode power_mode = PowerMode::HighResolution;
 	std::uint32_t master_clock_hz = 8192000;
 	std::uint16_t frames_per_packet = 256;
+	std::array<PgaGain, channel_count> pga_gains{
+		PgaGain::X1, PgaGain::X1, PgaGain::X1, PgaGain::X1,
+		PgaGain::X1, PgaGain::X1, PgaGain::X1, PgaGain::X1,
+	};
 };
 
 struct Hardware {
@@ -62,6 +76,7 @@ struct RegisterHealth {
 	std::uint8_t src_if_msb = 0;
 	std::uint8_t src_if_lsb = 0;
 	std::uint8_t src_update = 0;
+	std::array<std::uint8_t, channel_count> channel_config{};
 	bool configuration_matches = false;
 };
 
@@ -96,6 +111,8 @@ public:
 	// armed the IIO DMA channel before invoking this operation.
 	Error start_capture();
 	void stop_capture();
+	Error configure_pga(
+		const std::array<PgaGain, channel_count> &channel_gains);
 	CaptureStatus status() const;
 	Error read_register_health(RegisterHealth &health);
 
@@ -115,6 +132,8 @@ private:
 	Error initialize_spi();
 	Error reset_and_configure_adc();
 	Error configure_sample_rate();
+	Error program_channel_gains(
+		const std::array<PgaGain, channel_count> &channel_gains);
 	Error synchronize_adc();
 
 	Error write_adc_register(std::uint8_t address, std::uint8_t value);

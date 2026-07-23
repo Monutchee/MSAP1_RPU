@@ -113,7 +113,8 @@ struct msap1_rpu_status_payload {
 /*
  * Software-defined PL metering configuration. Coefficients are unsigned
  * Q16.16 micro-units per ADC count. The lower eight bits of valid_mask select
- * configured channels; all remaining bits must be zero.
+ * configured channels; all remaining bits must be zero. adc_pga_gain carries
+ * the human-readable AD7771 gain factor (1, 2, 4, or 8) for every channel.
  */
 struct msap1_meter_config_payload {
 	uint32_t generation;
@@ -122,6 +123,7 @@ struct msap1_meter_config_payload {
 	uint32_t valid_mask;
 	uint32_t scale_micro_units_q16[8];
 	uint32_t flags;
+	uint8_t adc_pga_gain[8];
 } __attribute__((packed));
 
 struct msap1_meter_config_ack_payload {

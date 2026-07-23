@@ -8,6 +8,7 @@
 namespace msap1::adc {
 namespace {
 
+constexpr std::uint8_t reg_channel_config_base = 0x00;
 constexpr std::uint8_t reg_general_user_config_1 = 0x11;
 constexpr std::uint8_t reg_general_user_config_2 = 0x12;
 constexpr std::uint8_t reg_general_user_config_3 = 0x13;
@@ -26,6 +27,7 @@ constexpr std::uint8_t config_2_filter_mode = 1u << 6;
 constexpr std::uint8_t config_2_sar_spi_mode = 1u << 5;
 constexpr std::uint8_t config_2_spi_sync = 1u << 0;
 constexpr std::uint8_t config_3_spi_data_mode = 1u << 4;
+constexpr std::uint8_t channel_config_pga_mask = 0xc0u;
 constexpr std::uint8_t src_load_update = 1u << 0;
 
 constexpr std::uint32_t capture_version = 0x00;
@@ -61,6 +63,29 @@ std::uint16_t decimation_for(const Configuration &configuration)
 	const auto denominator = modulator_clock_divisor(configuration) * rate;
 	return static_cast<std::uint16_t>(configuration.master_clock_hz /
 					  denominator);
+}
+
+bool valid_pga_gain(PgaGain gain)
+{
+	switch (gain) {
+	case PgaGain::X1:
+	case PgaGain::X2:
+	case PgaGain::X4:
+	case PgaGain::X8:
+		return true;
+	}
+	return false;
+}
+
+std::uint8_t pga_register_value(PgaGain gain)
+{
+	switch (gain) {
+	case PgaGain::X1: return 0u << 6;
+	case PgaGain::X2: return 1u << 6;
+	case PgaGain::X4: return 2u << 6;
+	case PgaGain::X8: return 3u << 6;
+	}
+	return 0u;
 }
 
 } // namespace
@@ -200,6 +225,22 @@ Error Ad7771::configure_sample_rate()
 	return update_adc_register(reg_src_update, src_load_update, 0u);
 }
 
+Error Ad7771::program_channel_gains(
+	const std::array<PgaGain, channel_count> &channel_gains)
+{
+	for (std::size_t channel = 0; channel < channel_gains.size(); ++channel) {
+		if (!valid_pga_gain(channel_gains[channel]))
+			return Error::InvalidConfiguration;
+		const auto error = update_adc_register(
+			static_cast<std::uint8_t>(reg_channel_config_base + channel),
+			channel_config_pga_mask,
+			pga_register_value(channel_gains[channel]));
+		if (error != Error::None)
+			return error;
+	}
+	return Error::None;
+}
+
 Error Ad7771::synchronize_adc()
 {
 	// SYNC_OUT is wired to SYNC_IN on the sensor board. Toggling SPI_SYNC
@@ -233,10 +274,10 @@ Error Ad7771::reset_and_configure_adc()
 	if ((status & status_init_complete) == 0)
 		return Error::AdcNotReady;
 
-	// The sensor board routes REF_OUT through its VREF net to REF1+ and
-	// REF2+. PDB_REFOUT_BUF is active low and resets to zero, so explicitly
-	// deassert power-down and allow the 2.5 V reference to settle before the
-	// filters are configured and synchronized.
+	// The sensor board derives its buffered REF1+/REF2+ voltage from REFOUT.
+	// PDB_REFOUT_BUF is active low and resets to zero, so explicitly deassert
+	// power-down and allow REFOUT plus the external reference buffer to settle
+	// before the filters are configured and synchronized.
 	const auto config_1_value = static_cast<std::uint8_t>(
 		config_1_refout_buffer |
 		(configuration_.power_mode == PowerMode::HighResolution ?
@@ -258,6 +299,8 @@ Error Ad7771::reset_and_configure_adc()
 	// supports every declared ODR and keeps the PL timing contract unchanged.
 	error = write_adc_register(reg_dout_format, 0x00u);
 	if (error != Error::None) return error;
+	error = program_channel_gains(configuration_.pga_gains);
+	if (error != Error::None) return error;
 	error = configure_sample_rate();
 	if (error != Error::None) return error;
 	return synchronize_adc();
@@ -278,6 +321,9 @@ Error Ad7771::initialize(const Configuration &configuration)
 	const auto denominator = modulator_clock_divisor(configuration) * rate;
 	const auto decimation = denominator == 0u ? 0u :
 		configuration.master_clock_hz / denominator;
+	bool gains_valid = true;
+	for (const auto gain : configuration.pga_gains)
+		gains_valid = gains_valid && valid_pga_gain(gain);
 	if (configuration.frames_per_packet == 0 ||
 	    configuration.frames_per_packet > maximum_packet_frames ||
 	    rate < 1000u || rate > 128000u ||
@@ -285,7 +331,7 @@ Error Ad7771::initialize(const Configuration &configuration)
 	    configuration.master_clock_hz > maximum_mclk ||
 	    (configuration.master_clock_hz % denominator) != 0u ||
 	    decimation < minimum_decimation ||
-	    decimation > maximum_decimation)
+	    decimation > maximum_decimation || !gains_valid)
 		return Error::InvalidConfiguration;
 
 	configuration_ = configuration;
@@ -330,6 +376,23 @@ void Ad7771::stop_capture()
 	capture_active_ = false;
 }
 
+Error Ad7771::configure_pga(
+	const std::array<PgaGain, channel_count> &channel_gains)
+{
+	if (!initialized_)
+		return Error::CaptureNotInitialized;
+	if (capture_active_)
+		return Error::CaptureAlreadyActive;
+	auto error = program_channel_gains(channel_gains);
+	if (error != Error::None)
+		return error;
+	error = synchronize_adc();
+	if (error != Error::None)
+		return error;
+	configuration_.pga_gains = channel_gains;
+	return Error::None;
+}
+
 CaptureStatus Ad7771::status() const
 {
 	return {
@@ -364,6 +427,9 @@ Error Ad7771::read_register_health(RegisterHealth &health)
 	read(reg_src_if_msb, health.src_if_msb);
 	read(reg_src_if_lsb, health.src_if_lsb);
 	read(reg_src_update, health.src_update);
+	for (std::size_t channel = 0; channel < channel_count; ++channel)
+		read(static_cast<std::uint8_t>(reg_channel_config_base + channel),
+		     health.channel_config[channel]);
 	if (error != Error::None)
 		return error;
 
@@ -375,6 +441,11 @@ Error Ad7771::read_register_health(RegisterHealth &health)
 		(configuration_.filter == Filter::Sinc5 ? config_2_filter_mode : 0u) |
 		config_2_spi_sync);
 	const auto expected_decimation = health.expected_decimation;
+	bool gains_match = true;
+	for (std::size_t channel = 0; channel < channel_count; ++channel)
+		gains_match = gains_match &&
+			(health.channel_config[channel] & channel_config_pga_mask) ==
+			pga_register_value(configuration_.pga_gains[channel]);
 	health.configuration_matches =
 		(health.general_user_config_1 &
 		 (config_1_power_mode | config_1_refout_buffer)) ==
@@ -387,7 +458,7 @@ Error Ad7771::read_register_health(RegisterHealth &health)
 		health.src_n_msb == ((expected_decimation >> 8) & 0x0fu) &&
 		health.src_n_lsb == (expected_decimation & 0xffu) &&
 		health.src_if_msb == 0u && health.src_if_lsb == 0u &&
-		(health.src_update & src_load_update) == 0u;
+		(health.src_update & src_load_update) == 0u && gains_match;
 	return Error::None;
 }
 
