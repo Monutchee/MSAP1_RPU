@@ -71,6 +71,7 @@ protected:
 			health.alert_count = capture.alerts;
 			health.packet_count = capture.packets;
 			health.dclk_frequency_hz = capture.dclk_frequency_hz;
+			health.drdy_frequency_hz = capture.drdy_frequency_hz;
 			if (adc_.initialized())
 				health.health_flags |= MSAP1_ADC_HEALTH_INITIALIZED;
 			if (adc_.capture_active())
@@ -332,7 +333,7 @@ protected:
 	}
 
 private:
-	static_assert(sizeof(msap1_adc_health_payload) == 68,
+	static_assert(sizeof(msap1_adc_health_payload) == 72,
 		      "ADC health wire layout must match the APU");
 	static_assert(sizeof(msap1_meter_config_payload) == 92,
 		      "meter configuration wire layout must match the APU");

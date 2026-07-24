@@ -23,6 +23,9 @@
 - ADC samples and meter results never travel over RPMsg. RPMsg is limited to
   START, STOP, runtime RMS/frequency configuration, and health/control traffic so the
   endpoint and heartbeat stay responsive.
+- ADC health reports both the measured DCLK rate and the physical
+  `ADC_DRDY_N` falling-edge rate. Keep these fields coordinated with the APU
+  wire-ABI copy when extending capture diagnostics.
 - Linux and the RPU share a physical UART. Leave `RSPMSG_DEBUG` disabled and do
   not add routine or per-packet UART output. Prefer RPMsg health/status queries.
 
