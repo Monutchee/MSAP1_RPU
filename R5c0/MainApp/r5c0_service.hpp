@@ -70,6 +70,8 @@ protected:
 			health.header_error_count = capture.header_errors;
 			health.alert_count = capture.alerts;
 			health.packet_count = capture.packets;
+			health.dclk_frequency_hz = capture.dclk_frequency_hz;
+			health.drdy_frequency_hz = capture.drdy_frequency_hz;
 			if (adc_.initialized())
 				health.health_flags |= MSAP1_ADC_HEALTH_INITIALIZED;
 			if (adc_.capture_active())
@@ -78,6 +80,13 @@ protected:
 				health.health_flags |= MSAP1_ADC_HEALTH_NO_OVERFLOW;
 			if (capture.frames != 0u && capture.header_errors == 0u)
 				health.health_flags |= MSAP1_ADC_HEALTH_HEADERS_VALID;
+			const auto rate_difference =
+				capture.drdy_frequency_hz > health.sample_rate_hz ?
+				capture.drdy_frequency_hz - health.sample_rate_hz :
+				health.sample_rate_hz - capture.drdy_frequency_hz;
+			if (capture.drdy_frequency_hz != 0u &&
+			    rate_difference <= health.sample_rate_hz / 100u + 2u)
+				health.health_flags |= MSAP1_ADC_HEALTH_RATE_MATCH;
 
 			msap1::adc::RegisterHealth registers;
 			const auto error = adc_.read_register_health(registers);
@@ -118,6 +127,44 @@ protected:
 			health.src_if_msb = registers.src_if_msb;
 			health.src_if_lsb = registers.src_if_lsb;
 			health.src_update = registers.src_update;
+			for (std::size_t channel = 0;
+			     channel < registers.channel_config.size(); ++channel) {
+				health.channel_config[channel] =
+					registers.channel_config[channel];
+					health.channel_sync_offset[channel] =
+						registers.channel_sync_offset[channel];
+					health.channel_error[channel] =
+						registers.channel_error[channel];
+					for (std::size_t byte = 0;
+					     byte < registers.channel_offset[channel].size();
+					     ++byte) {
+						health.channel_offset[channel][byte] =
+							registers.channel_offset[channel][byte];
+						health.channel_gain[channel][byte] =
+							registers.channel_gain[channel][byte];
+					}
+				}
+			health.channel_disable = registers.channel_disable;
+			health.adc_mux_config = registers.adc_mux_config;
+			health.global_mux_config = registers.global_mux_config;
+			health.gpio_config = registers.gpio_config;
+			health.gpio_data = registers.gpio_data;
+			health.buffer_config_1 = registers.buffer_config_1;
+			health.buffer_config_2 = registers.buffer_config_2;
+			for (std::size_t pair = 0;
+			     pair < registers.saturation_error.size(); ++pair)
+				health.saturation_error[pair] =
+					registers.saturation_error[pair];
+			health.channel_error_enable =
+				registers.channel_error_enable;
+			health.general_error_1 = registers.general_error_1;
+			health.general_error_1_enable =
+				registers.general_error_1_enable;
+			health.general_error_2 = registers.general_error_2;
+			health.general_error_2_enable =
+				registers.general_error_2_enable;
+			health.status_1 = registers.status_1;
+			health.status_2 = registers.status_2;
 			if ((registers.status_3 & (1u << 4)) != 0u)
 				health.health_flags |= MSAP1_ADC_HEALTH_INIT_COMPLETE;
 			if (registers.configuration_matches)
@@ -160,8 +207,18 @@ protected:
 			if ((wire.valid_mask & ~0xffu) != 0u ||
 			    (wire.flags & ~(MSAP1_METER_CONFIG_ENABLE |
 					    MSAP1_METER_CONFIG_REMOVE_DC)) != 0u ||
-			    wire.sample_rate_hz != msap1::adc::sample_rate_hz(
-				adc_.configuration().sample_rate)) {
+			    (wire.frequency_flags &
+			     ~MSAP1_FREQUENCY_CONFIG_ENABLE) != 0u) {
+				send_response(&request, src, MSAP1_RPU_MSG_ERROR,
+					      MSAP1_RPU_STATUS_BAD_PAYLOAD,
+					      nullptr, 0);
+				return true;
+			}
+
+			msap1::adc::SampleRate sample_rate =
+				msap1::adc::SampleRate::Sps32000;
+			if (!msap1::adc::sample_rate_from_hz(
+				    wire.sample_rate_hz, sample_rate)) {
 				send_response(&request, src, MSAP1_RPU_MSG_ERROR,
 					      MSAP1_RPU_STATUS_BAD_PAYLOAD,
 					      nullptr, 0);
@@ -203,9 +260,12 @@ protected:
 					      nullptr, 0);
 				return true;
 			}
-			const auto adc_error = adc_.configure_pga(gains);
+			const auto adc_error = adc_.configure_operating_point(
+				sample_rate, gains);
 			if (adc_error != msap1::adc::Error::None) {
-				const auto status =
+				const auto status = adc_error ==
+						msap1::adc::Error::InvalidConfiguration ?
+					MSAP1_RPU_STATUS_BAD_PAYLOAD :
 					adc_error ==
 						msap1::adc::Error::CaptureNotInitialized ?
 					MSAP1_RPU_STATUS_ADC_UNAVAILABLE :
@@ -231,6 +291,22 @@ protected:
 				(wire.flags & MSAP1_METER_CONFIG_ENABLE) != 0u;
 			configuration.remove_dc =
 				(wire.flags & MSAP1_METER_CONFIG_REMOVE_DC) != 0u;
+			configuration.frequency.enable =
+				(wire.frequency_flags &
+				 MSAP1_FREQUENCY_CONFIG_ENABLE) != 0u;
+			configuration.frequency.mode = wire.frequency_mode;
+			configuration.frequency.reference_channel =
+				wire.frequency_reference_channel;
+			configuration.frequency.averaging_cycles =
+				wire.frequency_averaging_cycles;
+			configuration.frequency.window_samples =
+				wire.frequency_window_samples;
+			configuration.frequency.minimum_millihz =
+				wire.frequency_minimum_millihz;
+			configuration.frequency.maximum_millihz =
+				wire.frequency_maximum_millihz;
+			configuration.frequency.hysteresis_microvolts =
+				wire.frequency_hysteresis_microvolts;
 
 			const auto error = metering_.configure(configuration);
 			if (error != msap1::meter::Error::None) {
@@ -257,6 +333,48 @@ protected:
 			send_response(&request, src, MSAP1_RPU_MSG_ACK,
 				      MSAP1_RPU_STATUS_OK, &acknowledgement,
 				      sizeof(acknowledgement));
+			return true;
+		}
+		case MSAP1_RPU_MSG_ADC_DIAGNOSTIC_RUN: {
+			if (payload_len != sizeof(msap1_adc_diagnostic_request)) {
+				send_response(&request, src, MSAP1_RPU_MSG_ERROR,
+					      MSAP1_RPU_STATUS_BAD_PAYLOAD,
+					      nullptr, 0);
+				return true;
+			}
+			msap1_adc_diagnostic_request diagnostic_request{};
+			std::memcpy(&diagnostic_request, payload,
+				    sizeof(diagnostic_request));
+			if (diagnostic_request.flow != 1u) {
+				send_response(&request, src, MSAP1_RPU_MSG_ERROR,
+					      MSAP1_RPU_STATUS_BAD_PAYLOAD,
+					      nullptr, 0);
+				return true;
+			}
+
+			msap1::adc::DiagnosticResult result;
+			const auto error = adc_.run_diagnostic_flow1(result);
+			msap1_adc_diagnostic_payload wire{};
+			wire.flow = diagnostic_request.flow;
+			wire.requested_sample_rate_hz =
+				result.requested_sample_rate_hz;
+			wire.diagnostic_flags = result.flags;
+			wire.diagnostic_error = diagnostic_error(error);
+			wire.failure_stage = result.failure_stage;
+			wire.reset_hold_ms = result.reset_hold_ms;
+			wire.src_update_high_readback =
+				result.src_update_high_readback;
+			wire.src_update_low_readback =
+				result.src_update_low_readback;
+			copy_diagnostic_snapshot(wire.before, result.before);
+			copy_diagnostic_snapshot(
+				wire.reset_asserted, result.reset_asserted);
+			copy_diagnostic_snapshot(
+				wire.reset_defaults, result.reset_defaults);
+			copy_diagnostic_snapshot(wire.after, result.after);
+			send_response(&request, src,
+				      MSAP1_RPU_MSG_ADC_DIAGNOSTIC,
+				      MSAP1_RPU_STATUS_OK, &wire, sizeof(wire));
 			return true;
 		}
 		case MSAP1_RPU_MSG_ADC_CAPTURE_START: {
@@ -313,13 +431,72 @@ protected:
 	}
 
 private:
-	static_assert(sizeof(msap1_adc_health_payload) == 64,
-		      "ADC health wire layout must match the APU");
-	static_assert(sizeof(msap1_meter_config_payload) == 60,
+	static std::uint32_t diagnostic_error(msap1::adc::Error error)
+	{
+		switch (error) {
+		case msap1::adc::Error::None:
+			return MSAP1_ADC_DIAGNOSTIC_ERROR_NONE;
+		case msap1::adc::Error::CaptureNotInitialized:
+			return MSAP1_ADC_DIAGNOSTIC_ERROR_NOT_INITIALIZED;
+		case msap1::adc::Error::CaptureAlreadyActive:
+			return MSAP1_ADC_DIAGNOSTIC_ERROR_CAPTURE_ACTIVE;
+		case msap1::adc::Error::SpiInitialization:
+		case msap1::adc::Error::SpiTransfer:
+		case msap1::adc::Error::SpiProtocol:
+			return MSAP1_ADC_DIAGNOSTIC_ERROR_SPI;
+		case msap1::adc::Error::AdcNotReady:
+			return MSAP1_ADC_DIAGNOSTIC_ERROR_ADC_NOT_READY;
+		case msap1::adc::Error::AdcRegisterMismatch:
+			return MSAP1_ADC_DIAGNOSTIC_ERROR_REGISTER_MISMATCH;
+		default:
+			return MSAP1_ADC_DIAGNOSTIC_ERROR_INTERNAL;
+		}
+	}
+
+	static void copy_diagnostic_snapshot(
+		msap1_adc_diagnostic_snapshot &wire,
+		const msap1::adc::DiagnosticSnapshot &snapshot)
+	{
+		wire.snapshot_flags = snapshot.spi_valid ?
+			MSAP1_ADC_DIAGNOSTIC_SNAPSHOT_SPI_VALID : 0u;
+		wire.capture_flags = snapshot.capture_flags;
+		wire.frame_count = snapshot.frame_count;
+		wire.packet_count = snapshot.packet_count;
+		wire.dclk_frequency_hz = snapshot.dclk_frequency_hz;
+		wire.drdy_frequency_hz = snapshot.drdy_frequency_hz;
+		wire.status_1 = snapshot.status_1;
+		wire.status_2 = snapshot.status_2;
+		wire.status_3 = snapshot.status_3;
+		wire.general_user_config_1 =
+			snapshot.general_user_config_1;
+		wire.general_user_config_2 =
+			snapshot.general_user_config_2;
+		wire.general_user_config_3 =
+			snapshot.general_user_config_3;
+		wire.dout_format = snapshot.dout_format;
+		wire.channel_disable = snapshot.channel_disable;
+		wire.buffer_config_1 = snapshot.buffer_config_1;
+		wire.buffer_config_2 = snapshot.buffer_config_2;
+		wire.src_n_msb = snapshot.src_n_msb;
+		wire.src_n_lsb = snapshot.src_n_lsb;
+		wire.src_if_msb = snapshot.src_if_msb;
+		wire.src_if_lsb = snapshot.src_if_lsb;
+		wire.src_update = snapshot.src_update;
+	}
+
+	static_assert(sizeof(msap1_adc_health_payload) == 162,
+			      "ADC health wire layout must match the APU");
+	static_assert(sizeof(msap1_meter_config_payload) == 92,
 		      "meter configuration wire layout must match the APU");
+	static_assert(sizeof(msap1_adc_diagnostic_payload) == 188,
+		      "ADC diagnostic wire layout must match the APU");
 	static_assert(sizeof(msap1_rpu_msg_header) +
 		      sizeof(msap1_adc_health_payload) <= MSAP1_RPU_MAX_FRAME_SIZE,
 		      "ADC health response exceeds protocol frame size");
+	static_assert(sizeof(msap1_rpu_msg_header) +
+		      sizeof(msap1_adc_diagnostic_payload) <=
+			      MSAP1_RPU_MAX_FRAME_SIZE,
+		      "ADC diagnostic response exceeds protocol frame size");
 
 	msap1::LedController led_;
 	msap1::adc::Ad7771 &adc_;
