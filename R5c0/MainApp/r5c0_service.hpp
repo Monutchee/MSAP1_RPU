@@ -201,9 +201,17 @@ protected:
 			    (wire.flags & ~(MSAP1_METER_CONFIG_ENABLE |
 					    MSAP1_METER_CONFIG_REMOVE_DC)) != 0u ||
 			    (wire.frequency_flags &
-			     ~MSAP1_FREQUENCY_CONFIG_ENABLE) != 0u ||
-			    wire.sample_rate_hz != msap1::adc::sample_rate_hz(
-				adc_.configuration().sample_rate)) {
+			     ~MSAP1_FREQUENCY_CONFIG_ENABLE) != 0u) {
+				send_response(&request, src, MSAP1_RPU_MSG_ERROR,
+					      MSAP1_RPU_STATUS_BAD_PAYLOAD,
+					      nullptr, 0);
+				return true;
+			}
+
+			msap1::adc::SampleRate sample_rate =
+				msap1::adc::SampleRate::Sps32000;
+			if (!msap1::adc::sample_rate_from_hz(
+				    wire.sample_rate_hz, sample_rate)) {
 				send_response(&request, src, MSAP1_RPU_MSG_ERROR,
 					      MSAP1_RPU_STATUS_BAD_PAYLOAD,
 					      nullptr, 0);
@@ -245,9 +253,12 @@ protected:
 					      nullptr, 0);
 				return true;
 			}
-			const auto adc_error = adc_.configure_pga(gains);
+			const auto adc_error = adc_.configure_operating_point(
+				sample_rate, gains);
 			if (adc_error != msap1::adc::Error::None) {
-				const auto status =
+				const auto status = adc_error ==
+						msap1::adc::Error::InvalidConfiguration ?
+					MSAP1_RPU_STATUS_BAD_PAYLOAD :
 					adc_error ==
 						msap1::adc::Error::CaptureNotInitialized ?
 					MSAP1_RPU_STATUS_ADC_UNAVAILABLE :

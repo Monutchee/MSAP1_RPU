@@ -118,6 +118,7 @@ enum class Error {
 
 const char *to_string(Error error);
 std::uint32_t sample_rate_hz(SampleRate rate);
+bool sample_rate_from_hz(std::uint32_t rate_hz, SampleRate &rate);
 
 class Ad7771 {
 public:
@@ -134,6 +135,9 @@ public:
 	// armed the IIO DMA channel before invoking this operation.
 	Error start_capture();
 	void stop_capture();
+	Error configure_operating_point(
+		SampleRate sample_rate,
+		const std::array<PgaGain, channel_count> &channel_gains);
 	Error configure_pga(
 		const std::array<PgaGain, channel_count> &channel_gains);
 	CaptureStatus status() const;
@@ -154,7 +158,7 @@ private:
 
 	Error initialize_spi();
 	Error reset_and_configure_adc();
-	Error configure_sample_rate();
+	Error configure_sample_rate(SampleRate sample_rate);
 	Error program_channel_gains(
 		const std::array<PgaGain, channel_count> &channel_gains);
 	Error synchronize_adc();

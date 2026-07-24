@@ -74,6 +74,22 @@ constexpr std::uint32_t maximum_sinc3_integer_decimation = 4095u;
 constexpr std::uint32_t maximum_sinc5_integer_decimation = 2048u;
 constexpr unsigned long reference_output_settling_us = 2000u;
 
+bool valid_sample_rate(SampleRate rate)
+{
+	switch (rate) {
+	case SampleRate::Sps1000:
+	case SampleRate::Sps2000:
+	case SampleRate::Sps4000:
+	case SampleRate::Sps8000:
+	case SampleRate::Sps16000:
+	case SampleRate::Sps32000:
+	case SampleRate::Sps64000:
+	case SampleRate::Sps128000:
+		return true;
+	}
+	return false;
+}
+
 std::uint32_t modulator_clock_divisor(const Configuration &configuration)
 {
 	return configuration.power_mode == PowerMode::HighResolution ? 4u : 8u;
@@ -132,6 +148,15 @@ const char *to_string(Error error)
 std::uint32_t sample_rate_hz(SampleRate rate)
 {
 	return static_cast<std::uint32_t>(rate);
+}
+
+bool sample_rate_from_hz(std::uint32_t rate_hz, SampleRate &rate)
+{
+	const auto candidate = static_cast<SampleRate>(rate_hz);
+	if (!valid_sample_rate(candidate))
+		return false;
+	rate = candidate;
+	return true;
 }
 
 Ad7771::Ad7771(Hardware hardware) : hardware_(hardware) {}
@@ -224,10 +249,32 @@ Error Ad7771::update_adc_register(std::uint8_t address, std::uint8_t mask,
 		Error::None : Error::AdcRegisterMismatch;
 }
 
-Error Ad7771::configure_sample_rate()
+Error Ad7771::configure_sample_rate(SampleRate sample_rate)
 {
-	const std::uint16_t decimation = decimation_for(configuration_);
-	Error error = write_adc_register(reg_src_n_msb,
+	Configuration staged = configuration_;
+	staged.sample_rate = sample_rate;
+	if (!valid_sample_rate(sample_rate))
+		return Error::InvalidConfiguration;
+	const auto rate_hz = sample_rate_hz(sample_rate);
+	const auto denominator = modulator_clock_divisor(staged) * rate_hz;
+	if (denominator == 0u ||
+	    (staged.master_clock_hz % denominator) != 0u)
+		return Error::InvalidConfiguration;
+	const std::uint16_t decimation = decimation_for(staged);
+	const auto maximum_decimation =
+		staged.filter == Filter::Sinc5 ?
+			maximum_sinc5_integer_decimation :
+			maximum_sinc3_integer_decimation;
+	if (decimation < minimum_decimation ||
+	    decimation > maximum_decimation)
+		return Error::InvalidConfiguration;
+
+	// SRC_N/SRC_IF are holding registers. Force software load mode and an
+	// inactive update level before changing them so a previous partial
+	// transaction cannot suppress the required low-to-high load transition.
+	Error error = write_adc_register(reg_src_update, 0u);
+	if (error != Error::None) return error;
+	error = write_adc_register(reg_src_n_msb,
 		static_cast<std::uint8_t>((decimation >> 8) & 0x0fu));
 	if (error != Error::None) return error;
 	error = write_adc_register(reg_src_n_lsb,
@@ -238,13 +285,42 @@ Error Ad7771::configure_sample_rate()
 	error = write_adc_register(reg_src_if_lsb, 0u);
 	if (error != Error::None) return error;
 
-	// Software-load the new SRC value. One microsecond exceeds two periods of
-	// the sensor board's 8.192 MHz MCLK.
-	error = update_adc_register(reg_src_update, src_load_update,
-				    src_load_update);
+	// Transfer the holding registers to the active DSP decimator. Use direct
+	// writes so the diagnostic rate switch exercises an unambiguous
+	// 0 -> 1 -> 0 sequence. Ten microseconds comfortably exceeds the AD7771
+	// minimum two-MCLK high time at the board's 8.192 MHz MCLK.
+	error = write_adc_register(reg_src_update, src_load_update);
 	if (error != Error::None) return error;
-	usleep(1);
-	return update_adc_register(reg_src_update, src_load_update, 0u);
+	usleep(10);
+	error = write_adc_register(reg_src_update, 0u);
+	if (error != Error::None) return error;
+
+	std::uint8_t readback = 0;
+	error = read_adc_register(reg_src_n_msb, readback);
+	if (error != Error::None ||
+	    readback != static_cast<std::uint8_t>((decimation >> 8) & 0x0fu))
+		return error == Error::None ? Error::AdcRegisterMismatch : error;
+	error = read_adc_register(reg_src_n_lsb, readback);
+	if (error != Error::None ||
+	    readback != static_cast<std::uint8_t>(decimation & 0xffu))
+		return error == Error::None ? Error::AdcRegisterMismatch : error;
+	error = read_adc_register(reg_src_if_msb, readback);
+	if (error != Error::None || readback != 0u)
+		return error == Error::None ? Error::AdcRegisterMismatch : error;
+	error = read_adc_register(reg_src_if_lsb, readback);
+	if (error != Error::None || readback != 0u)
+		return error == Error::None ? Error::AdcRegisterMismatch : error;
+	error = read_adc_register(reg_src_update, readback);
+	if (error != Error::None || readback != 0u)
+		return error == Error::None ? Error::AdcRegisterMismatch : error;
+
+	// The loaded ODR becomes effective within three conversion cycles. Keep
+	// synchronization separate from that transition and wait four cycles so
+	// the old and new rate cannot straddle the subsequent filter reset.
+	const auto transition_us =
+		(4u * 1000000u + rate_hz - 1u) / rate_hz;
+	usleep(transition_us);
+	return Error::None;
 }
 
 Error Ad7771::program_channel_gains(
@@ -323,9 +399,15 @@ Error Ad7771::reset_and_configure_adc()
 	if (error != Error::None) return error;
 	error = program_channel_gains(configuration_.pga_gains);
 	if (error != Error::None) return error;
-	error = configure_sample_rate();
+	error = configure_sample_rate(configuration_.sample_rate);
 	if (error != Error::None) return error;
-	return synchronize_adc();
+	error = synchronize_adc();
+	if (error != Error::None) return error;
+	const auto rate_hz = sample_rate_hz(configuration_.sample_rate);
+	const auto settling_cycles =
+		configuration_.filter == Filter::Sinc5 ? 6u : 4u;
+	usleep((settling_cycles * 1000000u + rate_hz - 1u) / rate_hz);
+	return Error::None;
 }
 
 Error Ad7771::initialize(const Configuration &configuration)
@@ -346,7 +428,8 @@ Error Ad7771::initialize(const Configuration &configuration)
 	bool gains_valid = true;
 	for (const auto gain : configuration.pga_gains)
 		gains_valid = gains_valid && valid_pga_gain(gain);
-	if (configuration.frames_per_packet == 0 ||
+	if (!valid_sample_rate(configuration.sample_rate) ||
+	    configuration.frames_per_packet == 0 ||
 	    configuration.frames_per_packet > maximum_packet_frames ||
 	    rate < 1000u || rate > 128000u ||
 	    configuration.master_clock_hz < minimum_mclk ||
@@ -401,16 +484,39 @@ void Ad7771::stop_capture()
 Error Ad7771::configure_pga(
 	const std::array<PgaGain, channel_count> &channel_gains)
 {
+	return configure_operating_point(configuration_.sample_rate,
+					 channel_gains);
+}
+
+Error Ad7771::configure_operating_point(
+	SampleRate sample_rate,
+	const std::array<PgaGain, channel_count> &channel_gains)
+{
 	if (!initialized_)
 		return Error::CaptureNotInitialized;
 	if (capture_active_)
 		return Error::CaptureAlreadyActive;
+	if (!valid_sample_rate(sample_rate))
+		return Error::InvalidConfiguration;
+	for (const auto gain : channel_gains)
+		if (!valid_pga_gain(gain))
+			return Error::InvalidConfiguration;
+
 	auto error = program_channel_gains(channel_gains);
+	if (error != Error::None)
+		return error;
+	error = configure_sample_rate(sample_rate);
 	if (error != Error::None)
 		return error;
 	error = synchronize_adc();
 	if (error != Error::None)
 		return error;
+	const auto rate_hz = sample_rate_hz(sample_rate);
+	const auto settling_cycles =
+		configuration_.filter == Filter::Sinc5 ? 6u : 4u;
+	usleep((settling_cycles * 1000000u + rate_hz - 1u) / rate_hz);
+
+	configuration_.sample_rate = sample_rate;
 	configuration_.pga_gains = channel_gains;
 	return Error::None;
 }

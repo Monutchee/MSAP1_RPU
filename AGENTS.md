@@ -26,6 +26,9 @@
 - ADC health reports both the measured DCLK rate and the physical
   `ADC_DRDY_N` falling-edge rate. Keep these fields coordinated with the APU
   wire-ABI copy when extending capture diagnostics.
+- Runtime sample-rate changes arrive in `METER_CONFIG_SET` while capture is
+  stopped. Apply ADC PGA/SRC and PL window configuration as one coordinated
+  operating-point transaction; the packaged boot default remains 32 kSPS.
 - Linux and the RPU share a physical UART. Leave `RSPMSG_DEBUG` disabled and do
   not add routine or per-packet UART output. Prefer RPMsg health/status queries.
 
