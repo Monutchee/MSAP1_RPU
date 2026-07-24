@@ -59,7 +59,7 @@ bool valid_configuration(const Configuration &configuration)
 		configuration.sample_rate_hz / 10u ||
 	    configuration.frequency.window_samples > configuration.sample_rate_hz ||
 	    configuration.frequency.minimum_millihz < 10000u ||
-	    configuration.frequency.maximum_millihz > 100000u ||
+	    configuration.frequency.maximum_millihz > 200000u ||
 	    configuration.frequency.minimum_millihz >=
 		configuration.frequency.maximum_millihz ||
 	    configuration.frequency.hysteresis_microvolts == 0u ||
