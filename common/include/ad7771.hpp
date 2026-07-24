@@ -103,6 +103,44 @@ struct RegisterHealth {
 	bool configuration_matches = false;
 };
 
+struct DiagnosticSnapshot {
+	std::uint32_t capture_flags = 0;
+	std::uint32_t frame_count = 0;
+	std::uint32_t packet_count = 0;
+	std::uint32_t dclk_frequency_hz = 0;
+	std::uint32_t drdy_frequency_hz = 0;
+	std::uint8_t status_1 = 0;
+	std::uint8_t status_2 = 0;
+	std::uint8_t status_3 = 0;
+	std::uint8_t general_user_config_1 = 0;
+	std::uint8_t general_user_config_2 = 0;
+	std::uint8_t general_user_config_3 = 0;
+	std::uint8_t dout_format = 0;
+	std::uint8_t channel_disable = 0;
+	std::uint8_t buffer_config_1 = 0;
+	std::uint8_t buffer_config_2 = 0;
+	std::uint8_t src_n_msb = 0;
+	std::uint8_t src_n_lsb = 0;
+	std::uint8_t src_if_msb = 0;
+	std::uint8_t src_if_lsb = 0;
+	std::uint8_t src_update = 0;
+	bool spi_valid = false;
+	bool configuration_matches = false;
+};
+
+struct DiagnosticResult {
+	std::uint32_t requested_sample_rate_hz = 0;
+	std::uint32_t flags = 0;
+	std::uint32_t failure_stage = 0;
+	std::uint32_t reset_hold_ms = 0;
+	std::uint8_t src_update_high_readback = 0;
+	std::uint8_t src_update_low_readback = 0;
+	DiagnosticSnapshot before{};
+	DiagnosticSnapshot reset_asserted{};
+	DiagnosticSnapshot reset_defaults{};
+	DiagnosticSnapshot after{};
+};
+
 enum class Error {
 	None,
 	InvalidConfiguration,
@@ -140,6 +178,13 @@ public:
 		const std::array<PgaGain, channel_count> &channel_gains);
 	Error configure_pga(
 		const std::array<PgaGain, channel_count> &channel_gains);
+	/*
+	 * Run the destructive Flow-1 diagnostic while capture is stopped. This
+	 * pulses the sensor-board ADC RESET_N output driven by PL; it does not
+	 * power-cycle or reset Linux/the FPGA. The active Configuration is restored
+	 * before returning.
+	 */
+	Error run_diagnostic_flow1(DiagnosticResult &result);
 	CaptureStatus status() const;
 	Error read_register_health(RegisterHealth &health);
 
@@ -151,6 +196,11 @@ public:
 	Ad7771 &operator=(const Ad7771 &) = delete;
 
 private:
+	struct SrcLoadTrace {
+		std::uint8_t high_readback = 0;
+		std::uint8_t low_readback = 0;
+	};
+
 	static constexpr std::uint32_t control_capture_enable = 1u << 0;
 	static constexpr std::uint32_t control_fifo_reset = 1u << 1;
 	static constexpr std::uint32_t control_adc_reset_n = 1u << 2;
@@ -158,10 +208,17 @@ private:
 
 	Error initialize_spi();
 	Error reset_and_configure_adc();
-	Error configure_sample_rate(SampleRate sample_rate);
+	Error wait_for_initialization();
+	Error configure_adc_registers(SrcLoadTrace *trace = nullptr,
+				      unsigned long src_update_hold_us = 10u);
+	Error configure_sample_rate(SampleRate sample_rate,
+				    SrcLoadTrace *trace = nullptr,
+				    unsigned long update_hold_us = 10u);
 	Error program_channel_gains(
 		const std::array<PgaGain, channel_count> &channel_gains);
 	Error synchronize_adc();
+	Error take_diagnostic_snapshot(DiagnosticSnapshot &snapshot,
+				       bool include_spi);
 
 	Error write_adc_register(std::uint8_t address, std::uint8_t value);
 	Error read_adc_register(std::uint8_t address, std::uint8_t &value);

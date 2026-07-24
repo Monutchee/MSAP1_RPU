@@ -1,5 +1,7 @@
 #include "ad7771.hpp"
 
+#include "FreeRTOS.h"
+#include "task.h"
 #include "sleep.h"
 #include "xil_io.h"
 #include "xparameters.h"
@@ -73,6 +75,26 @@ constexpr std::uint32_t minimum_decimation = 16u;
 constexpr std::uint32_t maximum_sinc3_integer_decimation = 4095u;
 constexpr std::uint32_t maximum_sinc5_integer_decimation = 2048u;
 constexpr unsigned long reference_output_settling_us = 2000u;
+constexpr std::uint32_t diagnostic_reset_hold_ms = 2200u;
+constexpr std::uint32_t diagnostic_measurement_settle_ms = 2200u;
+constexpr unsigned long diagnostic_src_update_hold_us = 1000u;
+
+constexpr std::uint32_t diagnostic_reset_asserted = 1u << 0;
+constexpr std::uint32_t diagnostic_reset_drdy_stopped = 1u << 1;
+constexpr std::uint32_t diagnostic_reset_defaults_read = 1u << 2;
+constexpr std::uint32_t diagnostic_src_update_high_read = 1u << 3;
+constexpr std::uint32_t diagnostic_src_update_low_read = 1u << 4;
+constexpr std::uint32_t diagnostic_src_holding_match = 1u << 5;
+constexpr std::uint32_t diagnostic_final_config_match = 1u << 6;
+constexpr std::uint32_t diagnostic_final_drdy_match = 1u << 7;
+
+constexpr std::uint32_t diagnostic_stage_preflight = 1u;
+constexpr std::uint32_t diagnostic_stage_before = 2u;
+constexpr std::uint32_t diagnostic_stage_reset_assert = 3u;
+constexpr std::uint32_t diagnostic_stage_reset_release = 4u;
+constexpr std::uint32_t diagnostic_stage_reset_defaults = 5u;
+constexpr std::uint32_t diagnostic_stage_reconfigure = 6u;
+constexpr std::uint32_t diagnostic_stage_after = 7u;
 
 bool valid_sample_rate(SampleRate rate)
 {
@@ -249,7 +271,9 @@ Error Ad7771::update_adc_register(std::uint8_t address, std::uint8_t mask,
 		Error::None : Error::AdcRegisterMismatch;
 }
 
-Error Ad7771::configure_sample_rate(SampleRate sample_rate)
+Error Ad7771::configure_sample_rate(SampleRate sample_rate,
+				    SrcLoadTrace *trace,
+				    unsigned long update_hold_us)
 {
 	Configuration staged = configuration_;
 	staged.sample_rate = sample_rate;
@@ -286,14 +310,22 @@ Error Ad7771::configure_sample_rate(SampleRate sample_rate)
 	if (error != Error::None) return error;
 
 	// Transfer the holding registers to the active DSP decimator. Use direct
-	// writes so the diagnostic rate switch exercises an unambiguous
-	// 0 -> 1 -> 0 sequence. Ten microseconds comfortably exceeds the AD7771
-	// minimum two-MCLK high time at the board's 8.192 MHz MCLK.
+	// writes so the rate switch exercises an unambiguous 0 -> 1 -> 0 sequence.
+	// Normal configuration holds for 10 us; Flow 1 deliberately holds for
+	// 1 ms and samples the bit high and low to make the load observable.
 	error = write_adc_register(reg_src_update, src_load_update);
 	if (error != Error::None) return error;
-	usleep(10);
+	if (trace != nullptr) {
+		error = read_adc_register(reg_src_update, trace->high_readback);
+		if (error != Error::None) return error;
+	}
+	usleep(update_hold_us);
 	error = write_adc_register(reg_src_update, 0u);
 	if (error != Error::None) return error;
+	if (trace != nullptr) {
+		error = read_adc_register(reg_src_update, trace->low_readback);
+		if (error != Error::None) return error;
+	}
 
 	std::uint8_t readback = 0;
 	error = read_adc_register(reg_src_n_msb, readback);
@@ -360,6 +392,14 @@ Error Ad7771::reset_and_configure_adc()
 	set_capture_control(control_fifo_reset | control_adc_reset_n);
 	usleep(2500);
 
+	auto error = wait_for_initialization();
+	if (error != Error::None)
+		return error;
+	return configure_adc_registers();
+}
+
+Error Ad7771::wait_for_initialization()
+{
 	std::uint8_t status = 0;
 	for (unsigned int attempt = 0; attempt < 20; ++attempt) {
 		const auto error = read_adc_register(reg_status_3, status);
@@ -371,7 +411,12 @@ Error Ad7771::reset_and_configure_adc()
 	}
 	if ((status & status_init_complete) == 0)
 		return Error::AdcNotReady;
+	return Error::None;
+}
 
+Error Ad7771::configure_adc_registers(SrcLoadTrace *trace,
+				      unsigned long src_update_hold_us)
+{
 	// The sensor board derives its buffered REF1+/REF2+ voltage from REFOUT.
 	// PDB_REFOUT_BUF is active low and resets to zero, so explicitly deassert
 	// power-down and allow REFOUT plus the external reference buffer to settle
@@ -399,7 +444,8 @@ Error Ad7771::reset_and_configure_adc()
 	if (error != Error::None) return error;
 	error = program_channel_gains(configuration_.pga_gains);
 	if (error != Error::None) return error;
-	error = configure_sample_rate(configuration_.sample_rate);
+	error = configure_sample_rate(configuration_.sample_rate, trace,
+				      src_update_hold_us);
 	if (error != Error::None) return error;
 	error = synchronize_adc();
 	if (error != Error::None) return error;
@@ -518,6 +564,138 @@ Error Ad7771::configure_operating_point(
 
 	configuration_.sample_rate = sample_rate;
 	configuration_.pga_gains = channel_gains;
+	return Error::None;
+}
+
+Error Ad7771::take_diagnostic_snapshot(DiagnosticSnapshot &snapshot,
+				       bool include_spi)
+{
+	snapshot = {};
+	const auto capture = status();
+	snapshot.capture_flags = capture.flags;
+	snapshot.frame_count = capture.frames;
+	snapshot.packet_count = capture.packets;
+	snapshot.dclk_frequency_hz = capture.dclk_frequency_hz;
+	snapshot.drdy_frequency_hz = capture.drdy_frequency_hz;
+	if (!include_spi)
+		return Error::None;
+
+	RegisterHealth health;
+	const auto error = read_register_health(health);
+	if (error != Error::None)
+		return error;
+	snapshot.status_1 = health.status_1;
+	snapshot.status_2 = health.status_2;
+	snapshot.status_3 = health.status_3;
+	snapshot.general_user_config_1 = health.general_user_config_1;
+	snapshot.general_user_config_2 = health.general_user_config_2;
+	snapshot.general_user_config_3 = health.general_user_config_3;
+	snapshot.dout_format = health.dout_format;
+	snapshot.channel_disable = health.channel_disable;
+	snapshot.buffer_config_1 = health.buffer_config_1;
+	snapshot.buffer_config_2 = health.buffer_config_2;
+	snapshot.src_n_msb = health.src_n_msb;
+	snapshot.src_n_lsb = health.src_n_lsb;
+	snapshot.src_if_msb = health.src_if_msb;
+	snapshot.src_if_lsb = health.src_if_lsb;
+	snapshot.src_update = health.src_update;
+	snapshot.spi_valid = true;
+	snapshot.configuration_matches = health.configuration_matches;
+	return Error::None;
+}
+
+Error Ad7771::run_diagnostic_flow1(DiagnosticResult &result)
+{
+	result = {};
+	result.requested_sample_rate_hz =
+		sample_rate_hz(configuration_.sample_rate);
+	result.reset_hold_ms = diagnostic_reset_hold_ms;
+	result.failure_stage = diagnostic_stage_preflight;
+	if (!initialized_)
+		return Error::CaptureNotInitialized;
+	if (capture_active_)
+		return Error::CaptureAlreadyActive;
+
+	result.failure_stage = diagnostic_stage_before;
+	auto error = take_diagnostic_snapshot(result.before, true);
+	if (error != Error::None)
+		return error;
+
+	/*
+	 * This is a warm pin reset. PL drives the sensor-board ADC RESET_N low
+	 * while Linux, the FPGA fabric, and the RPU remain alive. Holding it over
+	 * two PL measurement windows guarantees the DCLK/DRDY snapshot no longer
+	 * contains pre-reset edges.
+	 */
+	result.failure_stage = diagnostic_stage_reset_assert;
+	set_capture_control(control_fifo_reset);
+	result.flags |= diagnostic_reset_asserted;
+	vTaskDelay(pdMS_TO_TICKS(diagnostic_reset_hold_ms));
+	error = take_diagnostic_snapshot(result.reset_asserted, false);
+	if (error != Error::None)
+		return error;
+	if (result.reset_asserted.drdy_frequency_hz == 0u)
+		result.flags |= diagnostic_reset_drdy_stopped;
+
+	result.failure_stage = diagnostic_stage_reset_release;
+	set_capture_control(control_fifo_reset | control_adc_reset_n);
+	vTaskDelay(pdMS_TO_TICKS(3u));
+	error = wait_for_initialization();
+	if (error != Error::None) {
+		(void)reset_and_configure_adc();
+		return error;
+	}
+
+	result.failure_stage = diagnostic_stage_reset_defaults;
+	error = take_diagnostic_snapshot(result.reset_defaults, true);
+	if (error != Error::None) {
+		(void)reset_and_configure_adc();
+		return error;
+	}
+	result.flags |= diagnostic_reset_defaults_read;
+
+	result.failure_stage = diagnostic_stage_reconfigure;
+	SrcLoadTrace trace{};
+	error = configure_adc_registers(&trace,
+					diagnostic_src_update_hold_us);
+	result.src_update_high_readback = trace.high_readback;
+	result.src_update_low_readback = trace.low_readback;
+	if ((trace.high_readback & src_load_update) != 0u)
+		result.flags |= diagnostic_src_update_high_read;
+	if ((trace.low_readback & src_load_update) == 0u)
+		result.flags |= diagnostic_src_update_low_read;
+	if (error != Error::None) {
+		(void)reset_and_configure_adc();
+		return error;
+	}
+
+	// Yield instead of busy-waiting so the lower-priority heartbeat task stays
+	// responsive throughout this deliberately multi-second diagnostic.
+	vTaskDelay(pdMS_TO_TICKS(diagnostic_measurement_settle_ms));
+	result.failure_stage = diagnostic_stage_after;
+	error = take_diagnostic_snapshot(result.after, true);
+	if (error != Error::None)
+		return error;
+
+	const auto expected_decimation = decimation_for(configuration_);
+	const auto actual_decimation = static_cast<std::uint16_t>(
+		(static_cast<std::uint16_t>(result.after.src_n_msb & 0x0fu) << 8) |
+		result.after.src_n_lsb);
+	if (actual_decimation == expected_decimation &&
+	    result.after.src_if_msb == 0u && result.after.src_if_lsb == 0u)
+		result.flags |= diagnostic_src_holding_match;
+	if (result.after.configuration_matches)
+		result.flags |= diagnostic_final_config_match;
+
+	const auto measured = result.after.drdy_frequency_hz;
+	const auto requested = result.requested_sample_rate_hz;
+	const auto difference = measured > requested ?
+		measured - requested : requested - measured;
+	if (measured != 0u &&
+	    difference <= (requested / 100u + 2u))
+		result.flags |= diagnostic_final_drdy_match;
+
+	result.failure_stage = 0u;
 	return Error::None;
 }
 
