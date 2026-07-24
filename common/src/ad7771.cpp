@@ -9,10 +9,30 @@ namespace msap1::adc {
 namespace {
 
 constexpr std::uint8_t reg_channel_config_base = 0x00;
+constexpr std::uint8_t reg_channel_disable = 0x08;
+constexpr std::uint8_t reg_channel_sync_offset_base = 0x09;
 constexpr std::uint8_t reg_general_user_config_1 = 0x11;
 constexpr std::uint8_t reg_general_user_config_2 = 0x12;
 constexpr std::uint8_t reg_general_user_config_3 = 0x13;
 constexpr std::uint8_t reg_dout_format = 0x14;
+constexpr std::uint8_t reg_adc_mux_config = 0x15;
+constexpr std::uint8_t reg_global_mux_config = 0x16;
+constexpr std::uint8_t reg_gpio_config = 0x17;
+constexpr std::uint8_t reg_gpio_data = 0x18;
+constexpr std::uint8_t reg_buffer_config_1 = 0x19;
+constexpr std::uint8_t reg_buffer_config_2 = 0x1a;
+constexpr std::uint8_t reg_channel_offset_base = 0x1c;
+constexpr std::uint8_t reg_channel_calibration_stride = 6;
+constexpr std::uint8_t reg_channel_gain_offset = 3;
+constexpr std::uint8_t reg_channel_error_base = 0x4c;
+constexpr std::uint8_t reg_saturation_error_base = 0x54;
+constexpr std::uint8_t reg_channel_error_enable = 0x58;
+constexpr std::uint8_t reg_general_error_1 = 0x59;
+constexpr std::uint8_t reg_general_error_1_enable = 0x5a;
+constexpr std::uint8_t reg_general_error_2 = 0x5b;
+constexpr std::uint8_t reg_general_error_2_enable = 0x5c;
+constexpr std::uint8_t reg_status_1 = 0x5d;
+constexpr std::uint8_t reg_status_2 = 0x5e;
 constexpr std::uint8_t reg_status_3 = 0x5f;
 constexpr std::uint8_t reg_src_n_msb = 0x60;
 constexpr std::uint8_t reg_src_n_lsb = 0x61;
@@ -421,19 +441,55 @@ Error Ad7771::read_register_health(RegisterHealth &health)
 		if (error == Error::None)
 			error = read_adc_register(address, value);
 	};
-	read(reg_status_3, health.status_3);
+	for (std::size_t channel = 0; channel < channel_count; ++channel)
+		read(static_cast<std::uint8_t>(reg_channel_config_base + channel),
+		     health.channel_config[channel]);
+	read(reg_channel_disable, health.channel_disable);
+	for (std::size_t channel = 0; channel < channel_count; ++channel)
+		read(static_cast<std::uint8_t>(
+			     reg_channel_sync_offset_base + channel),
+		     health.channel_sync_offset[channel]);
 	read(reg_general_user_config_1, health.general_user_config_1);
 	read(reg_general_user_config_2, health.general_user_config_2);
 	read(reg_general_user_config_3, health.general_user_config_3);
 	read(reg_dout_format, health.dout_format);
+	read(reg_adc_mux_config, health.adc_mux_config);
+	read(reg_global_mux_config, health.global_mux_config);
+	read(reg_gpio_config, health.gpio_config);
+	read(reg_gpio_data, health.gpio_data);
+	read(reg_buffer_config_1, health.buffer_config_1);
+	read(reg_buffer_config_2, health.buffer_config_2);
+	for (std::size_t channel = 0; channel < channel_count; ++channel) {
+		const auto offset_base = static_cast<std::uint8_t>(
+			reg_channel_offset_base +
+			channel * reg_channel_calibration_stride);
+		for (std::size_t byte = 0; byte < 3; ++byte) {
+			read(static_cast<std::uint8_t>(offset_base + byte),
+			     health.channel_offset[channel][byte]);
+			read(static_cast<std::uint8_t>(
+				     offset_base + reg_channel_gain_offset + byte),
+			     health.channel_gain[channel][byte]);
+		}
+	}
+	for (std::size_t channel = 0; channel < channel_count; ++channel)
+		read(static_cast<std::uint8_t>(reg_channel_error_base + channel),
+		     health.channel_error[channel]);
+	for (std::size_t pair = 0; pair < health.saturation_error.size(); ++pair)
+		read(static_cast<std::uint8_t>(reg_saturation_error_base + pair),
+		     health.saturation_error[pair]);
+	read(reg_channel_error_enable, health.channel_error_enable);
+	read(reg_general_error_1, health.general_error_1);
+	read(reg_general_error_1_enable, health.general_error_1_enable);
+	read(reg_general_error_2, health.general_error_2);
+	read(reg_general_error_2_enable, health.general_error_2_enable);
+	read(reg_status_1, health.status_1);
+	read(reg_status_2, health.status_2);
+	read(reg_status_3, health.status_3);
 	read(reg_src_n_msb, health.src_n_msb);
 	read(reg_src_n_lsb, health.src_n_lsb);
 	read(reg_src_if_msb, health.src_if_msb);
 	read(reg_src_if_lsb, health.src_if_lsb);
 	read(reg_src_update, health.src_update);
-	for (std::size_t channel = 0; channel < channel_count; ++channel)
-		read(static_cast<std::uint8_t>(reg_channel_config_base + channel),
-		     health.channel_config[channel]);
 	if (error != Error::None)
 		return error;
 

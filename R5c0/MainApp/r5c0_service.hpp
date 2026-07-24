@@ -120,6 +120,44 @@ protected:
 			health.src_if_msb = registers.src_if_msb;
 			health.src_if_lsb = registers.src_if_lsb;
 			health.src_update = registers.src_update;
+			for (std::size_t channel = 0;
+			     channel < registers.channel_config.size(); ++channel) {
+				health.channel_config[channel] =
+					registers.channel_config[channel];
+					health.channel_sync_offset[channel] =
+						registers.channel_sync_offset[channel];
+					health.channel_error[channel] =
+						registers.channel_error[channel];
+					for (std::size_t byte = 0;
+					     byte < registers.channel_offset[channel].size();
+					     ++byte) {
+						health.channel_offset[channel][byte] =
+							registers.channel_offset[channel][byte];
+						health.channel_gain[channel][byte] =
+							registers.channel_gain[channel][byte];
+					}
+				}
+			health.channel_disable = registers.channel_disable;
+			health.adc_mux_config = registers.adc_mux_config;
+			health.global_mux_config = registers.global_mux_config;
+			health.gpio_config = registers.gpio_config;
+			health.gpio_data = registers.gpio_data;
+			health.buffer_config_1 = registers.buffer_config_1;
+			health.buffer_config_2 = registers.buffer_config_2;
+			for (std::size_t pair = 0;
+			     pair < registers.saturation_error.size(); ++pair)
+				health.saturation_error[pair] =
+					registers.saturation_error[pair];
+			health.channel_error_enable =
+				registers.channel_error_enable;
+			health.general_error_1 = registers.general_error_1;
+			health.general_error_1_enable =
+				registers.general_error_1_enable;
+			health.general_error_2 = registers.general_error_2;
+			health.general_error_2_enable =
+				registers.general_error_2_enable;
+			health.status_1 = registers.status_1;
+			health.status_2 = registers.status_2;
 			if ((registers.status_3 & (1u << 4)) != 0u)
 				health.health_flags |= MSAP1_ADC_HEALTH_INIT_COMPLETE;
 			if (registers.configuration_matches)
@@ -333,8 +371,8 @@ protected:
 	}
 
 private:
-	static_assert(sizeof(msap1_adc_health_payload) == 72,
-		      "ADC health wire layout must match the APU");
+	static_assert(sizeof(msap1_adc_health_payload) == 162,
+			      "ADC health wire layout must match the APU");
 	static_assert(sizeof(msap1_meter_config_payload) == 92,
 		      "meter configuration wire layout must match the APU");
 	static_assert(sizeof(msap1_rpu_msg_header) +

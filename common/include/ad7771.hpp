@@ -68,17 +68,38 @@ struct CaptureStatus {
 
 struct RegisterHealth {
 	std::uint16_t expected_decimation = 0;
+	std::array<std::uint8_t, channel_count> channel_config{};
+	std::uint8_t channel_disable = 0;
+	std::array<std::uint8_t, channel_count> channel_sync_offset{};
 	std::uint8_t status_3 = 0;
 	std::uint8_t general_user_config_1 = 0;
 	std::uint8_t general_user_config_2 = 0;
 	std::uint8_t general_user_config_3 = 0;
 	std::uint8_t dout_format = 0;
+	std::uint8_t adc_mux_config = 0;
+	std::uint8_t global_mux_config = 0;
+	std::uint8_t gpio_config = 0;
+	std::uint8_t gpio_data = 0;
+	std::uint8_t buffer_config_1 = 0;
+	std::uint8_t buffer_config_2 = 0;
+	std::array<std::array<std::uint8_t, 3>, channel_count>
+		channel_offset{};
+	std::array<std::array<std::uint8_t, 3>, channel_count>
+		channel_gain{};
 	std::uint8_t src_n_msb = 0;
 	std::uint8_t src_n_lsb = 0;
 	std::uint8_t src_if_msb = 0;
 	std::uint8_t src_if_lsb = 0;
 	std::uint8_t src_update = 0;
-	std::array<std::uint8_t, channel_count> channel_config{};
+	std::array<std::uint8_t, channel_count> channel_error{};
+	std::array<std::uint8_t, 4> saturation_error{};
+	std::uint8_t channel_error_enable = 0;
+	std::uint8_t general_error_1 = 0;
+	std::uint8_t general_error_1_enable = 0;
+	std::uint8_t general_error_2 = 0;
+	std::uint8_t general_error_2_enable = 0;
+	std::uint8_t status_1 = 0;
+	std::uint8_t status_2 = 0;
 	bool configuration_matches = false;
 };
 
