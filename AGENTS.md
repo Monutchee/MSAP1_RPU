@@ -21,7 +21,7 @@
   `0xB0040000`, and meter-processing registers `0xB0050000`. RPU code must not
   touch the DMA registers or meter-record DDR buffers.
 - ADC samples and meter results never travel over RPMsg. RPMsg is limited to
-  START, STOP, runtime meter configuration, and health/control traffic so the
+  START, STOP, runtime RMS/frequency configuration, and health/control traffic so the
   endpoint and heartbeat stay responsive.
 - Linux and the RPU share a physical UART. Leave `RSPMSG_DEBUG` disabled and do
   not add routine or per-packet UART output. Prefer RPMsg health/status queries.

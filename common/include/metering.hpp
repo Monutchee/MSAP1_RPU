@@ -15,6 +15,17 @@ struct Hardware {
 };
 
 struct Configuration {
+	struct Frequency {
+		bool enable = true;
+		std::uint32_t mode = 1;
+		std::uint32_t reference_channel = 6;
+		std::uint32_t averaging_cycles = 10;
+		std::uint32_t window_samples = 32000;
+		std::uint32_t minimum_millihz = 40000;
+		std::uint32_t maximum_millihz = 70000;
+		std::uint32_t hysteresis_microvolts = 1000000;
+	};
+
 	std::uint32_t generation = 0;
 	std::uint32_t sample_rate_hz = 32000;
 	std::uint32_t rms_window_samples = 6400;
@@ -22,6 +33,7 @@ struct Configuration {
 	std::array<std::uint32_t, channel_count> scale_micro_units_q16{};
 	bool enable = true;
 	bool remove_dc = true;
+	Frequency frequency{};
 };
 
 struct Status {
@@ -35,6 +47,7 @@ struct Status {
 	std::uint32_t processing_active_generation = 0;
 	std::uint32_t conversion_status = 0;
 	std::uint32_t processing_status = 0;
+	std::uint32_t frequency_status = 0;
 };
 
 enum class Error {

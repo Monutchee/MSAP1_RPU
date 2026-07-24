@@ -40,6 +40,7 @@ constexpr std::uint32_t capture_header_error_count = 0x18;
 constexpr std::uint32_t capture_alert_count = 0x1c;
 constexpr std::uint32_t capture_packet_count = 0x20;
 constexpr std::uint32_t capture_identifier = 0x28;
+constexpr std::uint32_t capture_dclk_frequency_hz = 0x2c;
 
 constexpr std::uint32_t expected_capture_identifier = 0x41443731u; // "AD71"
 constexpr std::uint16_t maximum_packet_frames = 2047;
@@ -402,6 +403,7 @@ CaptureStatus Ad7771::status() const
 		capture_read(capture_header_error_count),
 		capture_read(capture_alert_count),
 		capture_read(capture_packet_count),
+		capture_read(capture_dclk_frequency_hz),
 	};
 }
 

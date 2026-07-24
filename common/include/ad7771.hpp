@@ -62,6 +62,7 @@ struct CaptureStatus {
 	std::uint32_t header_errors;
 	std::uint32_t alerts;
 	std::uint32_t packets;
+	std::uint32_t dclk_frequency_hz;
 };
 
 struct RegisterHealth {

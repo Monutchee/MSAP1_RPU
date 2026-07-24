@@ -70,6 +70,7 @@ protected:
 			health.header_error_count = capture.header_errors;
 			health.alert_count = capture.alerts;
 			health.packet_count = capture.packets;
+			health.dclk_frequency_hz = capture.dclk_frequency_hz;
 			if (adc_.initialized())
 				health.health_flags |= MSAP1_ADC_HEALTH_INITIALIZED;
 			if (adc_.capture_active())
@@ -160,6 +161,8 @@ protected:
 			if ((wire.valid_mask & ~0xffu) != 0u ||
 			    (wire.flags & ~(MSAP1_METER_CONFIG_ENABLE |
 					    MSAP1_METER_CONFIG_REMOVE_DC)) != 0u ||
+			    (wire.frequency_flags &
+			     ~MSAP1_FREQUENCY_CONFIG_ENABLE) != 0u ||
 			    wire.sample_rate_hz != msap1::adc::sample_rate_hz(
 				adc_.configuration().sample_rate)) {
 				send_response(&request, src, MSAP1_RPU_MSG_ERROR,
@@ -231,6 +234,22 @@ protected:
 				(wire.flags & MSAP1_METER_CONFIG_ENABLE) != 0u;
 			configuration.remove_dc =
 				(wire.flags & MSAP1_METER_CONFIG_REMOVE_DC) != 0u;
+			configuration.frequency.enable =
+				(wire.frequency_flags &
+				 MSAP1_FREQUENCY_CONFIG_ENABLE) != 0u;
+			configuration.frequency.mode = wire.frequency_mode;
+			configuration.frequency.reference_channel =
+				wire.frequency_reference_channel;
+			configuration.frequency.averaging_cycles =
+				wire.frequency_averaging_cycles;
+			configuration.frequency.window_samples =
+				wire.frequency_window_samples;
+			configuration.frequency.minimum_millihz =
+				wire.frequency_minimum_millihz;
+			configuration.frequency.maximum_millihz =
+				wire.frequency_maximum_millihz;
+			configuration.frequency.hysteresis_microvolts =
+				wire.frequency_hysteresis_microvolts;
 
 			const auto error = metering_.configure(configuration);
 			if (error != msap1::meter::Error::None) {
@@ -313,9 +332,9 @@ protected:
 	}
 
 private:
-	static_assert(sizeof(msap1_adc_health_payload) == 64,
+	static_assert(sizeof(msap1_adc_health_payload) == 68,
 		      "ADC health wire layout must match the APU");
-	static_assert(sizeof(msap1_meter_config_payload) == 60,
+	static_assert(sizeof(msap1_meter_config_payload) == 92,
 		      "meter configuration wire layout must match the APU");
 	static_assert(sizeof(msap1_rpu_msg_header) +
 		      sizeof(msap1_adc_health_payload) <= MSAP1_RPU_MAX_FRAME_SIZE,
