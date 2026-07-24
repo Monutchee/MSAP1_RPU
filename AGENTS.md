@@ -25,7 +25,8 @@
   endpoint and heartbeat stay responsive.
 - ADC health reports both the measured DCLK rate and the physical
   `ADC_DRDY_N` falling-edge rate. Keep these fields coordinated with the APU
-  wire-ABI copy when extending capture diagnostics.
+  wire-ABI copy when extending capture diagnostics. Health is not valid until
+  measured DRDY matches the configured sample rate within tolerance.
 - Runtime sample-rate changes arrive in `METER_CONFIG_SET` while capture is
   stopped. Apply ADC PGA/SRC and PL window configuration as one coordinated
   operating-point transaction; the packaged boot default remains 32 kSPS.

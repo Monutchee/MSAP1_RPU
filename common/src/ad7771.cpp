@@ -75,6 +75,7 @@ constexpr std::uint32_t minimum_decimation = 16u;
 constexpr std::uint32_t maximum_sinc3_integer_decimation = 4095u;
 constexpr std::uint32_t maximum_sinc5_integer_decimation = 2048u;
 constexpr unsigned long reference_output_settling_us = 2000u;
+constexpr unsigned long adc_start_sync_pulse_us = 10u;
 constexpr std::uint32_t diagnostic_reset_hold_ms = 2200u;
 constexpr std::uint32_t diagnostic_measurement_settle_ms = 2200u;
 constexpr unsigned long diagnostic_src_update_hold_us = 1000u;
@@ -373,20 +374,28 @@ Error Ad7771::program_channel_gains(
 
 Error Ad7771::synchronize_adc()
 {
-	// SYNC_OUT is wired to SYNC_IN on the sensor board. Toggling SPI_SYNC
-	// therefore resets the digital filters without changing programmed data.
-	Error error = update_adc_register(reg_general_user_config_2,
-					  config_2_spi_sync, 0u);
-	if (error != Error::None) return error;
+	/*
+	 * The sensor board loops SYNC_OUT back to SYNC_IN. Drive the AD7771 START
+	 * pin high long enough for its MCLK-domain synchronizer to emit a clean
+	 * SYNC_OUT pulse, then return it low. This documented hardware path avoids
+	 * the ambiguous START gating described for GENERAL_USER_CONFIG_2.SPI_SYNC.
+	 *
+	 * The PL port is retained as adc_start_n for compatibility with the board
+	 * net name, but AD7771 START is a positive synchronization pulse.
+	 */
+	const auto inactive_control = control_shadow_ & ~control_adc_start;
+	set_capture_control(inactive_control);
 	usleep(1);
-	return update_adc_register(reg_general_user_config_2,
-				   config_2_spi_sync, config_2_spi_sync);
+	set_capture_control(inactive_control | control_adc_start);
+	usleep(adc_start_sync_pulse_us);
+	set_capture_control(inactive_control);
+	return Error::None;
 }
 
 Error Ad7771::reset_and_configure_adc()
 {
 	// Hold RESET low, keep the positive-pulse START input inactive/low, and
-	// reset the PL FIFO. Synchronization is performed through SPI_SYNC below.
+	// reset the PL FIFO. Configuration later emits a hardware START pulse.
 	set_capture_control(control_fifo_reset);
 	usleep(10);
 	set_capture_control(control_fifo_reset | control_adc_reset_n);
@@ -430,9 +439,10 @@ Error Ad7771::configure_adc_registers(SrcLoadTrace *trace,
 	if (error != Error::None) return error;
 	usleep(reference_output_settling_us);
 	error = update_adc_register(reg_general_user_config_2,
-		config_2_filter_mode | config_2_sar_spi_mode,
+		config_2_filter_mode | config_2_sar_spi_mode | config_2_spi_sync,
 		configuration_.filter == Filter::Sinc5 ?
-			config_2_filter_mode : 0u);
+			config_2_filter_mode | config_2_spi_sync :
+			config_2_spi_sync);
 	if (error != Error::None) return error;
 	error = update_adc_register(reg_general_user_config_3,
 		config_3_spi_data_mode, 0u);

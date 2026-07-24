@@ -80,6 +80,13 @@ protected:
 				health.health_flags |= MSAP1_ADC_HEALTH_NO_OVERFLOW;
 			if (capture.frames != 0u && capture.header_errors == 0u)
 				health.health_flags |= MSAP1_ADC_HEALTH_HEADERS_VALID;
+			const auto rate_difference =
+				capture.drdy_frequency_hz > health.sample_rate_hz ?
+				capture.drdy_frequency_hz - health.sample_rate_hz :
+				health.sample_rate_hz - capture.drdy_frequency_hz;
+			if (capture.drdy_frequency_hz != 0u &&
+			    rate_difference <= health.sample_rate_hz / 100u + 2u)
+				health.health_flags |= MSAP1_ADC_HEALTH_RATE_MATCH;
 
 			msap1::adc::RegisterHealth registers;
 			const auto error = adc_.read_register_health(registers);
