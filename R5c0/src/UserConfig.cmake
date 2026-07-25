@@ -34,7 +34,7 @@ set(USER_INCLUDE_DIRECTORIES
 "../../libs/openamp-helper/include"
 "../../libs/openamp-helper/machine/zynqmp_r5"
 # lopper-generated OpenAMP channel header for this core (R5-0)
-"../../../runtime-generated/openamp_gen/psu_cortexr5_0"
+"${CMAKE_CURRENT_LIST_DIR}/../../../../runtime-generated/openamp_gen/psu_cortexr5_0"
 )
 
 #Add any source below, they will be added as Compile sources.
