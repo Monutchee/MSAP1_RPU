@@ -103,6 +103,13 @@ struct RegisterHealth {
 	bool configuration_matches = false;
 };
 
+struct SpiHealthDiagnostics {
+	std::uint32_t protocol_error_count = 0;
+	std::uint32_t retry_recovery_count = 0;
+	std::uint8_t last_failed_register = 0;
+	std::uint8_t last_received_header = 0;
+};
+
 struct DiagnosticSnapshot {
 	std::uint32_t capture_flags = 0;
 	std::uint32_t frame_count = 0;
@@ -189,6 +196,10 @@ public:
 	Error read_register_health(RegisterHealth &health);
 
 	const Configuration &configuration() const { return configuration_; }
+	const SpiHealthDiagnostics &spi_health_diagnostics() const
+	{
+		return spi_health_diagnostics_;
+	}
 	bool initialized() const { return initialized_; }
 	bool capture_active() const { return capture_active_; }
 
@@ -236,6 +247,7 @@ private:
 	bool spi_initialized_ = false;
 	bool initialized_ = false;
 	bool capture_active_ = false;
+	SpiHealthDiagnostics spi_health_diagnostics_{};
 };
 
 } // namespace msap1::adc

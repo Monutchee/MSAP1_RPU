@@ -165,6 +165,16 @@ protected:
 				registers.general_error_2_enable;
 			health.status_1 = registers.status_1;
 			health.status_2 = registers.status_2;
+			const auto &spi_diagnostics =
+				adc_.spi_health_diagnostics();
+			health.spi_protocol_error_count =
+				spi_diagnostics.protocol_error_count;
+			health.spi_retry_recovery_count =
+				spi_diagnostics.retry_recovery_count;
+			health.spi_last_failed_register =
+				spi_diagnostics.last_failed_register;
+			health.spi_last_received_header =
+				spi_diagnostics.last_received_header;
 			if ((registers.status_3 & (1u << 4)) != 0u)
 				health.health_flags |= MSAP1_ADC_HEALTH_INIT_COMPLETE;
 			if (registers.configuration_matches)
@@ -484,7 +494,7 @@ private:
 		wire.src_update = snapshot.src_update;
 	}
 
-	static_assert(sizeof(msap1_adc_health_payload) == 162,
+	static_assert(sizeof(msap1_adc_health_payload) == 174,
 			      "ADC health wire layout must match the APU");
 	static_assert(sizeof(msap1_meter_config_payload) == 92,
 		      "meter configuration wire layout must match the APU");
