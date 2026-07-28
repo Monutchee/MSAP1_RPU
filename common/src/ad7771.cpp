@@ -76,6 +76,8 @@ constexpr std::uint32_t maximum_sinc3_integer_decimation = 4095u;
 constexpr std::uint32_t maximum_sinc5_integer_decimation = 2048u;
 constexpr unsigned long reference_output_settling_us = 2000u;
 constexpr unsigned long adc_start_sync_pulse_us = 10u;
+constexpr unsigned int spi_register_read_attempts = 3u;
+constexpr unsigned long spi_register_retry_delay_us = 10u;
 constexpr std::uint32_t diagnostic_reset_hold_ms = 2200u;
 constexpr std::uint32_t diagnostic_measurement_settle_ms = 2200u;
 constexpr unsigned long diagnostic_src_update_hold_us = 1000u;
@@ -239,17 +241,29 @@ Error Ad7771::write_adc_register(std::uint8_t address, std::uint8_t value)
 
 Error Ad7771::read_adc_register(std::uint8_t address, std::uint8_t &value)
 {
-	std::uint8_t transmit[2] = {
-		static_cast<std::uint8_t>(0x80u | (address & 0x7fu)), 0u
-	};
-	std::uint8_t receive[2] = {};
-	if (XSpi_Transfer(&spi_, transmit, receive, sizeof(transmit)) !=
-	    XST_SUCCESS)
-		return Error::SpiTransfer;
-	if (receive[0] != 0x20u)
-		return Error::SpiProtocol;
-	value = receive[1];
-	return Error::None;
+	for (unsigned int attempt = 0; attempt < spi_register_read_attempts;
+	     ++attempt) {
+		std::uint8_t transmit[2] = {
+			static_cast<std::uint8_t>(0x80u | (address & 0x7fu)), 0u
+		};
+		std::uint8_t receive[2] = {};
+		if (XSpi_Transfer(&spi_, transmit, receive, sizeof(transmit)) !=
+		    XST_SUCCESS)
+			return Error::SpiTransfer;
+		if (receive[0] == 0x20u) {
+			if (attempt != 0u)
+				++spi_health_diagnostics_.retry_recovery_count;
+			value = receive[1];
+			return Error::None;
+		}
+
+		++spi_health_diagnostics_.protocol_error_count;
+		spi_health_diagnostics_.last_failed_register = address;
+		spi_health_diagnostics_.last_received_header = receive[0];
+		if (attempt + 1u < spi_register_read_attempts)
+			usleep(spi_register_retry_delay_us);
+	}
+	return Error::SpiProtocol;
 }
 
 Error Ad7771::update_adc_register(std::uint8_t address, std::uint8_t mask,
