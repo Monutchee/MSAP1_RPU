@@ -42,6 +42,11 @@
   explicit handling on both peers.
 - Keep the OpenAMP platform glue as C. Do not force the C compiler to use C++
   semantics; the application may link with the C++ linker.
+- Build OpenAMP policy from the manifest-owned `openamp-contract.json`.
+  `openamp_contract.h` supplies only shared-memory and mailbox policy;
+  the XSA-generated `xparameters.h` remains authoritative for peripheral
+  addresses and interrupt assignments. Do not reintroduce a machine-conf or
+  BSP-generated-header dependency into the RPU build.
 
 ## Build and verification
 

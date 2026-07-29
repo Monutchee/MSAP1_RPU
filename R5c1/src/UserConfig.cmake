@@ -11,9 +11,8 @@ enable_language(C ASM CXX)
 # Add any compiler definitions, they will be added as extra definitions
 # Example : Adding VERBOSE=1 will pass -DVERBOSE=1 to the compiler.
 set(USER_COMPILE_DEFINITIONS
-# Pull the lopper-generated OpenAMP channel config (amd_platform_info.h)
-# instead of the hardcoded fallbacks in common/openamp/platform_info.h.
-"_AMD_GENERATED_"
+# Pull shared-memory and mailbox policy from openamp_contract.h.
+"MNC_OPENAMP_CONTRACT"
 )
 
 # Undefine any previously specified compiler definitions, either built in or provided with a -D option
@@ -33,8 +32,8 @@ set(USER_INCLUDE_DIRECTORIES
 # generic OpenAMP helper library (git submodule)
 "../../libs/openamp-helper/include"
 "../../libs/openamp-helper/machine/zynqmp_r5"
-# lopper-generated OpenAMP channel header for this core (R5-1)
-"${CMAKE_CURRENT_LIST_DIR}/../../../../runtime-generated/openamp_gen/psu_cortexr5_1"
+# Contract-generated OpenAMP policy for this core.
+"${CMAKE_CURRENT_LIST_DIR}/../../../../runtime-generated/openamp_contract/r5c1"
 )
 
 #Add any source below, they will be added as Compile sources.
