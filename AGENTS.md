@@ -4,9 +4,10 @@
 
 - This repository contains the FreeRTOS applications for ZynqMP R5 cores 0
   and 1 plus their shared OpenAMP and board-control code.
-- Read `docs/AD7771.md` before changing the ADC path. Treat
-  `common/include/ad7771.hpp` as the public ADC abstraction; application code
-  should not duplicate AD7771 register or AXI register accesses.
+- Read `docs/AD7771.md` before changing the ADC path. `AdcDevice` is the common
+  lifecycle interface, `Ad7771` owns the physical device, `AdcSimulator` owns
+  the PL generator, and `AdcController` performs transactional source changes.
+  Application code must not duplicate device-specific SPI or AXI accesses.
 - R5 core 0 owns AD7771 SPI configuration, reset/synchronization, PL capture
   control/status, the status LED heartbeat, and the APU control endpoint.
   Linux owns AXI DMA, descriptors, interrupts, and DDR sample buffers. R5 core
@@ -18,8 +19,14 @@
   eight channels, and 256 frames per DMA packet.
 - Current PL addresses are AXI Quad SPI `0xB0010000`, capture registers
   `0xB0020000`, Linux-owned AXI DMA `0xB0030000`, ADC conversion registers
-  `0xB0040000`, and meter-processing registers `0xB0050000`. RPU code must not
-  touch the DMA registers or meter-record DDR buffers.
+  `0xB0040000`, meter-processing registers `0xB0050000`, and raw-simulator
+  registers `0xB0080000`. RPU code must not touch the DMA registers or
+  meter-record DDR buffers.
+- Physical and simulated ADC sources share the raw PL stream boundary. Stop
+  capture before switching sources and commit a source change only after
+  target-device configuration and PL readback succeed. While simulation is
+  active, do not access physical ADC SPI and report its diagnostics as not
+  applicable rather than unhealthy.
 - ADC samples and meter results never travel over RPMsg. RPMsg is limited to
   START, STOP, runtime RMS/frequency configuration, and health/control traffic so the
   endpoint and heartbeat stay responsive.

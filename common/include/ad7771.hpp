@@ -1,171 +1,17 @@
 #ifndef MSAP1_AD7771_HPP
 #define MSAP1_AD7771_HPP
 
-#include <array>
-#include <cstdint>
-
+#include "adc_device.hpp"
 #include "xspi.h"
 
 namespace msap1::adc {
-
-enum class SampleRate : std::uint32_t {
-	Sps1000 = 1000,
-	Sps2000 = 2000,
-	Sps4000 = 4000,
-	Sps8000 = 8000,
-	Sps16000 = 16000,
-	Sps32000 = 32000,
-	Sps64000 = 64000,
-	Sps128000 = 128000,
-};
-
-enum class Filter {
-	Sinc3,
-	Sinc5,
-};
-
-enum class PowerMode {
-	HighResolution,
-	LowPower,
-};
-
-enum class PgaGain : std::uint8_t {
-	X1 = 1,
-	X2 = 2,
-	X4 = 4,
-	X8 = 8,
-};
-
-inline constexpr std::size_t channel_count = 8;
-
-struct Configuration {
-	SampleRate sample_rate = SampleRate::Sps32000;
-	Filter filter = Filter::Sinc5;
-	PowerMode power_mode = PowerMode::HighResolution;
-	std::uint32_t master_clock_hz = 8192000;
-	std::uint16_t frames_per_packet = 256;
-	std::array<PgaGain, channel_count> pga_gains{
-		PgaGain::X1, PgaGain::X1, PgaGain::X1, PgaGain::X1,
-		PgaGain::X1, PgaGain::X1, PgaGain::X1, PgaGain::X1,
-	};
-};
 
 struct Hardware {
 	std::uintptr_t spi_base;
 	std::uintptr_t capture_base;
 };
 
-struct CaptureStatus {
-	std::uint32_t flags;
-	std::uint32_t frames;
-	std::uint32_t overflows;
-	std::uint32_t header_errors;
-	std::uint32_t alerts;
-	std::uint32_t packets;
-	std::uint32_t dclk_frequency_hz;
-	std::uint32_t drdy_frequency_hz;
-};
-
-struct RegisterHealth {
-	std::uint16_t expected_decimation = 0;
-	std::array<std::uint8_t, channel_count> channel_config{};
-	std::uint8_t channel_disable = 0;
-	std::array<std::uint8_t, channel_count> channel_sync_offset{};
-	std::uint8_t status_3 = 0;
-	std::uint8_t general_user_config_1 = 0;
-	std::uint8_t general_user_config_2 = 0;
-	std::uint8_t general_user_config_3 = 0;
-	std::uint8_t dout_format = 0;
-	std::uint8_t adc_mux_config = 0;
-	std::uint8_t global_mux_config = 0;
-	std::uint8_t gpio_config = 0;
-	std::uint8_t gpio_data = 0;
-	std::uint8_t buffer_config_1 = 0;
-	std::uint8_t buffer_config_2 = 0;
-	std::array<std::array<std::uint8_t, 3>, channel_count>
-		channel_offset{};
-	std::array<std::array<std::uint8_t, 3>, channel_count>
-		channel_gain{};
-	std::uint8_t src_n_msb = 0;
-	std::uint8_t src_n_lsb = 0;
-	std::uint8_t src_if_msb = 0;
-	std::uint8_t src_if_lsb = 0;
-	std::uint8_t src_update = 0;
-	std::array<std::uint8_t, channel_count> channel_error{};
-	std::array<std::uint8_t, 4> saturation_error{};
-	std::uint8_t channel_error_enable = 0;
-	std::uint8_t general_error_1 = 0;
-	std::uint8_t general_error_1_enable = 0;
-	std::uint8_t general_error_2 = 0;
-	std::uint8_t general_error_2_enable = 0;
-	std::uint8_t status_1 = 0;
-	std::uint8_t status_2 = 0;
-	bool configuration_matches = false;
-};
-
-struct SpiHealthDiagnostics {
-	std::uint32_t protocol_error_count = 0;
-	std::uint32_t retry_recovery_count = 0;
-	std::uint8_t last_failed_register = 0;
-	std::uint8_t last_received_header = 0;
-};
-
-struct DiagnosticSnapshot {
-	std::uint32_t capture_flags = 0;
-	std::uint32_t frame_count = 0;
-	std::uint32_t packet_count = 0;
-	std::uint32_t dclk_frequency_hz = 0;
-	std::uint32_t drdy_frequency_hz = 0;
-	std::uint8_t status_1 = 0;
-	std::uint8_t status_2 = 0;
-	std::uint8_t status_3 = 0;
-	std::uint8_t general_user_config_1 = 0;
-	std::uint8_t general_user_config_2 = 0;
-	std::uint8_t general_user_config_3 = 0;
-	std::uint8_t dout_format = 0;
-	std::uint8_t channel_disable = 0;
-	std::uint8_t buffer_config_1 = 0;
-	std::uint8_t buffer_config_2 = 0;
-	std::uint8_t src_n_msb = 0;
-	std::uint8_t src_n_lsb = 0;
-	std::uint8_t src_if_msb = 0;
-	std::uint8_t src_if_lsb = 0;
-	std::uint8_t src_update = 0;
-	bool spi_valid = false;
-	bool configuration_matches = false;
-};
-
-struct DiagnosticResult {
-	std::uint32_t requested_sample_rate_hz = 0;
-	std::uint32_t flags = 0;
-	std::uint32_t failure_stage = 0;
-	std::uint32_t reset_hold_ms = 0;
-	std::uint8_t src_update_high_readback = 0;
-	std::uint8_t src_update_low_readback = 0;
-	DiagnosticSnapshot before{};
-	DiagnosticSnapshot reset_asserted{};
-	DiagnosticSnapshot reset_defaults{};
-	DiagnosticSnapshot after{};
-};
-
-enum class Error {
-	None,
-	InvalidConfiguration,
-	CaptureCoreNotFound,
-	SpiInitialization,
-	SpiTransfer,
-	SpiProtocol,
-	AdcNotReady,
-	AdcRegisterMismatch,
-	CaptureNotInitialized,
-	CaptureAlreadyActive,
-};
-
-const char *to_string(Error error);
-std::uint32_t sample_rate_hz(SampleRate rate);
-bool sample_rate_from_hz(std::uint32_t rate_hz, SampleRate &rate);
-
-class Ad7771 {
+class Ad7771 final : public AdcDevice {
 public:
 	// The application supplies addresses from its generated platform
 	// definitions. Keeping them outside this reusable library prevents an XSA
@@ -174,15 +20,16 @@ public:
 
 	// Reset the ADC, configure its SPI registers, and leave PL capture stopped.
 	// Linux owns AXI DMA and must arm it before requesting start_capture().
-	Error initialize(const Configuration &configuration = Configuration{});
+	Source source() const override { return Source::Physical; }
+	Error initialize(const Configuration &configuration = Configuration{}) override;
 
 	// Reset the PL FIFO and enable the stream. The caller must ensure Linux has
 	// armed the IIO DMA channel before invoking this operation.
-	Error start_capture();
-	void stop_capture();
+	Error start_capture() override;
+	void stop_capture() override;
 	Error configure_operating_point(
 		SampleRate sample_rate,
-		const std::array<PgaGain, channel_count> &channel_gains);
+		const std::array<PgaGain, channel_count> &channel_gains) override;
 	Error configure_pga(
 		const std::array<PgaGain, channel_count> &channel_gains);
 	/*
@@ -192,16 +39,16 @@ public:
 	 * before returning.
 	 */
 	Error run_diagnostic_flow1(DiagnosticResult &result);
-	CaptureStatus status() const;
+	DeviceStatus status() const override;
 	Error read_register_health(RegisterHealth &health);
 
-	const Configuration &configuration() const { return configuration_; }
+	const Configuration &configuration() const override { return configuration_; }
 	const SpiHealthDiagnostics &spi_health_diagnostics() const
 	{
 		return spi_health_diagnostics_;
 	}
-	bool initialized() const { return initialized_; }
-	bool capture_active() const { return capture_active_; }
+	bool initialized() const override { return initialized_; }
+	bool capture_active() const override { return capture_active_; }
 
 	Ad7771(const Ad7771 &) = delete;
 	Ad7771 &operator=(const Ad7771 &) = delete;

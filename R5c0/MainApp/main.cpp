@@ -12,6 +12,8 @@
 #include "xparameters.h"
 
 #include "ad7771.hpp"
+#include "adc_controller.hpp"
+#include "adc_simulator.hpp"
 #include "control_service.hpp"
 #include "metering.hpp"
 #include "r5c0_service.hpp"
@@ -31,6 +33,7 @@
  *   capture     0xB0020000
  *   conversion  0xB0040000
  *   processing  0xB0050000
+ *   simulator   0xB0080000
  */
 static constexpr std::uintptr_t meter_core_capture_base =
 	XPAR_METERCORE_WRAPPER_0_BASEADDR;
@@ -38,6 +41,8 @@ static constexpr std::uintptr_t adc_conversion_base =
 	meter_core_capture_base + 0x00020000u;
 static constexpr std::uintptr_t meter_processing_base =
 	meter_core_capture_base + 0x00030000u;
+static constexpr std::uintptr_t adc_simulator_base =
+	meter_core_capture_base + 0x00060000u;
 
 static constexpr msap1::adc::Hardware adc_hardware{
 	/*spi_base=*/XPAR_XSPI_0_BASEADDR,
@@ -47,8 +52,13 @@ static constexpr msap1::meter::Hardware meter_hardware{
 	/*conversion_base=*/adc_conversion_base,
 	/*processing_base=*/meter_processing_base,
 };
+static constexpr msap1::adc::SimulatorHardware simulator_hardware{
+	/*base=*/adc_simulator_base,
+};
 
-static msap1::adc::Ad7771 adc(adc_hardware);
+static msap1::adc::Ad7771 physical_adc(adc_hardware);
+static msap1::adc::AdcSimulator simulated_adc(simulator_hardware);
+static msap1::adc::AdcController adc(physical_adc, simulated_adc);
 static msap1::meter::MeteringPipeline metering(meter_hardware);
 static R5c0Service service(msap1::CoreConfig::current(), adc, metering);
 
