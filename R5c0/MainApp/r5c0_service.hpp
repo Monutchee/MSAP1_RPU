@@ -13,14 +13,15 @@
 #include <cstring>
 #include "xparameters.h"
 
-#include "ad7771.hpp"
+#include "adc_controller.hpp"
 #include "control_service.hpp"
 #include "led_controller.hpp"
 #include "metering.hpp"
 
 class R5c0Service : public msap1::ControlService {
 public:
-	R5c0Service(const msap1::CoreConfig &config, msap1::adc::Ad7771 &adc,
+	R5c0Service(const msap1::CoreConfig &config,
+		     msap1::adc::AdcController &adc,
 		     msap1::meter::MeteringPipeline &metering)
 		: msap1::ControlService(config),
 		  led_(XPAR_XGPIO_0_BASEADDR, /*led_mask=*/0x01u,
@@ -61,7 +62,17 @@ protected:
 			}
 
 			msap1_adc_health_payload health = {};
-			const auto capture = adc_.status();
+			const auto device = adc_.status();
+			const auto &capture = device.capture;
+			health.adc_source = static_cast<std::uint32_t>(device.source);
+			health.simulator_status = device.simulator_status;
+			health.simulator_active_generation =
+				device.active_generation;
+			health.simulator_frame_count = capture.frames;
+			health.simulator_saturation_count =
+				device.saturation_count;
+			health.simulator_missed_sample_count =
+				device.missed_sample_count;
 			health.sample_rate_hz = msap1::adc::sample_rate_hz(
 				adc_.configuration().sample_rate);
 			health.capture_flags = capture.flags;
@@ -72,9 +83,9 @@ protected:
 			health.packet_count = capture.packets;
 			health.dclk_frequency_hz = capture.dclk_frequency_hz;
 			health.drdy_frequency_hz = capture.drdy_frequency_hz;
-			if (adc_.initialized())
+			if (device.initialized)
 				health.health_flags |= MSAP1_ADC_HEALTH_INITIALIZED;
-			if (adc_.capture_active())
+			if (device.capture_active)
 				health.health_flags |= MSAP1_ADC_HEALTH_CAPTURE_ACTIVE;
 			if (capture.overflows == 0u)
 				health.health_flags |= MSAP1_ADC_HEALTH_NO_OVERFLOW;
@@ -88,8 +99,20 @@ protected:
 			    rate_difference <= health.sample_rate_hz / 100u + 2u)
 				health.health_flags |= MSAP1_ADC_HEALTH_RATE_MATCH;
 
-			msap1::adc::RegisterHealth registers;
-			const auto error = adc_.read_register_health(registers);
+			if (device.source == msap1::adc::Source::Simulator) {
+				health.spi_error = MSAP1_ADC_SPI_HEALTH_NOT_APPLICABLE;
+				if (device.initialized && device.configuration_matches &&
+				    device.saturation_count == 0u &&
+				    device.missed_sample_count == 0u)
+					health.health_flags |=
+						MSAP1_ADC_HEALTH_SIMULATOR_HEALTHY |
+						MSAP1_ADC_HEALTH_CONFIG_MATCH;
+			} else {
+				health.health_flags |=
+					MSAP1_ADC_HEALTH_PHYSICAL_DIAGNOSTICS;
+				msap1::adc::RegisterHealth registers;
+				const auto error =
+					adc_.physical().read_register_health(registers);
 			switch (error) {
 			case msap1::adc::Error::None:
 				health.spi_error = MSAP1_ADC_SPI_HEALTH_OK;
@@ -166,7 +189,7 @@ protected:
 			health.status_1 = registers.status_1;
 			health.status_2 = registers.status_2;
 			const auto &spi_diagnostics =
-				adc_.spi_health_diagnostics();
+				adc_.physical().spi_health_diagnostics();
 			health.spi_protocol_error_count =
 				spi_diagnostics.protocol_error_count;
 			health.spi_retry_recovery_count =
@@ -179,6 +202,7 @@ protected:
 				health.health_flags |= MSAP1_ADC_HEALTH_INIT_COMPLETE;
 			if (registers.configuration_matches)
 				health.health_flags |= MSAP1_ADC_HEALTH_CONFIG_MATCH;
+			}
 
 			const auto meter = metering_.status();
 			health.meter_generation = meter.generation;
@@ -215,6 +239,8 @@ protected:
 			msap1_meter_config_payload wire = {};
 			std::memcpy(&wire, payload, sizeof(wire));
 			if ((wire.valid_mask & ~0xffu) != 0u ||
+			    wire.adc_source > MSAP1_ADC_SOURCE_SIMULATOR ||
+			    (wire.simulator_valid_mask & ~0x7fu) != 0u ||
 			    (wire.flags & ~(MSAP1_METER_CONFIG_ENABLE |
 					    MSAP1_METER_CONFIG_REMOVE_DC)) != 0u ||
 			    (wire.frequency_flags &
@@ -270,8 +296,31 @@ protected:
 					      nullptr, 0);
 				return true;
 			}
-			const auto adc_error = adc_.configure_operating_point(
-				sample_rate, gains);
+			msap1::adc::Configuration adc_configuration =
+				adc_.configuration();
+			adc_configuration.sample_rate = sample_rate;
+			adc_configuration.pga_gains = gains;
+			msap1::adc::SimulatorConfiguration simulator_configuration;
+			simulator_configuration.generation = wire.generation;
+			simulator_configuration.frequency_millihz =
+				wire.simulator_frequency_millihz;
+			simulator_configuration.valid_mask =
+				wire.simulator_valid_mask;
+			simulator_configuration.phase_step_q32 =
+				wire.simulator_phase_step_q32;
+			for (std::size_t channel = 0;
+			     channel < msap1::adc::channel_count; ++channel) {
+				simulator_configuration.peak_counts[channel] =
+					wire.simulator_peak_counts[channel];
+				simulator_configuration.phase_q32[channel] =
+					wire.simulator_phase_q32[channel];
+			}
+			const auto source = wire.adc_source ==
+				MSAP1_ADC_SOURCE_SIMULATOR ?
+				msap1::adc::Source::Simulator :
+				msap1::adc::Source::Physical;
+			const auto adc_error = adc_.configure(
+				source, adc_configuration, simulator_configuration);
 			if (adc_error != msap1::adc::Error::None) {
 				const auto status = adc_error ==
 						msap1::adc::Error::InvalidConfiguration ?
@@ -340,6 +389,10 @@ protected:
 				meter.conversion_status;
 			acknowledgement.processing_status =
 				meter.processing_status;
+			acknowledgement.adc_source =
+				static_cast<std::uint32_t>(adc_.source());
+			acknowledgement.simulator_active_generation =
+				adc_.simulator().status().active_generation;
 			send_response(&request, src, MSAP1_RPU_MSG_ACK,
 				      MSAP1_RPU_STATUS_OK, &acknowledgement,
 				      sizeof(acknowledgement));
@@ -362,8 +415,15 @@ protected:
 				return true;
 			}
 
+			if (adc_.source() != msap1::adc::Source::Physical) {
+				send_response(&request, src, MSAP1_RPU_MSG_ERROR,
+					      MSAP1_RPU_STATUS_ADC_STATE,
+					      nullptr, 0);
+				return true;
+			}
 			msap1::adc::DiagnosticResult result;
-			const auto error = adc_.run_diagnostic_flow1(result);
+			const auto error =
+				adc_.physical().run_diagnostic_flow1(result);
 			msap1_adc_diagnostic_payload wire{};
 			wire.flow = diagnostic_request.flow;
 			wire.requested_sample_rate_hz =
@@ -468,7 +528,8 @@ private:
 		const msap1::adc::DiagnosticSnapshot &snapshot)
 	{
 		wire.snapshot_flags = snapshot.spi_valid ?
-			MSAP1_ADC_DIAGNOSTIC_SNAPSHOT_SPI_VALID : 0u;
+			static_cast<std::uint32_t>(
+				MSAP1_ADC_DIAGNOSTIC_SNAPSHOT_SPI_VALID) : 0u;
 		wire.capture_flags = snapshot.capture_flags;
 		wire.frame_count = snapshot.frame_count;
 		wire.packet_count = snapshot.packet_count;
@@ -494,9 +555,9 @@ private:
 		wire.src_update = snapshot.src_update;
 	}
 
-	static_assert(sizeof(msap1_adc_health_payload) == 174,
+	static_assert(sizeof(msap1_adc_health_payload) == 198,
 			      "ADC health wire layout must match the APU");
-	static_assert(sizeof(msap1_meter_config_payload) == 92,
+	static_assert(sizeof(msap1_meter_config_payload) == 172,
 		      "meter configuration wire layout must match the APU");
 	static_assert(sizeof(msap1_adc_diagnostic_payload) == 188,
 		      "ADC diagnostic wire layout must match the APU");
@@ -509,7 +570,7 @@ private:
 		      "ADC diagnostic response exceeds protocol frame size");
 
 	msap1::LedController led_;
-	msap1::adc::Ad7771 &adc_;
+	msap1::adc::AdcController &adc_;
 	msap1::meter::MeteringPipeline &metering_;
 };
 

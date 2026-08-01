@@ -166,6 +166,7 @@ const char *to_string(Error error)
 	case Error::AdcRegisterMismatch: return "AD7771 register readback mismatch";
 	case Error::CaptureNotInitialized: return "ADC capture is not initialized";
 	case Error::CaptureAlreadyActive: return "ADC capture is already active";
+	case Error::UnsupportedOperation: return "operation is not supported by ADC source";
 	}
 	return "unknown";
 }
@@ -595,7 +596,8 @@ Error Ad7771::take_diagnostic_snapshot(DiagnosticSnapshot &snapshot,
 				       bool include_spi)
 {
 	snapshot = {};
-	const auto capture = status();
+	const auto device_status = status();
+	const auto &capture = device_status.capture;
 	snapshot.capture_flags = capture.flags;
 	snapshot.frame_count = capture.frames;
 	snapshot.packet_count = capture.packets;
@@ -723,9 +725,14 @@ Error Ad7771::run_diagnostic_flow1(DiagnosticResult &result)
 	return Error::None;
 }
 
-CaptureStatus Ad7771::status() const
+DeviceStatus Ad7771::status() const
 {
-	return {
+	DeviceStatus result;
+	result.source = Source::Physical;
+	result.initialized = initialized_;
+	result.capture_active = capture_active_;
+	result.configuration_matches = initialized_;
+	result.capture = {
 		capture_read(capture_status),
 		capture_read(capture_frame_count),
 		capture_read(capture_overflow_count),
@@ -735,6 +742,7 @@ CaptureStatus Ad7771::status() const
 		capture_read(capture_dclk_frequency_hz),
 		capture_read(capture_drdy_frequency_hz),
 	};
+	return result;
 }
 
 Error Ad7771::read_register_health(RegisterHealth &health)
