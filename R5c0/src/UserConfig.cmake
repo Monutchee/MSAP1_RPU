@@ -42,6 +42,12 @@ set(USER_INCLUDE_DIRECTORIES
 #Example 3: Adding ${MY_ENV}/data/helloworld.c are expanded using project-specific environment settings.
 set(USER_COMPILE_SOURCES
 "../MainApp/main.cpp"
+# R5c0 control service (wire dispatch) and its per-command handlers
+"../MainApp/r5c0_service.cpp"
+"../MainApp/handlers/adc/adc_health.cpp"
+"../MainApp/handlers/adc/adc_diagnostic.cpp"
+"../MainApp/handlers/adc/adc_capture.cpp"
+"../MainApp/handlers/meter/meter_config.cpp"
 # Generic OpenAMP helper library (git submodule: libs/openamp-helper)
 "../../libs/openamp-helper/src/openamp_platform.cpp"
 "../../libs/openamp-helper/src/rpmsg_endpoint.cpp"
