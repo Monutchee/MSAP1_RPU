@@ -26,3 +26,6 @@ _ide/
 .rigel_lopper/
 .cache/
 platform/
+
+# Python bytecode caches (scripts/)
+__pycache__/
