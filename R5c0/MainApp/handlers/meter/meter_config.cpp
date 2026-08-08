@@ -90,6 +90,7 @@ std::uint32_t apply_meter_config(
 		wire.frequency_maximum_millihz;
 	configuration.frequency.hysteresis_microvolts =
 		wire.frequency_hysteresis_microvolts;
+	configuration.nominal_frequency_hz = wire.nominal_frequency_hz;
 
 	const auto error = metering.configure(configuration);
 	if (error != msap1::meter::Error::None)

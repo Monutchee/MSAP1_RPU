@@ -29,6 +29,10 @@ struct Configuration {
 	std::uint32_t generation = 0;
 	std::uint32_t sample_rate_hz = 32000;
 	std::uint32_t rms_window_samples = 6400;
+	// Declared nominal grid frequency (50 or 60 Hz). Configuration, not the
+	// measured frequency: it selects the cycle count of the PL basic
+	// measurement block, while measurement stays with the estimator.
+	std::uint32_t nominal_frequency_hz = 60;
 	std::uint8_t valid_mask = 0;
 	std::array<std::uint32_t, channel_count> scale_micro_units_q16{};
 	bool enable = true;
@@ -48,6 +52,7 @@ struct Status {
 	std::uint32_t conversion_status = 0;
 	std::uint32_t processing_status = 0;
 	std::uint32_t frequency_status = 0;
+	std::uint32_t grid_status = 0;
 };
 
 enum class Error {

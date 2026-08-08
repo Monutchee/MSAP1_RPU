@@ -16,7 +16,7 @@
 /* The wire ABI must stay byte-identical with the APU copy. */
 static_assert(sizeof(msap1_adc_health_payload) == 198,
 	      "ADC health wire layout must match the APU");
-static_assert(sizeof(msap1_meter_config_payload) == 172,
+static_assert(sizeof(msap1_meter_config_payload) == 176,
 	      "meter configuration wire layout must match the APU");
 static_assert(sizeof(msap1_adc_diagnostic_payload) == 188,
 	      "ADC diagnostic wire layout must match the APU");
