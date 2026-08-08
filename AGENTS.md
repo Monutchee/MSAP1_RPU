@@ -15,13 +15,21 @@
 
 ## Hardware and software contract
 
-- The default profile is high-resolution, Sinc5, 32 kSPS, four DOUT lanes,
+- The default profile is high-resolution, Sinc5, 128 kSPS, four DOUT lanes,
   eight channels, and 256 frames per DMA packet.
 - Current PL addresses are AXI Quad SPI `0xB0010000`, capture registers
   `0xB0020000`, Linux-owned AXI DMA `0xB0030000`, ADC conversion registers
   `0xB0040000`, meter-processing registers `0xB0050000`, and raw-simulator
   registers `0xB0080000`. RPU code must not touch the DMA registers or
   meter-record DDR buffers.
+- Meter-processing grid-timing registers: `GRID_SHADOW_CONFIG` at `0x6C`
+  ([7:0] cycles per block, [15:8] nominal Hz, [16] cycle-timing enable),
+  `GRID_ACTIVE_CONFIG` readback at `0x70`, and read-only `GRID_STATUS` at
+  `0x74` ([0] reference locked, [15:8] cycles elapsed). The RPU derives the
+  cycle count from the wire nominal frequency (50 Hz -> 10, 60 Hz -> 12; the
+  count is not on the wire), always enables cycle timing, commits via the
+  existing apply toggle, and verifies `GRID_ACTIVE_CONFIG` readback. The RMS
+  window register `0x18` remains the PL's free-run fallback window.
 - Physical and simulated ADC sources share the raw PL stream boundary. Stop
   capture before switching sources and commit a source change only after
   target-device configuration and PL readback succeed. While simulation is
@@ -36,7 +44,10 @@
   measured DRDY matches the configured sample rate within tolerance.
 - Runtime sample-rate changes arrive in `METER_CONFIG_SET` while capture is
   stopped. Apply ADC PGA/SRC and PL window configuration as one coordinated
-  operating-point transaction; the packaged boot default remains 32 kSPS.
+  operating-point transaction; the packaged boot default is 128 kSPS.
+  The 176-byte version-2 config payload ends with `nominal_frequency_hz`
+  (50 or 60 only), which drives the grid-timing registers above; keep the
+  wire header byte-identical with the APU copy when it changes.
 - Linux and the RPU share a physical UART. Leave `RSPMSG_DEBUG` disabled and do
   not add routine or per-packet UART output. Prefer RPMsg health/status queries.
 

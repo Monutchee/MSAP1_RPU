@@ -33,6 +33,9 @@ constexpr std::uint32_t processing_frequency_active_minimum = 0x4c;
 constexpr std::uint32_t processing_frequency_active_maximum = 0x50;
 constexpr std::uint32_t processing_frequency_active_hysteresis = 0x54;
 constexpr std::uint32_t processing_frequency_status = 0x58;
+constexpr std::uint32_t processing_grid_shadow_config = 0x6c;
+constexpr std::uint32_t processing_grid_active_config = 0x70;
+constexpr std::uint32_t processing_grid_status = 0x74;
 
 constexpr std::uint32_t conversion_identifier = 0x41435631u; // "ACV1"
 constexpr std::uint32_t processing_identifier = 0x4d505231u; // "MPR1"
@@ -50,6 +53,8 @@ bool valid_configuration(const Configuration &configuration)
 	    configuration.rms_window_samples == 0u ||
 	    configuration.rms_window_samples >
 		configuration.sample_rate_hz * 10u ||
+	    (configuration.nominal_frequency_hz != 50u &&
+	     configuration.nominal_frequency_hz != 60u) ||
 	    configuration.valid_mask == 0u ||
 	    configuration.frequency.mode > 2u ||
 	    configuration.frequency.reference_channel != 6u ||
@@ -80,6 +85,23 @@ std::uint32_t frequency_control(const Configuration::Frequency &frequency)
 		((frequency.mode & 0x7u) << 1) |
 		((frequency.reference_channel & 0xfu) << 4) |
 		((frequency.averaging_cycles & 0xffu) << 8);
+}
+
+// IEC 61000-4-30 basic measurement blocks span 10 cycles at 50 Hz and
+// 12 cycles at 60 Hz. The cycle count never travels on the wire; it is
+// derived here from the validated nominal frequency.
+constexpr std::uint32_t cycles_per_block(std::uint32_t nominal_frequency_hz)
+{
+	return nominal_frequency_hz == 50u ? 10u : 12u;
+}
+
+std::uint32_t grid_config(const Configuration &configuration)
+{
+	// Cycle timing is always requested; the PL falls back to the
+	// sample-count window on its own when the voltage reference is lost.
+	return (cycles_per_block(configuration.nominal_frequency_hz) & 0xffu) |
+		((configuration.nominal_frequency_hz & 0xffu) << 8) |
+		(1u << 16);
 }
 
 } // namespace
@@ -163,6 +185,8 @@ Error MeteringPipeline::configure(const Configuration &configuration)
 			 configuration.frequency.maximum_millihz);
 	processing_write(processing_frequency_shadow_hysteresis,
 			 configuration.frequency.hysteresis_microvolts);
+	const auto expected_grid_config = grid_config(configuration);
+	processing_write(processing_grid_shadow_config, expected_grid_config);
 
 	const auto conversion_control =
 		(configuration.enable ? control_enable : 0u) | control_apply;
@@ -205,9 +229,15 @@ Error MeteringPipeline::configure(const Configuration &configuration)
 			configuration.frequency.maximum_millihz &&
 		processing_read(processing_frequency_active_hysteresis) ==
 			configuration.frequency.hysteresis_microvolts;
+	// Verify the grid config latched like the frequency registers above;
+	// an unverified register would silently accept an unlatched value.
+	const bool grid_matches =
+		processing_read(processing_grid_active_config) ==
+			expected_grid_config;
 	if (!generation_matches || !mask_matches ||
 	    conversion_enabled != configuration.enable ||
-	    processing_enabled != configuration.enable || !frequency_matches)
+	    processing_enabled != configuration.enable || !frequency_matches ||
+	    !grid_matches)
 		return Error::ReadbackMismatch;
 
 	configuration_ = configuration;
@@ -229,6 +259,7 @@ Status MeteringPipeline::status() const
 	result.conversion_status = conversion_read(status_register);
 	result.processing_status = processing_read(status_register);
 	result.frequency_status = processing_read(processing_frequency_status);
+	result.grid_status = processing_read(processing_grid_status);
 	result.generation = configuration_.generation;
 	result.configured = configured_;
 	result.generation_matches = configured_ &&
