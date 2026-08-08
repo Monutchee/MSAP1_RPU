@@ -15,7 +15,7 @@
 
 ## Hardware and software contract
 
-- The default profile is high-resolution, Sinc5, 32 kSPS, four DOUT lanes,
+- The default profile is high-resolution, Sinc5, 128 kSPS, four DOUT lanes,
   eight channels, and 256 frames per DMA packet.
 - Current PL addresses are AXI Quad SPI `0xB0010000`, capture registers
   `0xB0020000`, Linux-owned AXI DMA `0xB0030000`, ADC conversion registers
@@ -44,7 +44,7 @@
   measured DRDY matches the configured sample rate within tolerance.
 - Runtime sample-rate changes arrive in `METER_CONFIG_SET` while capture is
   stopped. Apply ADC PGA/SRC and PL window configuration as one coordinated
-  operating-point transaction; the packaged boot default remains 32 kSPS.
+  operating-point transaction; the packaged boot default is 128 kSPS.
   The 176-byte version-2 config payload ends with `nominal_frequency_hz`
   (50 or 60 only), which drives the grid-timing registers above; keep the
   wire header byte-identical with the APU copy when it changes.

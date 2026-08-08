@@ -20,15 +20,15 @@ struct Configuration {
 		std::uint32_t mode = 1;
 		std::uint32_t reference_channel = 6;
 		std::uint32_t averaging_cycles = 10;
-		std::uint32_t window_samples = 32000;
+		std::uint32_t window_samples = 128000;
 		std::uint32_t minimum_millihz = 40000;
 		std::uint32_t maximum_millihz = 70000;
 		std::uint32_t hysteresis_microvolts = 1000000;
 	};
 
 	std::uint32_t generation = 0;
-	std::uint32_t sample_rate_hz = 32000;
-	std::uint32_t rms_window_samples = 6400;
+	std::uint32_t sample_rate_hz = 128000;
+	std::uint32_t rms_window_samples = 25600;
 	// Declared nominal grid frequency (50 or 60 Hz). Configuration, not the
 	// measured frequency: it selects the cycle count of the PL basic
 	// measurement block, while measurement stays with the estimator.

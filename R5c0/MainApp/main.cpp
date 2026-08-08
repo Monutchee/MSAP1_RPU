@@ -83,7 +83,7 @@ int main(void)
 		return -1;
 
 	msap1::adc::Configuration adc_configuration;
-	adc_configuration.sample_rate = msap1::adc::SampleRate::Sps32000;
+	adc_configuration.sample_rate = msap1::adc::SampleRate::Sps128000;
 	adc_configuration.filter = msap1::adc::Filter::Sinc5;
 	adc_configuration.power_mode = msap1::adc::PowerMode::HighResolution;
 	adc_configuration.master_clock_hz = 8192000;
