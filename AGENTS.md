@@ -30,6 +30,11 @@
   count is not on the wire), always enables cycle timing, commits via the
   existing apply toggle, and verifies `GRID_ACTIVE_CONFIG` readback. The RMS
   window register `0x18` remains the PL's free-run fallback window.
+- PL aggregate health registers `0x78`-`0x8C` (150/180-cycle aggregation
+  status and counters) are read-only status inputs surfaced through the
+  internal meter status. The RPU never consumes Basic results, never
+  calculates aggregates, and aggregate measurement data never travels over
+  RPMsg; it stays on the meter DMA path.
 - Physical and simulated ADC sources share the raw PL stream boundary. Stop
   capture before switching sources and commit a source change only after
   target-device configuration and PL readback succeed. While simulation is

@@ -36,6 +36,12 @@ constexpr std::uint32_t processing_frequency_status = 0x58;
 constexpr std::uint32_t processing_grid_shadow_config = 0x6c;
 constexpr std::uint32_t processing_grid_active_config = 0x70;
 constexpr std::uint32_t processing_grid_status = 0x74;
+constexpr std::uint32_t processing_agg_status = 0x78;
+constexpr std::uint32_t processing_agg_record_count = 0x7c;
+constexpr std::uint32_t processing_agg_reset_count = 0x80;
+constexpr std::uint32_t processing_agg_ineligible_count = 0x84;
+constexpr std::uint32_t processing_agg_continuity_count = 0x88;
+constexpr std::uint32_t processing_agg_drop_count = 0x8c;
 
 constexpr std::uint32_t conversion_identifier = 0x41435631u; // "ACV1"
 constexpr std::uint32_t processing_identifier = 0x4d505231u; // "MPR1"
@@ -260,6 +266,14 @@ Status MeteringPipeline::status() const
 	result.processing_status = processing_read(status_register);
 	result.frequency_status = processing_read(processing_frequency_status);
 	result.grid_status = processing_read(processing_grid_status);
+	result.aggregate_status = processing_read(processing_agg_status);
+	result.aggregate_records = processing_read(processing_agg_record_count);
+	result.aggregate_resets = processing_read(processing_agg_reset_count);
+	result.aggregate_ineligible =
+		processing_read(processing_agg_ineligible_count);
+	result.aggregate_continuity_errors =
+		processing_read(processing_agg_continuity_count);
+	result.aggregate_drops = processing_read(processing_agg_drop_count);
 	result.generation = configuration_.generation;
 	result.configured = configured_;
 	result.generation_matches = configured_ &&
