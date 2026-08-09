@@ -53,6 +53,15 @@ struct Status {
 	std::uint32_t processing_status = 0;
 	std::uint32_t frequency_status = 0;
 	std::uint32_t grid_status = 0;
+	// 150/180-cycle aggregation health (read-only PL counters). The RPU
+	// never consumes Basic results or aggregate data; these are health
+	// readbacks only and aggregate measurements stay on the DMA path.
+	std::uint32_t aggregate_status = 0;
+	std::uint32_t aggregate_records = 0;
+	std::uint32_t aggregate_resets = 0;
+	std::uint32_t aggregate_ineligible = 0;
+	std::uint32_t aggregate_continuity_errors = 0;
+	std::uint32_t aggregate_drops = 0;
 };
 
 enum class Error {
