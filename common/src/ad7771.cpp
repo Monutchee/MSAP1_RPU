@@ -78,6 +78,11 @@ constexpr unsigned long reference_output_settling_us = 2000u;
 constexpr unsigned long adc_start_sync_pulse_us = 10u;
 constexpr unsigned int spi_register_read_attempts = 3u;
 constexpr unsigned long spi_register_retry_delay_us = 10u;
+/* Health-read confirmation: pairs to try before giving up, and the settle
+ * delay between the two reads of a pair (>> the retry spacing above, so a
+ * bus disturbance is not sampled twice). */
+constexpr unsigned int spi_status_confirm_attempts = 3u;
+constexpr unsigned long spi_status_confirm_delay_us = 1000u;
 constexpr std::uint32_t diagnostic_reset_hold_ms = 2200u;
 constexpr std::uint32_t diagnostic_measurement_settle_ms = 2200u;
 constexpr unsigned long diagnostic_src_update_hold_us = 1000u;
@@ -263,6 +268,54 @@ Error Ad7771::read_adc_register(std::uint8_t address, std::uint8_t &value)
 		spi_health_diagnostics_.last_received_header = receive[0];
 		if (attempt + 1u < spi_register_read_attempts)
 			usleep(spi_register_retry_delay_us);
+	}
+	return Error::SpiProtocol;
+}
+
+/*
+ * Read-twice-compare, for health and status reads only.
+ *
+ * read_adc_register() accepts the first reply whose protocol header
+ * validates. On this hardware the AD7771's control/status SPI is
+ * marginal -- chronic retry recoveries, and at least one observed reply
+ * that carried a plausible header with corrupted data -- while the
+ * measurement data interface stays clean. A single such read is enough to
+ * make the health poll claim INIT_COMPLETE was lost or the configuration
+ * no longer matches, neither of which was true: DRDY never faltered and
+ * the next poll read healthy.
+ *
+ * So for health reads, require two consecutive reads to agree. The settle
+ * delay is an order of magnitude beyond the retry spacing, so a bus
+ * disturbance has passed rather than being sampled twice. A disagreement
+ * is counted and the pair retried; only a value that reproduces is
+ * believed. Corruption identical across both reads still passes, and is
+ * reported exactly as before -- this suppresses transients, it does not
+ * mask a persistent fault.
+ */
+Error Ad7771::read_adc_register_confirmed(std::uint8_t address,
+					  std::uint8_t &value)
+{
+	for (unsigned int attempt = 0; attempt < spi_status_confirm_attempts;
+	     ++attempt) {
+		std::uint8_t first = 0;
+		auto error = read_adc_register(address, first);
+		if (error != Error::None)
+			return error;
+
+		usleep(spi_status_confirm_delay_us);
+
+		std::uint8_t second = 0;
+		error = read_adc_register(address, second);
+		if (error != Error::None)
+			return error;
+
+		if (first == second) {
+			value = second;
+			return Error::None;
+		}
+
+		++spi_health_diagnostics_.status_read_mismatch_count;
+		spi_health_diagnostics_.last_failed_register = address;
 	}
 	return Error::SpiProtocol;
 }
@@ -753,9 +806,12 @@ Error Ad7771::read_register_health(RegisterHealth &health)
 		return Error::SpiInitialization;
 
 	Error error = Error::None;
+	/* Every register behind the reported health bits goes through the
+	 * confirming read: a single corrupted reply must not be able to
+	 * clear INIT_COMPLETE or CONFIG_MATCH. */
 	auto read = [&](std::uint8_t address, std::uint8_t &value) {
 		if (error == Error::None)
-			error = read_adc_register(address, value);
+			error = read_adc_register_confirmed(address, value);
 	};
 	for (std::size_t channel = 0; channel < channel_count; ++channel)
 		read(static_cast<std::uint8_t>(reg_channel_config_base + channel),

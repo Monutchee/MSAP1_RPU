@@ -85,6 +85,11 @@ struct RegisterHealth {
 
 struct SpiHealthDiagnostics {
 	std::uint32_t protocol_error_count = 0, retry_recovery_count = 0;
+	/* Health-poll reads that returned a protocol-valid but INCONSISTENT
+	 * value across a read-twice-compare pair. A retry that "succeeds"
+	 * can still carry corrupted data, so this counts the corruption the
+	 * header check cannot see. */
+	std::uint32_t status_read_mismatch_count = 0;
 	std::uint8_t last_failed_register = 0, last_received_header = 0;
 };
 
