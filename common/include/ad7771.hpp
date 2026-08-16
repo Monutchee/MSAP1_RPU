@@ -80,6 +80,11 @@ private:
 
 	Error write_adc_register(std::uint8_t address, std::uint8_t value);
 	Error read_adc_register(std::uint8_t address, std::uint8_t &value);
+	/* Read-twice-compare. Configuration registers only -- see the
+	 * definition; applying it to a clear-on-read register erases the
+	 * bits it is meant to report. */
+	Error read_adc_register_confirmed(std::uint8_t address,
+					  std::uint8_t &value);
 	Error update_adc_register(std::uint8_t address, std::uint8_t mask,
 			  std::uint8_t value);
 

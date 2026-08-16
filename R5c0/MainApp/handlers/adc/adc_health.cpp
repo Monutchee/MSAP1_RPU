@@ -134,6 +134,12 @@ void build_adc_health(msap1::adc::AdcController &adc,
 			spi_diagnostics.protocol_error_count;
 		health.spi_retry_recovery_count =
 			spi_diagnostics.retry_recovery_count;
+		health.spi_config_read_mismatch_count =
+			spi_diagnostics.config_read_mismatch_count;
+		health.spi_general_error_1_sticky =
+			spi_diagnostics.general_error_1_sticky;
+		health.spi_general_error_1_events =
+			spi_diagnostics.general_error_1_events;
 		health.spi_last_failed_register =
 			spi_diagnostics.last_failed_register;
 		health.spi_last_received_header =

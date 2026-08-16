@@ -87,6 +87,12 @@ constexpr unsigned long reference_output_settling_us = 2000u;
 constexpr unsigned long adc_start_sync_pulse_us = 10u;
 constexpr unsigned int spi_register_read_attempts = 3u;
 constexpr unsigned long spi_register_retry_delay_us = 10u;
+/* Confirming read for configuration registers: pairs to try before giving
+ * up, and the settle delay between the two reads of a pair. A millisecond
+ * spans many DRDY periods, so the two samples see independent bus
+ * conditions rather than the same disturbance twice. */
+constexpr unsigned int spi_config_confirm_attempts = 3u;
+constexpr unsigned long spi_config_confirm_delay_us = 1000u;
 constexpr std::uint32_t diagnostic_reset_hold_ms = 2200u;
 constexpr std::uint32_t diagnostic_measurement_settle_ms = 2200u;
 constexpr unsigned long diagnostic_src_update_hold_us = 1000u;
@@ -283,6 +289,53 @@ Error Ad7771::read_adc_register(std::uint8_t address, std::uint8_t &value)
 			++bucket;
 		if (attempt + 1u < spi_register_read_attempts)
 			usleep(spi_register_retry_delay_us);
+	}
+	return Error::SpiProtocol;
+}
+
+/*
+ * Confirming read -- CONFIGURATION REGISTERS ONLY.
+ *
+ * read_adc_register() validates the reply's protocol header, so a
+ * corruption landing in that byte is caught and retried. The header and
+ * the data byte are separate bytes of the same transfer, though: a
+ * corruption landing in the data byte leaves a valid header, the read
+ * reports success, and the wrong value propagates. Reading twice and
+ * requiring agreement is the only way to catch that.
+ *
+ * The restriction is not stylistic. Most of read_register_health()'s
+ * sweep is clear-on-read -- CHx_ERR_REG, the saturation registers,
+ * GEN_ERR_REG_1/2 and STATUS_REG_1/2/3 all clear their latched bits when
+ * read. Reading one of those twice returns the real bits, clears them,
+ * then returns zero, so the pair can never agree and the value settles on
+ * 0x00. Applied there this would erase every ADC error bit by
+ * construction; that regression shipped once already in edab967. Use this
+ * only for R/W configuration registers, which have no read side effect.
+ */
+Error Ad7771::read_adc_register_confirmed(std::uint8_t address,
+					  std::uint8_t &value)
+{
+	for (unsigned int attempt = 0; attempt < spi_config_confirm_attempts;
+	     ++attempt) {
+		std::uint8_t first = 0;
+		auto error = read_adc_register(address, first);
+		if (error != Error::None)
+			return error;
+
+		usleep(spi_config_confirm_delay_us);
+
+		std::uint8_t second = 0;
+		error = read_adc_register(address, second);
+		if (error != Error::None)
+			return error;
+
+		if (first == second) {
+			value = second;
+			return Error::None;
+		}
+
+		++spi_health_diagnostics_.config_read_mismatch_count;
+		spi_health_diagnostics_.last_failed_register = address;
 	}
 	return Error::SpiProtocol;
 }
@@ -788,18 +841,29 @@ Error Ad7771::read_register_health(RegisterHealth &health)
 		if (error == Error::None)
 			error = read_adc_register(address, value);
 	};
+	/* Registers that feed configuration_matches get the confirming read
+	 * instead: a corruption in the reply's data byte passes the header
+	 * check, and a single such read is enough to report CONFIG_MATCH
+	 * lost when nothing changed. Every address routed here is an R/W
+	 * configuration register with no read side effect -- the sweep's
+	 * clear-on-read registers must keep using read() above. */
+	auto read_config = [&](std::uint8_t address, std::uint8_t &value) {
+		if (error == Error::None)
+			error = read_adc_register_confirmed(address, value);
+	};
 	for (std::size_t channel = 0; channel < channel_count; ++channel)
-		read(static_cast<std::uint8_t>(reg_channel_config_base + channel),
-		     health.channel_config[channel]);
+		read_config(
+			static_cast<std::uint8_t>(reg_channel_config_base + channel),
+			health.channel_config[channel]);
 	read(reg_channel_disable, health.channel_disable);
 	for (std::size_t channel = 0; channel < channel_count; ++channel)
 		read(static_cast<std::uint8_t>(
 			     reg_channel_sync_offset_base + channel),
 		     health.channel_sync_offset[channel]);
-	read(reg_general_user_config_1, health.general_user_config_1);
-	read(reg_general_user_config_2, health.general_user_config_2);
-	read(reg_general_user_config_3, health.general_user_config_3);
-	read(reg_dout_format, health.dout_format);
+	read_config(reg_general_user_config_1, health.general_user_config_1);
+	read_config(reg_general_user_config_2, health.general_user_config_2);
+	read_config(reg_general_user_config_3, health.general_user_config_3);
+	read_config(reg_dout_format, health.dout_format);
 	read(reg_adc_mux_config, health.adc_mux_config);
 	read(reg_global_mux_config, health.global_mux_config);
 	read(reg_gpio_config, health.gpio_config);
@@ -826,17 +890,29 @@ Error Ad7771::read_register_health(RegisterHealth &health)
 		     health.saturation_error[pair]);
 	read(reg_channel_error_enable, health.channel_error_enable);
 	read(reg_general_error_1, health.general_error_1);
+	/* Retain what this read just destroyed. GEN_ERR_REG_1 names the
+	 * ADC's own view of every SPI fault (CRC, clock count, invalid
+	 * read/write) and clears on read, so without this the only record
+	 * of a transient error is whoever happened to be looking at that
+	 * poll. Sticky until the RPU restarts, deliberately: these bits are
+	 * rare and diagnostic, and one that clears itself is one nobody
+	 * ever sees. */
+	if (health.general_error_1 != 0u) {
+		spi_health_diagnostics_.general_error_1_sticky |=
+			health.general_error_1;
+		++spi_health_diagnostics_.general_error_1_events;
+	}
 	read(reg_general_error_1_enable, health.general_error_1_enable);
 	read(reg_general_error_2, health.general_error_2);
 	read(reg_general_error_2_enable, health.general_error_2_enable);
 	read(reg_status_1, health.status_1);
 	read(reg_status_2, health.status_2);
 	read(reg_status_3, health.status_3);
-	read(reg_src_n_msb, health.src_n_msb);
-	read(reg_src_n_lsb, health.src_n_lsb);
-	read(reg_src_if_msb, health.src_if_msb);
-	read(reg_src_if_lsb, health.src_if_lsb);
-	read(reg_src_update, health.src_update);
+	read_config(reg_src_n_msb, health.src_n_msb);
+	read_config(reg_src_n_lsb, health.src_n_lsb);
+	read_config(reg_src_if_msb, health.src_if_msb);
+	read_config(reg_src_if_lsb, health.src_if_lsb);
+	read_config(reg_src_update, health.src_update);
 	if (error != Error::None)
 		return error;
 

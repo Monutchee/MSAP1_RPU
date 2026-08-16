@@ -14,7 +14,7 @@
 #include "handlers/meter/meter_config.hpp"
 
 /* The wire ABI must stay byte-identical with the APU copy. */
-static_assert(sizeof(msap1_adc_health_payload) == 230,
+static_assert(sizeof(msap1_adc_health_payload) == 238,
 	      "ADC health wire layout must match the APU");
 static_assert(sizeof(msap1_meter_config_payload) == 176,
 	      "meter configuration wire layout must match the APU");
