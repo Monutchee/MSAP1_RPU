@@ -80,9 +80,6 @@ private:
 
 	Error write_adc_register(std::uint8_t address, std::uint8_t value);
 	Error read_adc_register(std::uint8_t address, std::uint8_t &value);
-	/* Read-twice-compare for health/status reads; see the definition. */
-	Error read_adc_register_confirmed(std::uint8_t address,
-					  std::uint8_t &value);
 	Error update_adc_register(std::uint8_t address, std::uint8_t mask,
 			  std::uint8_t value);
 

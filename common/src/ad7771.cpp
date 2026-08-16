@@ -47,6 +47,15 @@ constexpr std::uint8_t config_1_power_mode = 1u << 6;
 constexpr std::uint8_t config_1_refout_buffer = 1u << 4;
 constexpr std::uint8_t config_2_filter_mode = 1u << 6;
 constexpr std::uint8_t config_2_sar_spi_mode = 1u << 5;
+/* GENERAL_USER_CONFIG_2 Bits[4:3] select SDO drive strength (datasheet
+ * Table 24): 00 nominal, 01 strong, 10 weak, 11 extra strong. The part
+ * powers up nominal, which is what this design ran until now. The
+ * AD7771's own SPI error register stays clean across the malformed
+ * replies the master counts, so the ADC is driving correct data and the
+ * corruption is on the return path; a stronger SDO driver is the one
+ * knob on the ADC side that addresses that. */
+constexpr std::uint8_t config_2_sdo_strength_mask = 0x18u;
+constexpr std::uint8_t config_2_sdo_strength_strong = 1u << 3;
 constexpr std::uint8_t config_2_spi_sync = 1u << 0;
 constexpr std::uint8_t config_3_spi_data_mode = 1u << 4;
 constexpr std::uint8_t channel_config_pga_mask = 0xc0u;
@@ -78,11 +87,6 @@ constexpr unsigned long reference_output_settling_us = 2000u;
 constexpr unsigned long adc_start_sync_pulse_us = 10u;
 constexpr unsigned int spi_register_read_attempts = 3u;
 constexpr unsigned long spi_register_retry_delay_us = 10u;
-/* Health-read confirmation: pairs to try before giving up, and the settle
- * delay between the two reads of a pair (>> the retry spacing above, so a
- * bus disturbance is not sampled twice). */
-constexpr unsigned int spi_status_confirm_attempts = 3u;
-constexpr unsigned long spi_status_confirm_delay_us = 1000u;
 constexpr std::uint32_t diagnostic_reset_hold_ms = 2200u;
 constexpr std::uint32_t diagnostic_measurement_settle_ms = 2200u;
 constexpr unsigned long diagnostic_src_update_hold_us = 1000u;
@@ -266,56 +270,19 @@ Error Ad7771::read_adc_register(std::uint8_t address, std::uint8_t &value)
 		++spi_health_diagnostics_.protocol_error_count;
 		spi_health_diagnostics_.last_failed_register = address;
 		spi_health_diagnostics_.last_received_header = receive[0];
+		/* Bucket the bad header by high nibble. One "last header"
+		 * sample cannot distinguish a systematic corruption (all
+		 * failures in one bucket) from random mis-sampling (spread
+		 * across buckets), and that distinction picks the next fix:
+		 * a fixed offset points at the link, a spread points at
+		 * marginal sampling. Saturating -- a stuck bucket must not
+		 * wrap to a small number and read as healthy. */
+		auto &bucket = spi_health_diagnostics_
+			.header_histogram[receive[0] >> 4];
+		if (bucket != UINT16_MAX)
+			++bucket;
 		if (attempt + 1u < spi_register_read_attempts)
 			usleep(spi_register_retry_delay_us);
-	}
-	return Error::SpiProtocol;
-}
-
-/*
- * Read-twice-compare, for health and status reads only.
- *
- * read_adc_register() accepts the first reply whose protocol header
- * validates. On this hardware the AD7771's control/status SPI is
- * marginal -- chronic retry recoveries, and at least one observed reply
- * that carried a plausible header with corrupted data -- while the
- * measurement data interface stays clean. A single such read is enough to
- * make the health poll claim INIT_COMPLETE was lost or the configuration
- * no longer matches, neither of which was true: DRDY never faltered and
- * the next poll read healthy.
- *
- * So for health reads, require two consecutive reads to agree. The settle
- * delay is an order of magnitude beyond the retry spacing, so a bus
- * disturbance has passed rather than being sampled twice. A disagreement
- * is counted and the pair retried; only a value that reproduces is
- * believed. Corruption identical across both reads still passes, and is
- * reported exactly as before -- this suppresses transients, it does not
- * mask a persistent fault.
- */
-Error Ad7771::read_adc_register_confirmed(std::uint8_t address,
-					  std::uint8_t &value)
-{
-	for (unsigned int attempt = 0; attempt < spi_status_confirm_attempts;
-	     ++attempt) {
-		std::uint8_t first = 0;
-		auto error = read_adc_register(address, first);
-		if (error != Error::None)
-			return error;
-
-		usleep(spi_status_confirm_delay_us);
-
-		std::uint8_t second = 0;
-		error = read_adc_register(address, second);
-		if (error != Error::None)
-			return error;
-
-		if (first == second) {
-			value = second;
-			return Error::None;
-		}
-
-		++spi_health_diagnostics_.status_read_mismatch_count;
-		spi_health_diagnostics_.last_failed_register = address;
 	}
 	return Error::SpiProtocol;
 }
@@ -507,10 +474,12 @@ Error Ad7771::configure_adc_registers(SrcLoadTrace *trace,
 	if (error != Error::None) return error;
 	usleep(reference_output_settling_us);
 	error = update_adc_register(reg_general_user_config_2,
-		config_2_filter_mode | config_2_sar_spi_mode | config_2_spi_sync,
-		configuration_.filter == Filter::Sinc5 ?
-			config_2_filter_mode | config_2_spi_sync :
-			config_2_spi_sync);
+		config_2_filter_mode | config_2_sar_spi_mode |
+			config_2_sdo_strength_mask | config_2_spi_sync,
+		static_cast<std::uint8_t>(
+			(configuration_.filter == Filter::Sinc5 ?
+				config_2_filter_mode : 0u) |
+			config_2_sdo_strength_strong | config_2_spi_sync));
 	if (error != Error::None) return error;
 	error = update_adc_register(reg_general_user_config_3,
 		config_3_spi_data_mode, 0u);
@@ -806,12 +775,18 @@ Error Ad7771::read_register_health(RegisterHealth &health)
 		return Error::SpiInitialization;
 
 	Error error = Error::None;
-	/* Every register behind the reported health bits goes through the
-	 * confirming read: a single corrupted reply must not be able to
-	 * clear INIT_COMPLETE or CONFIG_MATCH. */
+	/* Single read per register, deliberately. Most of this sweep is
+	 * clear-on-read (CHx_ERR_REG 0x4C-0x53, the saturation registers,
+	 * GEN_ERR_REG_1/2, STATUS_REG_1/2/3): the datasheet specifies that
+	 * reading them clears the latched bits. Reading such a register
+	 * twice returns the real bits, clears them, then returns zero --
+	 * so a read-twice-compare would report every ADC error bit as 0x00
+	 * by construction, destroying the diagnostic instead of hardening
+	 * it. Transient corruption is handled inside read_adc_register()
+	 * by the header check and retry, which is non-destructive. */
 	auto read = [&](std::uint8_t address, std::uint8_t &value) {
 		if (error == Error::None)
-			error = read_adc_register_confirmed(address, value);
+			error = read_adc_register(address, value);
 	};
 	for (std::size_t channel = 0; channel < channel_count; ++channel)
 		read(static_cast<std::uint8_t>(reg_channel_config_base + channel),
@@ -871,7 +846,7 @@ Error Ad7771::read_register_health(RegisterHealth &health)
 			config_1_power_mode : 0u));
 	const auto expected_config_2 = static_cast<std::uint8_t>(
 		(configuration_.filter == Filter::Sinc5 ? config_2_filter_mode : 0u) |
-		config_2_spi_sync);
+		config_2_sdo_strength_strong | config_2_spi_sync);
 	const auto expected_decimation = health.expected_decimation;
 	bool gains_match = true;
 	for (std::size_t channel = 0; channel < channel_count; ++channel)
@@ -883,7 +858,8 @@ Error Ad7771::read_register_health(RegisterHealth &health)
 		 (config_1_power_mode | config_1_refout_buffer)) ==
 			expected_config_1 &&
 		(health.general_user_config_2 &
-		 (config_2_filter_mode | config_2_sar_spi_mode | config_2_spi_sync)) ==
+		 (config_2_filter_mode | config_2_sar_spi_mode |
+		  config_2_sdo_strength_mask | config_2_spi_sync)) ==
 			expected_config_2 &&
 		(health.general_user_config_3 & config_3_spi_data_mode) == 0u &&
 		health.dout_format == 0u &&

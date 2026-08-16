@@ -138,6 +138,12 @@ void build_adc_health(msap1::adc::AdcController &adc,
 			spi_diagnostics.last_failed_register;
 		health.spi_last_received_header =
 			spi_diagnostics.last_received_header;
+		for (std::size_t bucket = 0;
+		     bucket < sizeof(health.spi_header_histogram) /
+				      sizeof(health.spi_header_histogram[0]);
+		     ++bucket)
+			health.spi_header_histogram[bucket] =
+				spi_diagnostics.header_histogram[bucket];
 		if ((registers.status_3 & (1u << 4)) != 0u)
 			health.health_flags |= MSAP1_ADC_HEALTH_INIT_COMPLETE;
 		if (registers.configuration_matches)

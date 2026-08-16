@@ -85,12 +85,12 @@ struct RegisterHealth {
 
 struct SpiHealthDiagnostics {
 	std::uint32_t protocol_error_count = 0, retry_recovery_count = 0;
-	/* Health-poll reads that returned a protocol-valid but INCONSISTENT
-	 * value across a read-twice-compare pair. A retry that "succeeds"
-	 * can still carry corrupted data, so this counts the corruption the
-	 * header check cannot see. */
-	std::uint32_t status_read_mismatch_count = 0;
 	std::uint8_t last_failed_register = 0, last_received_header = 0;
+	/* Malformed reply headers bucketed by high nibble (saturating).
+	 * The expected header is 0x20, so a healthy bus leaves this all
+	 * zero; the shape of a non-zero histogram says whether the
+	 * corruption is systematic or random. */
+	std::uint16_t header_histogram[16] = {};
 };
 
 struct DiagnosticSnapshot {
