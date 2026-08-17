@@ -134,10 +134,22 @@ void build_adc_health(msap1::adc::AdcController &adc,
 			spi_diagnostics.protocol_error_count;
 		health.spi_retry_recovery_count =
 			spi_diagnostics.retry_recovery_count;
+		health.spi_config_read_mismatch_count =
+			spi_diagnostics.config_read_mismatch_count;
+		health.spi_general_error_1_sticky =
+			spi_diagnostics.general_error_1_sticky;
+		health.spi_general_error_1_events =
+			spi_diagnostics.general_error_1_events;
 		health.spi_last_failed_register =
 			spi_diagnostics.last_failed_register;
 		health.spi_last_received_header =
 			spi_diagnostics.last_received_header;
+		for (std::size_t bucket = 0;
+		     bucket < sizeof(health.spi_header_histogram) /
+				      sizeof(health.spi_header_histogram[0]);
+		     ++bucket)
+			health.spi_header_histogram[bucket] =
+				spi_diagnostics.header_histogram[bucket];
 		if ((registers.status_3 & (1u << 4)) != 0u)
 			health.health_flags |= MSAP1_ADC_HEALTH_INIT_COMPLETE;
 		if (registers.configuration_matches)

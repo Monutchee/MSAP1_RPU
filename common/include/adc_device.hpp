@@ -85,7 +85,24 @@ struct RegisterHealth {
 
 struct SpiHealthDiagnostics {
 	std::uint32_t protocol_error_count = 0, retry_recovery_count = 0;
+	/* Configuration reads whose two samples disagreed. The header check
+	 * cannot see a corruption confined to the reply's data byte, so this
+	 * counts what protocol_error_count structurally misses. */
+	std::uint32_t config_read_mismatch_count = 0;
+	/* GEN_ERR_REG_1 is clear-on-read: the datasheet specifies that SPI
+	 * errors latch until the register is read and never recover on their
+	 * own. The health sweep reads it every poll, so it also clears it
+	 * every poll -- whatever fired between two polls is consumed and
+	 * gone unless something retains it. Accumulate what we clear: a
+	 * sticky OR of every non-zero sample, and how many polls saw one. */
+	std::uint8_t general_error_1_sticky = 0;
+	std::uint32_t general_error_1_events = 0;
 	std::uint8_t last_failed_register = 0, last_received_header = 0;
+	/* Malformed reply headers bucketed by high nibble (saturating).
+	 * The expected header is 0x20, so a healthy bus leaves this all
+	 * zero; the shape of a non-zero histogram says whether the
+	 * corruption is systematic or random. */
+	std::uint16_t header_histogram[16] = {};
 };
 
 struct DiagnosticSnapshot {
