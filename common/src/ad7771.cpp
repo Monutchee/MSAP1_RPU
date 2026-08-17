@@ -48,14 +48,19 @@ constexpr std::uint8_t config_1_refout_buffer = 1u << 4;
 constexpr std::uint8_t config_2_filter_mode = 1u << 6;
 constexpr std::uint8_t config_2_sar_spi_mode = 1u << 5;
 /* GENERAL_USER_CONFIG_2 Bits[4:3] select SDO drive strength (datasheet
- * Table 24): 00 nominal, 01 strong, 10 weak, 11 extra strong. The part
- * powers up nominal, which is what this design ran until now. The
- * AD7771's own SPI error register stays clean across the malformed
- * replies the master counts, so the ADC is driving correct data and the
- * corruption is on the return path; a stronger SDO driver is the one
- * knob on the ADC side that addresses that. */
+ * Table 24): 00 nominal, 01 strong, 10 weak, 11 extra strong.
+ *
+ * Held at nominal, and the reason is measured rather than assumed. Strong
+ * was tried on the theory that the malformed replies came from return-path
+ * signal quality. It changed nothing -- 22 malformed headers in 2h04
+ * against 89 in 10h29m, the same rate inside the counting noise -- and the
+ * sticky GEN_ERR_REG_1 latch then showed why: the ADC raises
+ * SPI_INVALID_READ_ERR, meaning it decoded an invalid register address off
+ * SDI. The corruption is on the outbound path, which no SDO setting can
+ * reach. Driven explicitly rather than left at the power-up default so the
+ * value is verified every poll instead of merely assumed. */
 constexpr std::uint8_t config_2_sdo_strength_mask = 0x18u;
-constexpr std::uint8_t config_2_sdo_strength_strong = 1u << 3;
+constexpr std::uint8_t config_2_sdo_strength_nominal = 0u;
 constexpr std::uint8_t config_2_spi_sync = 1u << 0;
 constexpr std::uint8_t config_3_spi_data_mode = 1u << 4;
 constexpr std::uint8_t channel_config_pga_mask = 0xc0u;
@@ -532,7 +537,7 @@ Error Ad7771::configure_adc_registers(SrcLoadTrace *trace,
 		static_cast<std::uint8_t>(
 			(configuration_.filter == Filter::Sinc5 ?
 				config_2_filter_mode : 0u) |
-			config_2_sdo_strength_strong | config_2_spi_sync));
+			config_2_sdo_strength_nominal | config_2_spi_sync));
 	if (error != Error::None) return error;
 	error = update_adc_register(reg_general_user_config_3,
 		config_3_spi_data_mode, 0u);
@@ -922,7 +927,7 @@ Error Ad7771::read_register_health(RegisterHealth &health)
 			config_1_power_mode : 0u));
 	const auto expected_config_2 = static_cast<std::uint8_t>(
 		(configuration_.filter == Filter::Sinc5 ? config_2_filter_mode : 0u) |
-		config_2_sdo_strength_strong | config_2_spi_sync);
+		config_2_sdo_strength_nominal | config_2_spi_sync);
 	const auto expected_decimation = health.expected_decimation;
 	bool gains_match = true;
 	for (std::size_t channel = 0; channel < channel_count; ++channel)

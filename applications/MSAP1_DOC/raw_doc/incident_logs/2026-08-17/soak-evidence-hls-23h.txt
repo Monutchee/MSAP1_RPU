@@ -1,0 +1,23 @@
+Mon Aug 17 10:28:03 UTC 2026
+ 10:28:03 up 23:06,  load average: 0.16, 0.20, 0.18
+--- loaded PL ---
+b691127515589ca98e3be49661e54f2a  /usr/lib/firmware/xilinx/msap1/msap1-dfx-firmware.bin
+4bb9302e76125591dbf2b69507eafb48  /usr/lib/firmware/xilinx/msap1-rpu/rpu/0/R5c0.elf
+--- counters ---
+{"schema":"mnc.response.v1","success":true,"data":{"healthy":false,"full":false,"configuration_generation":3545159487,"meter_configured":true,"meter_generation_match":true,"dc_offset_removal":true,"frequency_arithmetic_ok":true,"rpu_health_age_ms":27927,"health_probe_pending":false,"health_probe_failures":0,"acquisition":{"healthy":true,"running":true,"record_present":true,"record_stale":false,"record_age_ms":123,"records":443690,"dma_bytes":113584640,"dma_read_errors":0,"invalid_records":0,"sequence_gaps":0},"adc":{"healthy":false,"spi_responsive":true,"initialized":true,"configuration_match":true,"rate_match":true,"capture_active":true,"fifo_ok":true,"headers_valid":false,"configured_rate_hz":128000,"measured_drdy_hz":128001,"measured_dclk_hz":8192063,"frames":2055411181,"packets":41583381,"fifo_overflows":0,"header_errors":5,"spi_error":0,"degraded_reasons":[{"code":"invalid_headers","message":"no valid ADC frames are available or 5 frame header error(s) were detected"}],"registers":[]}}}
+
+--- record-path event counts (all six) ---
+meter_sequence_gap                 0
+meter_record_stale_rejected        0
+meter_record_config_rejected       0
+meter_record_decode_rejected       0
+meter_sample_range_gap             0
+meter_aggregate_sequence_gap       0
+--- PL regs ---
+0x24: 0x000658D9
+0x74: 0x00000007
+0x7C: 0x00006C52
+0x80: 0x00000000
+0x84: 0x00000001
+0x88: 0x00000000
+0x8C: 0x00000000
