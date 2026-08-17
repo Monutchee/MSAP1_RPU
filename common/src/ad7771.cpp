@@ -47,20 +47,26 @@ constexpr std::uint8_t config_1_power_mode = 1u << 6;
 constexpr std::uint8_t config_1_refout_buffer = 1u << 4;
 constexpr std::uint8_t config_2_filter_mode = 1u << 6;
 constexpr std::uint8_t config_2_sar_spi_mode = 1u << 5;
-/* GENERAL_USER_CONFIG_2 Bits[4:3] select SDO drive strength (datasheet
- * Table 24): 00 nominal, 01 strong, 10 weak, 11 extra strong.
+/* GENERAL_USER_CONFIG_2 Bits[4:3], SDO_DRIVE_STR (datasheet Table 24 and
+ * Table 63): 00 nominal, 01 strong, 10 weak, 11 extra strong.
  *
- * Held at nominal, and the reason is measured rather than assumed. Strong
- * was tried on the theory that the malformed replies came from return-path
- * signal quality. It changed nothing -- 22 malformed headers in 2h04
- * against 89 in 10h29m, the same rate inside the counting noise -- and the
- * sticky GEN_ERR_REG_1 latch then showed why: the ADC raises
- * SPI_INVALID_READ_ERR, meaning it decoded an invalid register address off
- * SDI. The corruption is on the outbound path, which no SDO setting can
- * reach. Driven explicitly rather than left at the power-up default so the
- * value is verified every poll instead of merely assumed. */
+ * Note the reset value is 0x1, STRONG -- not nominal. The encoding is not
+ * monotonic and the datasheet prose calls 0x1 "the default mode of
+ * strength", which is easy to misread. Anything here that leaves these
+ * bits alone is therefore running strong already, so "switch to strong"
+ * is a no-op and "revert to nominal" would drive the pin WEAKER than the
+ * part ships.
+ *
+ * Held at the reset value deliberately, written explicitly so it is
+ * verified every poll rather than merely inherited. Drive strength is not
+ * the fault in any case: the sticky GEN_ERR_REG_1 latch shows the ADC
+ * raising SPI_INVALID_READ_ERR, meaning it decoded an invalid register
+ * address off SDI, so the corruption is on the outbound path where no SDO
+ * setting reaches. Bits[2:1] (DOUT_DRIVE_STR) are left at their reset
+ * nominal and out of the verify mask: that interface carries 8.192 MHz
+ * cleanly and is not worth perturbing. */
 constexpr std::uint8_t config_2_sdo_strength_mask = 0x18u;
-constexpr std::uint8_t config_2_sdo_strength_nominal = 0u;
+constexpr std::uint8_t config_2_sdo_strength_default = 1u << 3;
 constexpr std::uint8_t config_2_spi_sync = 1u << 0;
 constexpr std::uint8_t config_3_spi_data_mode = 1u << 4;
 constexpr std::uint8_t channel_config_pga_mask = 0xc0u;
@@ -537,7 +543,7 @@ Error Ad7771::configure_adc_registers(SrcLoadTrace *trace,
 		static_cast<std::uint8_t>(
 			(configuration_.filter == Filter::Sinc5 ?
 				config_2_filter_mode : 0u) |
-			config_2_sdo_strength_nominal | config_2_spi_sync));
+			config_2_sdo_strength_default | config_2_spi_sync));
 	if (error != Error::None) return error;
 	error = update_adc_register(reg_general_user_config_3,
 		config_3_spi_data_mode, 0u);
@@ -927,7 +933,7 @@ Error Ad7771::read_register_health(RegisterHealth &health)
 			config_1_power_mode : 0u));
 	const auto expected_config_2 = static_cast<std::uint8_t>(
 		(configuration_.filter == Filter::Sinc5 ? config_2_filter_mode : 0u) |
-		config_2_sdo_strength_nominal | config_2_spi_sync);
+		config_2_sdo_strength_default | config_2_spi_sync);
 	const auto expected_decimation = health.expected_decimation;
 	bool gains_match = true;
 	for (std::size_t channel = 0; channel < channel_count; ++channel)
