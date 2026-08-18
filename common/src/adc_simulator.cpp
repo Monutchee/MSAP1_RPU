@@ -32,11 +32,14 @@ constexpr std::uint32_t reg_counter_clear = 0xac;
 constexpr std::uint32_t reg_active_dc_base = 0xb0;
 constexpr std::uint32_t reg_shadow_noise_base = 0xd0;
 constexpr std::uint32_t reg_active_noise_base = 0x100;
+constexpr std::uint32_t reg_shadow_harmonic_base = 0x200;
+constexpr std::uint32_t reg_active_harmonic_base = 0x220;
 
 constexpr std::uint32_t simulator_id = 0x53494d31u; // SIM1
 constexpr std::uint32_t supported_major_version = 1u;
-/* DC offset, noise, preserve-phase, and counter clears arrived in 1.1. */
-constexpr std::uint32_t required_minor_version = 1u;
+/* 1.1: DC offset, noise, preserve-phase, counter clears. 1.2: the four
+ * global harmonic slots. */
+constexpr std::uint32_t required_minor_version = 2u;
 constexpr std::uint32_t control_source_simulator = 1u << 0;
 constexpr std::uint32_t control_enable = 1u << 1;
 constexpr std::uint32_t control_preserve_phase = 1u << 2;
@@ -63,6 +66,11 @@ bool valid(const Configuration &configuration,
 	}
 	for (const auto noise : simulator.noise_level_counts) {
 		if (noise > 8388607u)
+			return false;
+	}
+	for (std::size_t slot = 0; slot < 4; ++slot) {
+		/* order 1 would silently double the fundamental. */
+		if ((simulator.harmonic_words[slot * 2] & 0xffu) == 1u)
 			return false;
 	}
 	return true;
@@ -148,6 +156,8 @@ Error AdcSimulator::configure(const Configuration &configuration,
 		      static_cast<std::uint32_t>(simulator.dc_offset_counts[channel]));
 		write(reg_shadow_noise_base + channel * 4u,
 		      simulator.noise_level_counts[channel]);
+		write(reg_shadow_harmonic_base + channel * 4u,
+		      simulator.harmonic_words[channel]);
 	}
 	write(reg_shadow_phase_step, simulator.phase_step_q32);
 
@@ -170,7 +180,9 @@ Error AdcSimulator::configure(const Configuration &configuration,
 				static_cast<std::uint32_t>(
 					simulator.dc_offset_counts[channel]) &&
 			read(reg_active_noise_base + channel * 4u) ==
-				simulator.noise_level_counts[channel];
+				simulator.noise_level_counts[channel] &&
+			read(reg_active_harmonic_base + channel * 4u) ==
+				simulator.harmonic_words[channel];
 	}
 	if (!matches)
 		return Error::AdcRegisterMismatch;
