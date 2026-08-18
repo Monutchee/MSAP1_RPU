@@ -40,6 +40,14 @@ struct SimulatorConfiguration {
 	std::array<std::int32_t, channel_count> peak_counts{};
 	std::array<std::uint32_t, channel_count> phase_q32{};
 	std::uint32_t phase_step_q32 = 0;
+	/* Signed DC offset per channel, ADC counts. */
+	std::array<std::int32_t, channel_count> dc_offset_counts{};
+	/* Uniform fluctuation amplitude per channel, ADC counts (the PL
+	 * adds white noise in +/- level; RMS contribution level/sqrt(3)). */
+	std::array<std::uint32_t, channel_count> noise_level_counts{};
+	/* Keep phase/scheduler/packet framing across APPLY so the waveform
+	 * continues seamlessly instead of restarting at 0 degrees. */
+	bool preserve_phase = false;
 };
 
 struct CaptureStatus {
