@@ -59,6 +59,8 @@ std::uint32_t apply_meter_config(
 			wire.simulator_dc_offset_counts[channel];
 		simulator_configuration.noise_level_counts[channel] =
 			wire.simulator_noise_level_counts[channel];
+		simulator_configuration.harmonic_words[channel] =
+			wire.simulator_harmonics[channel];
 	}
 	const auto source = wire.adc_source == MSAP1_ADC_SOURCE_SIMULATOR ?
 		msap1::adc::Source::Simulator : msap1::adc::Source::Physical;
