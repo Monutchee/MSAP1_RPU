@@ -9,12 +9,17 @@ AdcController::AdcController(Ad7771 &physical, AdcSimulator &simulator)
 
 Error AdcController::initialize(const Configuration &physical_configuration)
 {
+	/*
+	 * The two devices fail independently: a missing or version-stale
+	 * simulator core (a PL bitstream older than this firmware, seen
+	 * 2026-08-18) must never take physical metering down with it.
+	 * Health reports each device's state; only the selected source's
+	 * device has to be healthy for that source to operate.
+	 */
 	const auto simulator_error = simulator_.initialize(physical_configuration);
-	if (simulator_error != Error::None)
-		return simulator_error;
 	const auto physical_error = physical_.initialize(physical_configuration);
 	active_ = &physical_;
-	return physical_error;
+	return physical_error != Error::None ? physical_error : simulator_error;
 }
 
 Error AdcController::configure(
@@ -32,7 +37,12 @@ Error AdcController::configure(
 	if (target_source == Source::Physical) {
 		error = physical_.configure_operating_point(
 			configuration.sample_rate, configuration.pga_gains);
-		if (error == Error::None)
+		/*
+		 * Deselecting the simulator is best-effort when its core is
+		 * unavailable: the PL reset default is the physical source,
+		 * and an unusable simulator must not block physical capture.
+		 */
+		if (error == Error::None && simulator_.initialized())
 			error = simulator_.select_source(false);
 		if (error == Error::None)
 			active_ = &physical_;
@@ -54,7 +64,8 @@ Error AdcController::configure(
 		(void)physical_.configure_operating_point(
 			previous_physical_configuration.sample_rate,
 			previous_physical_configuration.pga_gains);
-		(void)simulator_.select_source(false);
+		if (simulator_.initialized())
+			(void)simulator_.select_source(false);
 		active_ = &physical_;
 	} else {
 		(void)simulator_.configure(previous_simulator_configuration,
