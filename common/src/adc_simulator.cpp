@@ -27,12 +27,21 @@ constexpr std::uint32_t reg_shadow_phase_base = 0x60;
 constexpr std::uint32_t reg_shadow_phase_step = 0x80;
 constexpr std::uint32_t reg_active_control = 0x84;
 constexpr std::uint32_t reg_active_phase_step = 0x88;
+constexpr std::uint32_t reg_shadow_dc_base = 0x8c;
+constexpr std::uint32_t reg_counter_clear = 0xac;
+constexpr std::uint32_t reg_active_dc_base = 0xb0;
+constexpr std::uint32_t reg_shadow_noise_base = 0xd0;
+constexpr std::uint32_t reg_active_noise_base = 0x100;
 
 constexpr std::uint32_t simulator_id = 0x53494d31u; // SIM1
 constexpr std::uint32_t supported_major_version = 1u;
+/* DC offset, noise, preserve-phase, and counter clears arrived in 1.1. */
+constexpr std::uint32_t required_minor_version = 1u;
 constexpr std::uint32_t control_source_simulator = 1u << 0;
 constexpr std::uint32_t control_enable = 1u << 1;
+constexpr std::uint32_t control_preserve_phase = 1u << 2;
 constexpr std::uint32_t apply_command = 1u;
+constexpr std::uint32_t counter_clear_all = 0x7u;
 constexpr unsigned int readback_attempts = 1000;
 
 bool valid(const Configuration &configuration,
@@ -46,6 +55,14 @@ bool valid(const Configuration &configuration,
 		return false;
 	for (const auto peak : simulator.peak_counts) {
 		if (peak < -8388608 || peak > 8388607)
+			return false;
+	}
+	for (const auto dc : simulator.dc_offset_counts) {
+		if (dc < -8388608 || dc > 8388607)
+			return false;
+	}
+	for (const auto noise : simulator.noise_level_counts) {
+		if (noise > 8388607u)
 			return false;
 	}
 	return true;
@@ -67,8 +84,10 @@ void AdcSimulator::write(std::uint32_t offset, std::uint32_t value) const
 
 bool AdcSimulator::core_present() const
 {
+	const auto version = read(reg_version);
 	return read(reg_id) == simulator_id &&
-	       (read(reg_version) >> 16) == supported_major_version;
+	       (version >> 16) == supported_major_version &&
+	       (version & 0xffffu) >= required_minor_version;
 }
 
 Error AdcSimulator::initialize(const Configuration &configuration)
@@ -88,7 +107,9 @@ Error AdcSimulator::apply(bool selected, bool enabled)
 		return Error::CaptureNotInitialized;
 
 	const auto control = (selected ? control_source_simulator : 0u) |
-		(enabled ? control_enable : 0u);
+		(enabled ? control_enable : 0u) |
+		(simulator_configuration_.preserve_phase ?
+			control_preserve_phase : 0u);
 	write(reg_shadow_control, control);
 	write(reg_apply, apply_command);
 	for (unsigned int attempt = 0; attempt < readback_attempts; ++attempt) {
@@ -123,21 +144,40 @@ Error AdcSimulator::configure(const Configuration &configuration,
 		      static_cast<std::uint32_t>(simulator.peak_counts[channel]));
 		write(reg_shadow_phase_base + channel * 4u,
 		      simulator.phase_q32[channel]);
+		write(reg_shadow_dc_base + channel * 4u,
+		      static_cast<std::uint32_t>(simulator.dc_offset_counts[channel]));
+		write(reg_shadow_noise_base + channel * 4u,
+		      simulator.noise_level_counts[channel]);
 	}
 	write(reg_shadow_phase_step, simulator.phase_step_q32);
 
+	/* apply() folds the preserve-phase level into CONTROL. */
+	simulator_configuration_.preserve_phase = simulator.preserve_phase;
 	const auto error = apply(select_source, false);
 	if (error != Error::None)
 		return error;
-	const bool matches =
+	bool matches =
 		read(reg_active_sample_rate) == sample_rate_hz(configuration.sample_rate) &&
 		read(reg_active_frequency) == simulator.frequency_millihz &&
 		(read(reg_active_valid_mask) & 0xffu) ==
 			(simulator.valid_mask & 0x7fu) &&
 		read(reg_active_generation) == simulator.generation &&
 		read(reg_active_phase_step) == simulator.phase_step_q32;
+	for (std::size_t channel = 0; matches && channel < channel_count;
+	     ++channel) {
+		matches =
+			read(reg_active_dc_base + channel * 4u) ==
+				static_cast<std::uint32_t>(
+					simulator.dc_offset_counts[channel]) &&
+			read(reg_active_noise_base + channel * 4u) ==
+				simulator.noise_level_counts[channel];
+	}
 	if (!matches)
 		return Error::AdcRegisterMismatch;
+
+	/* Each committed scenario starts with clean per-scenario counters
+	 * (saturation, missed samples, frames). */
+	write(reg_counter_clear, counter_clear_all);
 
 	configuration_ = configuration;
 	simulator_configuration_ = simulator;

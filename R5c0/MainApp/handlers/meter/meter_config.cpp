@@ -16,7 +16,8 @@ std::uint32_t apply_meter_config(
 	    (wire.simulator_valid_mask & ~0x7fu) != 0u ||
 	    (wire.flags & ~(MSAP1_METER_CONFIG_ENABLE |
 			    MSAP1_METER_CONFIG_REMOVE_DC)) != 0u ||
-	    (wire.frequency_flags & ~MSAP1_FREQUENCY_CONFIG_ENABLE) != 0u)
+	    (wire.frequency_flags & ~MSAP1_FREQUENCY_CONFIG_ENABLE) != 0u ||
+	    (wire.simulator_flags & ~MSAP1_SIMULATOR_FLAG_PRESERVE_PHASE) != 0u)
 		return MSAP1_RPU_STATUS_BAD_PAYLOAD;
 
 	msap1::adc::SampleRate sample_rate = msap1::adc::SampleRate::Sps32000;
@@ -46,12 +47,18 @@ std::uint32_t apply_meter_config(
 		wire.simulator_frequency_millihz;
 	simulator_configuration.valid_mask = wire.simulator_valid_mask;
 	simulator_configuration.phase_step_q32 = wire.simulator_phase_step_q32;
+	simulator_configuration.preserve_phase =
+		(wire.simulator_flags & MSAP1_SIMULATOR_FLAG_PRESERVE_PHASE) != 0u;
 	for (std::size_t channel = 0; channel < msap1::adc::channel_count;
 	     ++channel) {
 		simulator_configuration.peak_counts[channel] =
 			wire.simulator_peak_counts[channel];
 		simulator_configuration.phase_q32[channel] =
 			wire.simulator_phase_q32[channel];
+		simulator_configuration.dc_offset_counts[channel] =
+			wire.simulator_dc_offset_counts[channel];
+		simulator_configuration.noise_level_counts[channel] =
+			wire.simulator_noise_level_counts[channel];
 	}
 	const auto source = wire.adc_source == MSAP1_ADC_SOURCE_SIMULATOR ?
 		msap1::adc::Source::Simulator : msap1::adc::Source::Physical;
