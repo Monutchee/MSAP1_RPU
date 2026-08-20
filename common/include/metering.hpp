@@ -26,6 +26,20 @@ struct Configuration {
 		std::uint32_t hysteresis_microvolts = 1000000;
 	};
 
+	// IEC 61000-4-30 Urms(1/2) event detection (metrology M12).
+	// reference_microvolts is the declared reference Udin and ZERO
+	// DISABLES DETECTION: the PL keeps publishing Urms(1/2) snapshots
+	// but never declares an event, so an unconfigured reference cannot
+	// invent dips. Thresholds are fractions of that reference in units
+	// of 1e-4 (9000 = 90.00 %), matching the PL's pq_event_pkg.
+	struct PowerQuality {
+		std::uint32_t reference_microvolts = 0;
+		std::uint32_t sag_threshold_e4 = 9000;
+		std::uint32_t swell_threshold_e4 = 11000;
+		std::uint32_t interruption_threshold_e4 = 1000;
+		std::uint32_t hysteresis_e4 = 200;
+	};
+
 	std::uint32_t generation = 0;
 	std::uint32_t sample_rate_hz = 128000;
 	std::uint32_t rms_window_samples = 25600;
@@ -38,6 +52,7 @@ struct Configuration {
 	bool enable = true;
 	bool remove_dc = true;
 	Frequency frequency{};
+	PowerQuality power_quality{};
 };
 
 struct Status {

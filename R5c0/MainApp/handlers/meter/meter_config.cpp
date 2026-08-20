@@ -100,6 +100,14 @@ std::uint32_t apply_meter_config(
 	configuration.frequency.hysteresis_microvolts =
 		wire.frequency_hysteresis_microvolts;
 	configuration.nominal_frequency_hz = wire.nominal_frequency_hz;
+	configuration.power_quality.reference_microvolts =
+		wire.pq_reference_microvolts;
+	configuration.power_quality.sag_threshold_e4 = wire.pq_sag_threshold_e4;
+	configuration.power_quality.swell_threshold_e4 =
+		wire.pq_swell_threshold_e4;
+	configuration.power_quality.interruption_threshold_e4 =
+		wire.pq_interruption_threshold_e4;
+	configuration.power_quality.hysteresis_e4 = wire.pq_hysteresis_e4;
 
 	const auto error = metering.configure(configuration);
 	if (error != msap1::meter::Error::None)

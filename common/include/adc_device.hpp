@@ -54,6 +54,33 @@ struct SimulatorConfiguration {
 	std::array<std::uint32_t, 8> harmonic_words{};
 };
 
+/*
+ * One event-sequencer burst description (metrology M12). Held apart from
+ * SimulatorConfiguration on purpose: a configuration commit restarts the
+ * generator, and an event that restarted the waveform would be
+ * indistinguishable from the disturbance under test.
+ */
+struct SimulatorEvent {
+	/* Lanes the amplitude envelope multiplies, bit per channel. */
+	std::uint32_t channel_mask = 0;
+	/* Unsigned Q16 multiplier; 0x10000 unity, 0 a full interruption. */
+	std::uint32_t scale_q16 = 0x10000u;
+	/* Burst length in half cycles of the generated waveform. */
+	std::uint32_t duration_half_cycles = 0;
+	/* Repeat period in half cycles, start to start. */
+	std::uint32_t period_half_cycles = 0;
+	bool repeat = false;
+};
+
+/* Live sequencer state, read straight from the PL registers. */
+struct SimulatorEventStatus {
+	std::uint32_t status = 0;
+	std::uint32_t remaining = 0;
+	std::uint32_t active_control = 0;
+	std::uint32_t active_scale = 0;
+	std::uint32_t active_timing = 0;
+};
+
 struct CaptureStatus {
 	std::uint32_t flags = 0, frames = 0, overflows = 0;
 	std::uint32_t header_errors = 0, alerts = 0, packets = 0;

@@ -34,6 +34,18 @@ public:
 			const SimulatorConfiguration &simulator,
 			bool select_source);
 	Error select_source(bool selected);
+
+	/*
+	 * Event sequencer (metrology M12). These deliberately do NOT touch
+	 * the waveform shadow bank or APPLY: a burst is armed against a
+	 * running configuration and starts on the generator's own
+	 * half-cycle boundary, so the only discontinuity in the stream is
+	 * the programmed amplitude step.
+	 */
+	Error arm_event(const SimulatorEvent &event);
+	Error cancel_event();
+	Error clear_event_count();
+	SimulatorEventStatus event_status() const;
 	const SimulatorConfiguration &simulator_configuration() const
 	{
 		return simulator_configuration_;
