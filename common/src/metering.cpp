@@ -42,6 +42,17 @@ constexpr std::uint32_t processing_agg_reset_count = 0x80;
 constexpr std::uint32_t processing_agg_ineligible_count = 0x84;
 constexpr std::uint32_t processing_agg_continuity_count = 0x88;
 constexpr std::uint32_t processing_agg_drop_count = 0x8c;
+// Urms(1/2) event detection (metrology M12, PL pq_event_pkg). These
+// shadow registers commit on the same CONTROL apply toggle as the RMS,
+// frequency, and grid configuration. There is deliberately NO active
+// readback: the PL engine holds the committed thresholds internally and
+// echoes them in every PQ record (words 32..36), which is a stronger
+// check than a register mirror -- the value that reaches the consumer is
+// the value the record was evaluated against.
+constexpr std::uint32_t processing_pq_shadow_reference = 0xa0;
+constexpr std::uint32_t processing_pq_shadow_threshold = 0xa4;
+constexpr std::uint32_t processing_pq_shadow_limits = 0xa8;
+constexpr std::uint32_t processing_pq_status = 0xac;
 
 constexpr std::uint32_t conversion_identifier = 0x41435631u; // "ACV1"
 constexpr std::uint32_t processing_identifier = 0x4d505231u; // "MPR1"
@@ -77,6 +88,26 @@ bool valid_configuration(const Configuration &configuration)
 	    configuration.frequency.hysteresis_microvolts > 100000000u)
 		return false;
 
+	// Event detection: a zero reference is the documented DISARMED
+	// state, but a configured reference with a nonsensical band would
+	// declare events that mean nothing. Every threshold is a 1e-4
+	// fraction, so it must fit 16 bits, and the band must be ordered
+	// interruption < sag < swell with room for the hysteresis to sit
+	// inside the sag threshold.
+	{
+		const auto &pq = configuration.power_quality;
+		if (pq.sag_threshold_e4 > 0xffffu ||
+		    pq.swell_threshold_e4 > 0xffffu ||
+		    pq.interruption_threshold_e4 > 0xffffu ||
+		    pq.hysteresis_e4 > 0xffffu)
+			return false;
+		if (pq.reference_microvolts != 0u &&
+		    (pq.interruption_threshold_e4 >= pq.sag_threshold_e4 ||
+		     pq.sag_threshold_e4 >= pq.swell_threshold_e4 ||
+		     pq.hysteresis_e4 >= pq.sag_threshold_e4))
+			return false;
+	}
+
 	for (std::size_t channel = 0; channel < channel_count; ++channel) {
 		if ((configuration.valid_mask & (1u << channel)) != 0u &&
 		    configuration.scale_micro_units_q16[channel] == 0u)
@@ -99,6 +130,20 @@ std::uint32_t frequency_control(const Configuration::Frequency &frequency)
 constexpr std::uint32_t cycles_per_block(std::uint32_t nominal_frequency_hz)
 {
 	return nominal_frequency_hz == 50u ? 10u : 12u;
+}
+
+// The PQ shadow words pack two 1e-4 fractions each, mirroring the PL's
+// pq_event_pkg layout.
+std::uint32_t pq_threshold(const Configuration::PowerQuality &pq)
+{
+	return (pq.sag_threshold_e4 & 0xffffu) |
+		((pq.swell_threshold_e4 & 0xffffu) << 16);
+}
+
+std::uint32_t pq_limits(const Configuration::PowerQuality &pq)
+{
+	return (pq.interruption_threshold_e4 & 0xffffu) |
+		((pq.hysteresis_e4 & 0xffffu) << 16);
 }
 
 std::uint32_t grid_config(const Configuration &configuration)
@@ -193,6 +238,12 @@ Error MeteringPipeline::configure(const Configuration &configuration)
 			 configuration.frequency.hysteresis_microvolts);
 	const auto expected_grid_config = grid_config(configuration);
 	processing_write(processing_grid_shadow_config, expected_grid_config);
+	processing_write(processing_pq_shadow_reference,
+			 configuration.power_quality.reference_microvolts);
+	processing_write(processing_pq_shadow_threshold,
+			 pq_threshold(configuration.power_quality));
+	processing_write(processing_pq_shadow_limits,
+			 pq_limits(configuration.power_quality));
 
 	const auto conversion_control =
 		(configuration.enable ? control_enable : 0u) | control_apply;

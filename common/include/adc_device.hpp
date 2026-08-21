@@ -40,6 +40,45 @@ struct SimulatorConfiguration {
 	std::array<std::int32_t, channel_count> peak_counts{};
 	std::array<std::uint32_t, channel_count> phase_q32{};
 	std::uint32_t phase_step_q32 = 0;
+	/* Signed DC offset per channel, ADC counts. */
+	std::array<std::int32_t, channel_count> dc_offset_counts{};
+	/* Uniform fluctuation amplitude per channel, ADC counts (the PL
+	 * adds white noise in +/- level; RMS contribution level/sqrt(3)). */
+	std::array<std::uint32_t, channel_count> noise_level_counts{};
+	/* Keep phase/scheduler/packet framing across APPLY so the waveform
+	 * continues seamlessly instead of restarting at 0 degrees. */
+	bool preserve_phase = false;
+	/* Four harmonic slots, two packed words each (the PL register
+	 * layout: word0 = order | mask<<8 | fraction_q16<<16; word1 = phase
+	 * Q0.32). All-zero slots are disabled. */
+	std::array<std::uint32_t, 8> harmonic_words{};
+};
+
+/*
+ * One event-sequencer burst description (metrology M12). Held apart from
+ * SimulatorConfiguration on purpose: a configuration commit restarts the
+ * generator, and an event that restarted the waveform would be
+ * indistinguishable from the disturbance under test.
+ */
+struct SimulatorEvent {
+	/* Lanes the amplitude envelope multiplies, bit per channel. */
+	std::uint32_t channel_mask = 0;
+	/* Unsigned Q16 multiplier; 0x10000 unity, 0 a full interruption. */
+	std::uint32_t scale_q16 = 0x10000u;
+	/* Burst length in half cycles of the generated waveform. */
+	std::uint32_t duration_half_cycles = 0;
+	/* Repeat period in half cycles, start to start. */
+	std::uint32_t period_half_cycles = 0;
+	bool repeat = false;
+};
+
+/* Live sequencer state, read straight from the PL registers. */
+struct SimulatorEventStatus {
+	std::uint32_t status = 0;
+	std::uint32_t remaining = 0;
+	std::uint32_t active_control = 0;
+	std::uint32_t active_scale = 0;
+	std::uint32_t active_timing = 0;
 };
 
 struct CaptureStatus {

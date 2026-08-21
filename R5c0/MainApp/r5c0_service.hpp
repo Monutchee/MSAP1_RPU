@@ -65,6 +65,10 @@ private:
 				   const void *payload,
 				   std::uint16_t payload_len,
 				   std::uint32_t src);
+	bool handle_simulator_event(const msap1_rpu_msg_header &request,
+				    const void *payload,
+				    std::uint16_t payload_len,
+				    std::uint32_t src);
 	bool handle_capture_start(const msap1_rpu_msg_header &request,
 				  std::uint16_t payload_len,
 				  std::uint32_t src);

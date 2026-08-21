@@ -47,6 +47,7 @@ set(USER_COMPILE_SOURCES
 "../MainApp/handlers/adc/adc_health.cpp"
 "../MainApp/handlers/adc/adc_diagnostic.cpp"
 "../MainApp/handlers/adc/adc_capture.cpp"
+"../MainApp/handlers/adc/simulator_event.cpp"
 "../MainApp/handlers/meter/meter_config.cpp"
 # Generic OpenAMP helper library (git submodule: libs/openamp-helper)
 "../../libs/openamp-helper/src/openamp_platform.cpp"
