@@ -29,6 +29,7 @@ set(USER_UNDEFINED_SYMBOLS
 
 set(USER_INCLUDE_DIRECTORIES
 "../../common/include"
+"MainApp/aggregation"
 # generic OpenAMP helper library (git submodule)
 "../../libs/openamp-helper/include"
 "../../libs/openamp-helper/machine/zynqmp_r5"
@@ -42,6 +43,12 @@ set(USER_INCLUDE_DIRECTORIES
 #Example 3: Adding ${MY_ENV}/data/helloworld.c are expanded using project-specific environment settings.
 set(USER_COMPILE_SOURCES
 "MainApp/main.cpp"
+"MainApp/aggregation/aggregation_frame_decoder.cpp"
+"MainApp/aggregation/aggregation_frame_ring.cpp"
+"MainApp/aggregation/aggregation_health.cpp"
+"MainApp/aggregation/aggregation_shadow_service.cpp"
+"MainApp/aggregation/axi_fifo_aggregation_transport.cpp"
+"MainApp/aggregation/crc32c.cpp"
 # Generic OpenAMP helper library (git submodule: libs/openamp-helper)
 "../../libs/openamp-helper/src/openamp_platform.cpp"
 "../../libs/openamp-helper/src/rpmsg_endpoint.cpp"
