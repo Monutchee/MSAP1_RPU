@@ -40,6 +40,26 @@ void AggregationHealth::set_transport_initialized(bool initialized) noexcept
 	store(transport_initialized_, initialized ? 1U : 0U);
 }
 
+void AggregationHealth::set_engine_ready(bool ready) noexcept
+{
+	store(engine_ready_, ready ? 1U : 0U);
+}
+
+void AggregationHealth::set_output_ready(bool ready) noexcept
+{
+	store(output_ready_, ready ? 1U : 0U);
+}
+
+void AggregationHealth::set_output_active(bool active) noexcept
+{
+	store(output_active_, active ? 1U : 0U);
+}
+
+void AggregationHealth::set_authoritative(bool authoritative) noexcept
+{
+	store(authoritative_, authoritative ? 1U : 0U);
+}
+
 void AggregationHealth::record_received() noexcept
 {
 	increment(frames_received_);
@@ -49,6 +69,8 @@ void AggregationHealth::record_valid(std::uint32_t sequence) noexcept
 {
 	increment(frames_valid_);
 	store(last_sequence_, sequence);
+	store(last_validation_error_,
+		static_cast<std::uint32_t>(FrameValidationError::none));
 }
 
 void AggregationHealth::record_invalid(FrameValidationError error) noexcept
@@ -112,11 +134,59 @@ void AggregationHealth::record_length_error(std::uint32_t length) noexcept
 	store(last_frame_length_, length);
 }
 
+void AggregationHealth::record_output_queued() noexcept
+{
+	increment(records_queued_);
+}
+
+void AggregationHealth::record_output_emitted(std::uint32_t sequence,
+	std::uint32_t vacancy_words) noexcept
+{
+	increment(records_emitted_);
+	store(last_output_sequence_, sequence);
+	store(last_tx_vacancy_, vacancy_words);
+}
+
+void AggregationHealth::record_output_error(std::uint32_t vacancy_words) noexcept
+{
+	increment(output_errors_);
+	store(last_tx_vacancy_, vacancy_words);
+}
+
+void AggregationHealth::record_output_drop() noexcept
+{
+	increment(output_drops_);
+}
+
+void AggregationHealth::record_basic_completed() noexcept
+{
+	increment(basic_completed_);
+}
+
+void AggregationHealth::record_aggregate_completed() noexcept
+{
+	increment(aggregate_completed_);
+}
+
+void AggregationHealth::record_ten_minute_completed() noexcept
+{
+	increment(ten_minute_completed_);
+}
+
+void AggregationHealth::record_two_hour_completed() noexcept
+{
+	increment(two_hour_completed_);
+}
+
 AggregationHealthSnapshot AggregationHealth::snapshot() const noexcept
 {
 	AggregationHealthSnapshot result{};
 	result.transport_available = load(transport_available_) != 0U;
 	result.transport_initialized = load(transport_initialized_) != 0U;
+	result.engine_ready = load(engine_ready_) != 0U;
+	result.output_ready = load(output_ready_) != 0U;
+	result.output_active = load(output_active_) != 0U;
+	result.authoritative = load(authoritative_) != 0U;
 	result.frames_received = load(frames_received_);
 	result.frames_valid = load(frames_valid_);
 	result.frames_invalid = load(frames_invalid_);
@@ -128,10 +198,20 @@ AggregationHealthSnapshot AggregationHealth::snapshot() const noexcept
 	result.ring_overflows = load(ring_overflows_);
 	result.fifo_errors = load(fifo_errors_);
 	result.length_errors = load(length_errors_);
+	result.records_queued = load(records_queued_);
+	result.records_emitted = load(records_emitted_);
+	result.output_errors = load(output_errors_);
+	result.output_drops = load(output_drops_);
+	result.basic_completed = load(basic_completed_);
+	result.aggregate_completed = load(aggregate_completed_);
+	result.ten_minute_completed = load(ten_minute_completed_);
+	result.two_hour_completed = load(two_hour_completed_);
 	result.last_sequence = load(last_sequence_);
 	result.expected_sequence = load(expected_sequence_);
 	result.last_fifo_error = load(last_fifo_error_);
 	result.last_frame_length = load(last_frame_length_);
+	result.last_output_sequence = load(last_output_sequence_);
+	result.last_tx_vacancy = load(last_tx_vacancy_);
 	result.last_validation_error = static_cast<FrameValidationError>(
 		load(last_validation_error_));
 	return result;

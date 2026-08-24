@@ -15,21 +15,43 @@
 #include "aggregation/aggregation_frame_decoder.hpp"
 #include "aggregation/aggregation_frame_ring.hpp"
 #include "aggregation/aggregation_health.hpp"
+#include "aggregation/aggregation_output_service.hpp"
+#include "aggregation/aggregation_record_ring.hpp"
+#include "aggregation/r5_aggregation_engine.hpp"
 #include "aggregation/aggregation_shadow_service.hpp"
 #include "aggregation/axi_fifo_aggregation_transport.hpp"
 
-static R5c1Service service(msap1::CoreConfig::current());
+#ifndef MNC_R5_AGGREGATION_EMIT_OUTPUT
+#define MNC_R5_AGGREGATION_EMIT_OUTPUT 0
+#endif
 
+namespace {
+
+constexpr auto aggregation_output_mode =
+	MNC_R5_AGGREGATION_EMIT_OUTPUT != 0
+		? msap1::aggregation::AggregationOutputMode::emit
+		: msap1::aggregation::AggregationOutputMode::shadow;
+
+} // namespace
+
+static msap1::aggregation::AggregationHealth aggregation_health;
+static R5c1Service service(msap1::CoreConfig::current(), aggregation_health);
 static msap1::aggregation::AxiFifoAggregationTransport aggregation_transport;
 static msap1::aggregation::AggregationFrameRing aggregation_ring;
 static msap1::aggregation::AggregationFrameDecoder aggregation_decoder;
-static msap1::aggregation::AggregationHealth aggregation_health;
+static msap1::aggregation::AggregationRecordRing aggregation_output_ring;
+static msap1::aggregation::AggregationOutputService aggregation_output(
+	aggregation_transport, aggregation_output_ring, aggregation_health);
+static msap1::aggregation::R5AggregationEngine aggregation_engine(
+	aggregation_output, aggregation_health,
+	aggregation_output_mode);
 static msap1::aggregation::AggregationShadowService aggregation_shadow(
 	aggregation_transport, aggregation_ring, aggregation_decoder,
-	aggregation_health);
+	aggregation_engine, aggregation_health);
 
 static TaskHandle_t comm_task_handle;
 static TaskHandle_t aggregation_input_task_handle;
+static TaskHandle_t aggregation_output_task_handle;
 static TaskHandle_t aggregation_validator_task_handle;
 
 static void comm_task(void *)
@@ -47,6 +69,11 @@ static void aggregation_validator_task(void *)
 	aggregation_shadow.run_validator();
 }
 
+static void aggregation_output_task(void *)
+{
+	aggregation_output.run();
+}
+
 int main(void)
 {
 	if (xTaskCreate(comm_task, "RPMSG", 2048, NULL, 2,
@@ -54,6 +81,9 @@ int main(void)
 		return -1;
 	if (xTaskCreate(aggregation_input_task, "AGG_RX", 2048, NULL, 4,
 			&aggregation_input_task_handle) != pdPASS)
+		return -1;
+	if (xTaskCreate(aggregation_output_task, "AGG_TX", 2048, NULL, 3,
+			&aggregation_output_task_handle) != pdPASS)
 		return -1;
 	if (xTaskCreate(aggregation_validator_task, "AGG_VAL", 2048, NULL, 1,
 			&aggregation_validator_task_handle) != pdPASS)
@@ -67,6 +97,7 @@ int main(void)
 	 */
 	(void)aggregation_shadow.initialize(aggregation_input_task_handle,
 		aggregation_validator_task_handle);
+	aggregation_output.initialize();
 
 	vTaskStartScheduler();
 

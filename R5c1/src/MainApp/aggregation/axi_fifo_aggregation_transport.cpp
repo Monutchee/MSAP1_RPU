@@ -107,6 +107,48 @@ std::uint32_t AxiFifoAggregationTransport::last_frame_length() const noexcept
 	return __atomic_load_n(&last_frame_length_, __ATOMIC_ACQUIRE);
 }
 
+bool AxiFifoAggregationTransport::output_available() const noexcept
+{
+#if MSAP1_HAVE_R5_AGGREGATION_FIFO
+	return initialized_;
+#else
+	return false;
+#endif
+}
+
+std::uint32_t AxiFifoAggregationTransport::output_vacancy_words() const noexcept
+{
+#if MSAP1_HAVE_R5_AGGREGATION_FIFO
+	if (!initialized_)
+		return 0U;
+	return XLlFifo_iTxVacancy(const_cast<XLlFifo *>(&fifo_));
+#else
+	return 0U;
+#endif
+}
+
+TransportWriteResult AxiFifoAggregationTransport::write(
+	const AggregationMeterRecord &record) noexcept
+{
+#if MSAP1_HAVE_R5_AGGREGATION_FIFO
+	if (!initialized_)
+		return TransportWriteResult::hardware_error;
+
+	const auto vacancy = XLlFifo_iTxVacancy(&fifo_);
+	__atomic_store_n(&last_tx_vacancy_, vacancy, __ATOMIC_RELEASE);
+	if (vacancy < AggregationMeterRecord::word_count)
+		return TransportWriteResult::would_block;
+
+	XLlFifo_Write(&fifo_, const_cast<std::uint32_t *>(record.words.data()),
+		AggregationMeterRecord::byte_count);
+	XLlFifo_iTxSetLen(&fifo_, AggregationMeterRecord::byte_count);
+	return TransportWriteResult::written;
+#else
+	(void)record;
+	return TransportWriteResult::hardware_error;
+#endif
+}
+
 #if MSAP1_HAVE_R5_AGGREGATION_FIFO
 void AxiFifoAggregationTransport::interrupt_handler(void *reference) noexcept
 {

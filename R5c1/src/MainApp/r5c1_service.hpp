@@ -7,15 +7,25 @@
  * On the KR260 board R5c1 has no LED, so it uses the comm-only ControlService
  * behaviour unchanged: SET_LED is accepted as an ACK no-op and the LED status
  * fields report zero (the base-class defaults). This subclass exists for
- * symmetry with R5c0Service and as a home for any future R5c1-specific
- * message handling (override handle_custom()).
+ * symmetry with R5c0Service and reports aggregation health. Meter records
+ * themselves remain on the AXI FIFO/DMA path and never use RPMsg.
  */
 
 #include "control_service.hpp"
+#include "aggregation/aggregation_health.hpp"
 
 class R5c1Service : public msap1::ControlService {
 public:
-	using msap1::ControlService::ControlService;
+	R5c1Service(const msap1::CoreConfig &config,
+		msap1::aggregation::AggregationHealth &health) noexcept;
+
+protected:
+	bool handle_custom(const msap1_rpu_msg_header &request,
+		const void *payload, std::uint16_t payload_len,
+		std::uint32_t src) override;
+
+private:
+	msap1::aggregation::AggregationHealth &health_;
 };
 
 #endif /* MSAP1_R5C1_SERVICE_HPP */

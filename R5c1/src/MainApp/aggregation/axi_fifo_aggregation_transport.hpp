@@ -60,6 +60,10 @@ public:
 	TransportReadResult read(AggregationFrame &frame) noexcept override;
 	std::uint32_t take_interrupt_errors() noexcept override;
 	[[nodiscard]] std::uint32_t last_frame_length() const noexcept override;
+	[[nodiscard]] bool output_available() const noexcept override;
+	[[nodiscard]] std::uint32_t output_vacancy_words() const noexcept override;
+	TransportWriteResult write(
+		const AggregationMeterRecord &record) noexcept override;
 
 private:
 #if MSAP1_HAVE_R5_AGGREGATION_FIFO
@@ -73,6 +77,7 @@ private:
 	TaskHandle_t input_task_{};
 	std::uint32_t interrupt_errors_{};
 	std::uint32_t last_frame_length_{};
+	std::uint32_t last_tx_vacancy_{};
 	bool initialized_{};
 	bool interrupt_enabled_{};
 };

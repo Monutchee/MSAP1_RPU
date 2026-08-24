@@ -4,6 +4,7 @@
 #include "aggregation_frame_decoder.hpp"
 #include "aggregation_frame_ring.hpp"
 #include "aggregation_health.hpp"
+#include "r5_aggregation_engine.hpp"
 #include "aggregation_transport.hpp"
 
 #include "FreeRTOS.h"
@@ -23,7 +24,7 @@ class AggregationShadowService final {
 public:
 	AggregationShadowService(AggregationTransport &transport,
 		AggregationFrameRing &ring, const AggregationFrameDecoder &decoder,
-		AggregationHealth &health) noexcept;
+		R5AggregationEngine &engine, AggregationHealth &health) noexcept;
 
 	bool initialize(TaskHandle_t input_task,
 		TaskHandle_t validator_task) noexcept;
@@ -36,6 +37,7 @@ private:
 	AggregationTransport &transport_;
 	AggregationFrameRing &ring_;
 	const AggregationFrameDecoder &decoder_;
+	R5AggregationEngine &engine_;
 	AggregationHealth &health_;
 	TaskHandle_t validator_task_{};
 };

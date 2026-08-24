@@ -4,8 +4,10 @@ namespace msap1::aggregation {
 
 AggregationShadowService::AggregationShadowService(
 	AggregationTransport &transport, AggregationFrameRing &ring,
-	const AggregationFrameDecoder &decoder, AggregationHealth &health) noexcept
-	: transport_(transport), ring_(ring), decoder_(decoder), health_(health)
+	const AggregationFrameDecoder &decoder, R5AggregationEngine &engine,
+	AggregationHealth &health) noexcept
+	: transport_(transport), ring_(ring), decoder_(decoder), engine_(engine),
+	  health_(health)
 {
 }
 
@@ -16,14 +18,21 @@ bool AggregationShadowService::initialize(TaskHandle_t input_task,
 	health_.set_transport_available(transport_.hardware_available());
 	const bool initialized = transport_.initialize(input_task);
 	health_.set_transport_initialized(initialized);
-	return initialized;
+	if (!initialized) {
+		health_.set_engine_ready(false);
+		health_.set_authoritative(false);
+		return false;
+	}
+	return engine_.initialize();
 }
 
 void AggregationShadowService::record_transport_errors() noexcept
 {
 	const auto errors = transport_.take_interrupt_errors();
-	if (errors != 0U)
+	if (errors != 0U) {
 		health_.record_fifo_error(errors);
+		engine_.note_transport_discontinuity();
+	}
 }
 
 [[noreturn]] void AggregationShadowService::run_input() noexcept
@@ -39,6 +48,7 @@ void AggregationShadowService::record_transport_errors() noexcept
 				health_.record_received();
 				if (!ring_.try_push(frame)) {
 					health_.record_ring_overflow();
+					engine_.note_transport_discontinuity();
 					break;
 				}
 				if (validator_task_ != nullptr)
@@ -47,6 +57,7 @@ void AggregationShadowService::record_transport_errors() noexcept
 			case TransportReadResult::malformed_frame:
 				health_.record_length_error(
 					transport_.last_frame_length());
+				engine_.note_transport_discontinuity();
 				break;
 			case TransportReadResult::hardware_error:
 				{
@@ -55,6 +66,7 @@ void AggregationShadowService::record_transport_errors() noexcept
 					// to a particular FIFO driver's interrupt representation.
 					health_.record_fifo_error(
 						status == 0U ? 0x80000000U : status);
+					engine_.note_transport_discontinuity();
 				}
 				break;
 			case TransportReadResult::no_frame:
@@ -74,10 +86,12 @@ void AggregationShadowService::record_transport_errors() noexcept
 			const auto error = decoder_.decode(frame, input);
 			if (error != FrameValidationError::none) {
 				health_.record_invalid(error);
+				engine_.note_transport_discontinuity();
 				continue;
 			}
 			health_.record_sequence(input.sequence);
 			health_.record_valid(input.sequence);
+			engine_.process(input);
 		}
 	}
 }

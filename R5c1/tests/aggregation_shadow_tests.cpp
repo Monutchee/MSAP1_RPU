@@ -1,8 +1,11 @@
 #include "aggregation_frame_decoder.hpp"
 #include "aggregation_frame_ring.hpp"
 #include "aggregation_health.hpp"
+#include "aggregation_record_ring.hpp"
 #include "crc32c.hpp"
+#include "r5_aggregation_engine.hpp"
 
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -11,6 +14,33 @@
 namespace aggregation = msap1::aggregation;
 
 namespace {
+
+class CapturingRecordSink final : public aggregation::AggregationRecordSink {
+public:
+	[[nodiscard]] bool publish(
+		const aggregation::AggregationMeterRecord &record) noexcept override
+	{
+		if (count >= records.size())
+			return false;
+		records[count++] = record;
+		return true;
+	}
+
+	std::array<aggregation::AggregationMeterRecord, 16U> records{};
+	std::size_t count{};
+};
+
+class RejectingRecordSink final : public aggregation::AggregationRecordSink {
+public:
+	[[nodiscard]] bool publish(
+		const aggregation::AggregationMeterRecord &) noexcept override
+	{
+		++attempts;
+		return false;
+	}
+
+	std::size_t attempts{};
+};
 
 [[noreturn]] void fail(std::string_view message)
 {
@@ -163,6 +193,30 @@ void test_ring()
 	expect(!ring.try_pop(frame), "ring empty");
 }
 
+void test_output_ring()
+{
+	aggregation::AggregationRecordRing ring;
+	for (std::uint32_t index = 0U;
+		index < aggregation::AggregationRecordRing::capacity; ++index) {
+		aggregation::AggregationMeterRecord record{};
+		record.sequence = index;
+		record.words[0] = 0x3152544DU;
+		record.words[3] = index;
+		expect(ring.try_push(record), "output ring accepts capacity");
+	}
+	aggregation::AggregationMeterRecord overflow{};
+	expect(!ring.try_push(overflow), "output ring rejects overflow");
+
+	for (std::uint32_t index = 0U;
+		index < aggregation::AggregationRecordRing::capacity; ++index) {
+		aggregation::AggregationMeterRecord record{};
+		expect(ring.try_pop(record), "output ring pop");
+		expect(record.sequence == index && record.words[3] == index,
+			"output ring preserves record and metadata");
+	}
+	expect(!ring.try_pop(overflow), "output ring empty");
+}
+
 void test_health()
 {
 	aggregation::AggregationHealth health;
@@ -196,6 +250,134 @@ void test_health()
 		"last-error context");
 }
 
+std::array<std::uint32_t, aggregation::AggregationProtocol::single_cycle_words>
+make_zero_cycle(std::uint32_t sequence, std::uint32_t generation,
+	std::uint64_t first_sample, std::uint32_t sample_count)
+{
+	std::array<std::uint32_t,
+		aggregation::AggregationProtocol::single_cycle_words> words{};
+	words[0] = sequence;
+	words[1] = generation;
+	words[2] = static_cast<std::uint32_t>(first_sample);
+	words[3] = static_cast<std::uint32_t>(first_sample >> 32U);
+	const auto last_sample = first_sample + sample_count - 1U;
+	words[4] = static_cast<std::uint32_t>(last_sample);
+	words[5] = static_cast<std::uint32_t>(last_sample >> 32U);
+	words[6] = sample_count;
+	words[7] = sequence;
+	// 60 Hz, channels 0..6 valid, and grid timing locked.
+	words[8] = 60U | (0x7FU << 8U) | (1U << 16U);
+	words[10] = 60000U;
+	words[11] = 1U | (1U << 1U); // Frequency valid and APPLY level one.
+	words[12] = sequence * 1000U;
+	return words;
+}
+
+void test_r5_engine_emits_complete_basic_family()
+{
+	constexpr std::uint32_t generation = 0x12345678U;
+	constexpr std::uint32_t samples_per_cycle = 533U;
+	CapturingRecordSink sink;
+	aggregation::AggregationHealth health;
+	aggregation::R5AggregationEngine engine(sink, health,
+		aggregation::AggregationOutputMode::emit);
+	expect(engine.initialize(), "R5 aggregation engine initialization");
+
+	std::uint64_t first_sample = 0U;
+	for (std::uint32_t cycle = 1U; cycle <= 12U; ++cycle) {
+		auto words = make_zero_cycle(cycle, generation, first_sample,
+			samples_per_cycle);
+		aggregation::AggregationInputView input{};
+		input.sequence = cycle;
+		input.single_cycle_words = words.data();
+		input.single_cycle_word_count = words.size();
+		input.context.configuration_generation = generation;
+		input.context.sample_rate_hz = 32000U;
+		// Channels 0..6, enable, DC removal, APPLY=1, timing locked.
+		input.context.control_status = 0x00000F7FU;
+		input.context.frequency_status = 0x2U;
+		input.context.frequency_period_q16 = 0x00010000U;
+		input.context.frequency_sequence = cycle;
+		engine.process(input);
+		first_sample += samples_per_cycle;
+	}
+
+	expect(sink.count == 4U,
+		"12 cycles must emit one four-record Basic family");
+	constexpr std::array<std::uint32_t, 4U> expected_formats = {
+		MREC_FORMAT_BASIC_V4,
+		MREC_FORMAT_POWER_V1,
+		MREC_FORMAT_PHASOR_V2,
+		MREC_FORMAT_UNBAL_V2,
+	};
+	for (std::size_t index = 0U; index < sink.count; ++index) {
+		const auto &record = sink.records[index];
+		expect(record.words[MREC_MAGIC_WORD] == MREC_MAGIC,
+			"R5 record magic");
+		expect(record.words[MREC_SIZE_WORD] ==
+			aggregation::AggregationMeterRecord::byte_count,
+			"R5 record byte count");
+		expect(record.words[MREC_FORMAT_WORD] == expected_formats[index],
+			"R5 Basic-family record order and format");
+		expect(record.words[MREC_SEQUENCE_WORD] == 1U,
+			"R5 Basic-family sequence");
+	}
+
+	const auto status = health.snapshot();
+	expect(status.engine_ready, "R5 aggregation engine remains ready");
+	expect(status.authoritative,
+		"emit-mode R5 aggregation engine reports authoritative");
+	expect(status.basic_completed == 1U,
+		"R5 health counts the completed Basic measurement record");
+}
+
+void test_r5_engine_fails_closed_when_output_rejects_record()
+{
+	constexpr std::uint32_t generation = 0x12345678U;
+	constexpr std::uint32_t samples_per_cycle = 533U;
+	RejectingRecordSink sink;
+	aggregation::AggregationHealth health;
+	aggregation::R5AggregationEngine engine(sink, health,
+		aggregation::AggregationOutputMode::emit);
+	expect(engine.initialize(), "rejecting engine initialization");
+
+	std::uint64_t first_sample = 0U;
+	for (std::uint32_t cycle = 1U; cycle <= 12U; ++cycle) {
+		auto words = make_zero_cycle(cycle, generation, first_sample,
+			samples_per_cycle);
+		aggregation::AggregationInputView input{};
+		input.sequence = cycle;
+		input.single_cycle_words = words.data();
+		input.single_cycle_word_count = words.size();
+		input.context.configuration_generation = generation;
+		input.context.sample_rate_hz = 32000U;
+		input.context.control_status = 0x00000F7FU;
+		input.context.frequency_status = 0x2U;
+		engine.process(input);
+		first_sample += samples_per_cycle;
+	}
+
+	expect(sink.attempts == 1U,
+		"first rejected authoritative record stops publication");
+	const auto status = health.snapshot();
+	expect(status.authoritative,
+		"failed emit-mode engine remains identified as authoritative");
+	expect(!status.engine_ready,
+		"authoritative output rejection fails the engine closed");
+}
+
+void test_r5_shadow_mode_is_non_authoritative()
+{
+	CapturingRecordSink sink;
+	aggregation::AggregationHealth health;
+	aggregation::R5AggregationEngine engine(sink, health,
+		aggregation::AggregationOutputMode::shadow);
+	expect(engine.initialize(), "shadow engine initialization");
+	const auto status = health.snapshot();
+	expect(status.engine_ready && !status.authoritative,
+		"shadow engine is ready but non-authoritative");
+}
+
 } // namespace
 
 int main()
@@ -204,7 +386,11 @@ int main()
 	test_valid_frame();
 	test_invalid_frames();
 	test_ring();
+	test_output_ring();
 	test_health();
+	test_r5_engine_emits_complete_basic_family();
+	test_r5_engine_fails_closed_when_output_rejects_record();
+	test_r5_shadow_mode_is_non_authoritative();
 	std::cout << "aggregation shadow tests passed\n";
 	return EXIT_SUCCESS;
 }
