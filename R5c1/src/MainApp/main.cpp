@@ -22,7 +22,7 @@
 #include "aggregation/axi_fifo_aggregation_transport.hpp"
 
 #ifndef MNC_R5_AGGREGATION_EMIT_OUTPUT
-#define MNC_R5_AGGREGATION_EMIT_OUTPUT 0
+#define MNC_R5_AGGREGATION_EMIT_OUTPUT 1
 #endif
 
 namespace {
@@ -90,10 +90,10 @@ int main(void)
 		return -1;
 
 	/*
-	 * A stale XSA has no FIFO driver/base address.  In that case initialize()
-	 * returns false and the two shadow tasks remain harmlessly idle while RPMsg
-	 * continues to run.  The refreshed XSA selects the hardware path at compile
-	 * time; no runtime protocol compatibility mode exists.
+	 * The PL and R5C1 firmware are a co-released image. A missing FIFO driver or
+	 * base address therefore leaves aggregation unhealthy and produces no meter
+	 * records; there is intentionally no runtime fallback to the removed PL
+	 * authority. RPMsg remains alive so Linux can report the precise fault.
 	 */
 	(void)aggregation_shadow.initialize(aggregation_input_task_handle,
 		aggregation_validator_task_handle);

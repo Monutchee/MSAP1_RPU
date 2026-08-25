@@ -11,10 +11,9 @@
 - R5 core 0 owns AD7771 SPI configuration, reset/synchronization, PL capture
   control/status, the status LED heartbeat, and the APU control endpoint.
   Linux owns AXI DMA, descriptors, interrupts, and DDR sample buffers. R5 core
-  1 has no ADC or KR260 status-LED ownership. R5 core 1 owns the staged
-  aggregation offload: first the observational PL-to-R5C1 shadow receiver,
-  then interval aggregation/finalization and complete-record production after
-  byte-identical qualification.
+  1 has no ADC or KR260 status-LED ownership. R5 core 1 is the production
+  interval-aggregation authority: it receives the PL SingleCycle packet,
+  finalizes all interval tiers, and returns complete meter records to PL.
 
 ## Hardware and software contract
 
@@ -33,14 +32,13 @@
   count is not on the wire), always enables cycle timing, commits via the
   existing apply toggle, and verifies `GRID_ACTIVE_CONFIG` readback. The RMS
   window register `0x18` remains the PL's free-run fallback window.
-- During shadow migration, PL aggregate health registers `0x78`-`0x8C` remain
-  read-only status inputs and the PL HLS AggregationEngine remains
-  authoritative. R5C1 receives the exact 234-word pre-aggregation input via
-  one AXI FIFO MM-S and validates it in a dedicated input/validator pipeline.
+- PL aggregate health registers `0x78`-`0x8C` remain read-only status inputs.
+  R5C1 receives the exact 234-word pre-aggregation input via one AXI FIFO MM-S
+  and validates it in a dedicated input/validator pipeline.
   The private packet contract is an exact co-release interface between the
   bitstream and R5C1 firmware: its fixed contract word is a mixed-image guard,
   not a negotiated protocol version, and no legacy decoder or fallback mode is
-  maintained. After qualified cutover, R5C1 owns Basic, 150/180-cycle,
+  maintained. R5C1 owns Basic, 150/180-cycle,
   10-minute, and 2-hour aggregation and writes complete 256-byte records into
   the same FIFO's TX side. Aggregate measurement data never travels over
   RPMsg; the FIFO return stream joins the existing meter AXIS switch and Linux
@@ -113,8 +111,9 @@ vitis -s scripts/create_platform_from_xsa.py -- --force
 - Run `bash R5c1/tests/run_aggregation_shadow_tests.sh` after changing the
   private aggregation packet, decoder, ring, CRC32C, continuity, or health
   logic. A refreshed XSA is required before validating the XLlFifo hardware
-  path; a stale XSA deliberately compiles the unavailable transport stub so
-  RPMsg bring-up remains possible during the staged migration.
+  path. The historical test-script name is retained, but production firmware
+  emits complete records. A stale XSA may keep RPMsg alive for diagnostics,
+  but aggregation must report unhealthy and there is no PL fallback.
 
 ## Maintaining this file
 

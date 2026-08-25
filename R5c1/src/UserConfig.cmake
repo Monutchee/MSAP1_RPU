@@ -13,9 +13,9 @@ enable_language(C ASM CXX)
 set(USER_COMPILE_DEFINITIONS
 # Pull shared-memory and mailbox policy from openamp_contract.h.
 "MNC_OPENAMP_CONTRACT"
-# R5C1 computes complete records, but the PL HLS path remains authoritative
-# until the FIFO TX stream is connected and byte-for-byte equivalence passes.
-"MNC_R5_AGGREGATION_EMIT_OUTPUT=0"
+# R5C1 is the production aggregation authority. Complete 256-byte records are
+# returned through the AXI FIFO MM-S transmit channel to the meter DMA switch.
+"MNC_R5_AGGREGATION_EMIT_OUTPUT=1"
 )
 
 # Undefine any previously specified compiler definitions, either built in or provided with a -D option

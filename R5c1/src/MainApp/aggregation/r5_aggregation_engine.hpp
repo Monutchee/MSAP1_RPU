@@ -14,8 +14,8 @@ namespace msap1::aggregation {
 
 /**
  * Controls whether completed R5C1 records are observational or are returned
- * to PL.  Shadow is the safe migration default while the FIFO TX AXI-Stream
- * port is disconnected and the PL HLS engine remains authoritative.
+ * to PL. Production uses emit; shadow remains available only for focused
+ * differential tests of the shared fixed-point implementation.
  */
 enum class AggregationOutputMode : std::uint8_t {
 	shadow,

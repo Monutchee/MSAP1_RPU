@@ -1,23 +1,28 @@
 # R5C1 aggregation offload
 
-This directory owns the modular R5C1 side of the staged interval-aggregation
-offload. The first stage is deliberately observational: PL HLS records remain
-authoritative while R5C1 proves that it receives every exact aggregation input
-without corrupting or stalling the measurement path.
+This directory owns the modular R5C1 interval-aggregation datapath. R5C1 is
+the production authority: it receives every complete PL SingleCycle input,
+validates and aggregates it, then returns complete meter records to the PL
+meter-DMA switch.
 
 The private link is an exact co-release contract between the bitstream and R5C1
 firmware. `AggregationProtocol::contract_revision` is only an image-integrity
 guard against accidentally pairing different PL and RPU artifacts. There is no
 protocol negotiation, legacy decoder, or compatibility fallback.
 
-## Current shadow architecture
+## Production architecture
 
 ```mermaid
 flowchart LR
     IRQ["AXI FIFO interrupt"] --> RX["AxiFifoAggregationTransport"]
     RX --> RING["AggregationFrameRing\n64 complete frames"]
     RING --> DEC["AggregationFrameDecoder"]
-    DEC --> HEALTH["AggregationHealth"]
+    DEC --> ENG["R5AggregationEngine"]
+    ENG --> OUT["AggregationRecordRing"]
+    OUT --> TX["AGG_TX task\nAXI FIFO TX"]
+    TX --> PL["PL meter AXIS switch\nLinux meter DMA"]
+    ENG --> HEALTH["AggregationHealth"]
+    TX --> HEALTH
 
     INPUT["AGG_RX task\npriority 4"] --> RX
     VALIDATOR["AGG_VAL task\npriority 1"] --> DEC
@@ -36,6 +41,10 @@ Ownership is intentionally split:
 - `AggregationHealth` owns saturating validation and continuity counters.
 - `AggregationShadowService` coordinates the input and validator tasks without
   knowing register layouts or performing aggregation arithmetic.
+- `R5AggregationEngine` owns interval state and complete-record construction.
+- `AggregationRecordRing` decouples arithmetic from the FIFO transmit path.
+- `AggregationOutputService` alone owns the FIFO TX side and retries a complete
+  record when the downstream meter path applies backpressure.
 
 The ISR masks and acknowledges the receive-complete interrupt, then notifies
 `AGG_RX`. The task drains every complete packet before rearming the interrupt;
@@ -60,21 +69,19 @@ Each PL-to-R5C1 packet has 239 little-endian 32-bit words:
 CRC32C uses reflected polynomial `0x82F63B78`, initial and final XOR
 `0xFFFFFFFF`. The required `123456789` vector is `0xE3069283`.
 
-## Staged cutover
+## Authority and failure behavior
 
-1. **Shadow transport:** receive and validate packets while PL HLS aggregation
-   remains authoritative.
-2. **Host software port:** implement explicit `AggregationEngineState`, fixed
-   integer math, interval finalization, and record formatting as separate
-   classes; compare frozen 234-word traces byte-for-byte with HLS.
-3. **Hardware shadow:** run the same engine on R5C1 and compare record identity
-   metadata while PL records remain on the production DMA path.
-4. **Authoritative output:** add a dedicated output task and complete-record
-   software ring. The task writes one 256-byte record and one length to the AXI
-   FIFO MM-S TX side per transaction.
-5. **PL removal:** connect the FIFO M_AXIS directly to the existing meter AXIS
-   switch, then remove the PL AggregationEngine and its MTR1/MTR2 FIFOs only
-   after differential and target soak gates pass.
+The production build uses `AggregationOutputMode::emit`. The PL wrapper does
+not elaborate its retained HLS aggregation reference, so there is only one
+source of Basic, 150/180-cycle, 10-minute, and 2-hour records. Each FIFO TX
+transaction contains one complete 256-byte record and one asserted packet
+length/TLAST boundary.
+
+The PL and R5C1 images are released together. If the FIFO is absent, input is
+corrupt, the engine fails, or output cannot make progress, aggregation health
+becomes unhealthy and the record path fails visibly. There is no runtime
+fallback to a second PL aggregation authority. RPMsg remains responsive so
+Linux can report the exact diagnostic counters.
 
 Future classes should keep the following separation:
 
@@ -99,6 +106,7 @@ Run from the RPU repository root:
 bash R5c1/tests/run_aggregation_shadow_tests.sh
 ```
 
-The test covers the known CRC vector, exact header/context decoding, every
-validation failure, ring ordering/capacity, sequence wrap, gaps, repeats, and
-out-of-order health accounting.
+The historical script name remains for compatibility. The test covers the
+known CRC vector, exact header/context decoding, every validation failure,
+ring ordering/capacity, sequence wrap, gaps, repeats, out-of-order health
+accounting, complete-record emission, and FIFO-output retry behavior.
