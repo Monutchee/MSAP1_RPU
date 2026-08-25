@@ -58,6 +58,7 @@ set(USER_COMPILE_SOURCES
 "MainApp/aggregation/aggregation_health.cpp"
 "MainApp/aggregation/aggregation_output_service.cpp"
 "MainApp/aggregation/aggregation_record_ring.cpp"
+"MainApp/aggregation/aggregation_runtime.cpp"
 "MainApp/aggregation/aggregation_shadow_service.cpp"
 "MainApp/aggregation/axi_fifo_aggregation_transport.cpp"
 "MainApp/aggregation/crc32c.cpp"

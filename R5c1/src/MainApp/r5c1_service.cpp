@@ -1,9 +1,16 @@
 #include "r5c1_service.hpp"
 
 R5c1Service::R5c1Service(const msap1::CoreConfig &config,
-	msap1::aggregation::AggregationHealth &health) noexcept
-	: msap1::ControlService(config), health_(health)
+	msap1::aggregation::AggregationHealth &health,
+	msap1::aggregation::AggregationRuntime &runtime) noexcept
+	: msap1::ControlService(config), health_(health), runtime_(runtime)
 {
+}
+
+void R5c1Service::on_endpoint_ready()
+{
+	/* Aggregation is deliberately non-fatal to the RPMsg control plane. */
+	(void)runtime_.start();
 }
 
 bool R5c1Service::handle_custom(const msap1_rpu_msg_header &request,

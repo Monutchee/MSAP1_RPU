@@ -13,19 +13,23 @@
 
 #include "control_service.hpp"
 #include "aggregation/aggregation_health.hpp"
+#include "aggregation/aggregation_runtime.hpp"
 
 class R5c1Service : public msap1::ControlService {
 public:
 	R5c1Service(const msap1::CoreConfig &config,
-		msap1::aggregation::AggregationHealth &health) noexcept;
+		msap1::aggregation::AggregationHealth &health,
+		msap1::aggregation::AggregationRuntime &runtime) noexcept;
 
 protected:
 	bool handle_custom(const msap1_rpu_msg_header &request,
 		const void *payload, std::uint16_t payload_len,
 		std::uint32_t src) override;
+	void on_endpoint_ready() override;
 
 private:
 	msap1::aggregation::AggregationHealth &health_;
+	msap1::aggregation::AggregationRuntime &runtime_;
 };
 
 #endif /* MSAP1_R5C1_SERVICE_HPP */
