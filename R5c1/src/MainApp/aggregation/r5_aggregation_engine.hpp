@@ -53,7 +53,13 @@ public:
 private:
 	static constexpr std::size_t deferred_pass_count = 8U;
 
-	void run_one_pass() noexcept;
+	/**
+	 * Run one shared-engine scheduling pass and return the number of complete
+	 * records produced by that pass.  A zero result may be either an ordinary
+	 * non-boundary cycle or an internal deferred-finalizer preparation pass;
+	 * callers must not treat it as a general pending-work indication.
+	 */
+	[[nodiscard]] std::size_t run_one_pass() noexcept;
 	void drain(record_axis_stream_t &stream) noexcept;
 	void accept_beat(const record_axis_t &beat) noexcept;
 	void complete_record() noexcept;
@@ -70,6 +76,7 @@ private:
 	record_axis_stream_t aggregate_output_{};
 	AggregationMeterRecord assembling_{};
 	std::size_t assembling_words_{};
+	std::size_t pass_records_completed_{};
 	std::uint32_t last_transport_sequence_{};
 	std::uint32_t discontinuity_pending_{};
 	bool have_transport_sequence_{};

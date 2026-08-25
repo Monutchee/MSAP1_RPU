@@ -11,6 +11,7 @@ R5AggregationEngine::R5AggregationEngine(AggregationRecordSink &sink,
 bool R5AggregationEngine::initialize() noexcept
 {
 	assembling_words_ = 0U;
+	pass_records_completed_ = 0U;
 	last_transport_sequence_ = 0U;
 	discontinuity_pending_ = 0U;
 	have_transport_sequence_ = false;
@@ -95,6 +96,8 @@ void R5AggregationEngine::complete_record() noexcept
 		return;
 	}
 
+	++pass_records_completed_;
+
 	assembling_ = {};
 	assembling_words_ = 0U;
 }
@@ -131,8 +134,9 @@ void R5AggregationEngine::drain(record_axis_stream_t &stream) noexcept
 		accept_beat(beat);
 }
 
-void R5AggregationEngine::run_one_pass() noexcept
+std::size_t R5AggregationEngine::run_one_pass() noexcept
 {
+	pass_records_completed_ = 0U;
 	hls_aggregation_engine(input_, basic_output_, aggregate_output_);
 	drain(basic_output_);
 	drain(aggregate_output_);
@@ -141,6 +145,8 @@ void R5AggregationEngine::run_one_pass() noexcept
 		basic_output_.overflowed() || basic_output_.underflowed() ||
 		aggregate_output_.overflowed() || aggregate_output_.underflowed())
 		fail_engine();
+
+	return pass_records_completed_;
 }
 
 void R5AggregationEngine::process(const AggregationInputView &input) noexcept
@@ -189,11 +195,23 @@ void R5AggregationEngine::process(const AggregationInputView &input) noexcept
 	for (const auto word : context)
 		input_.write(single_cycle_word_t(word));
 
-	// One call consumes the cycle.  Further empty-input calls service every
-	// deferred completed/open tier through the single shared finalizer.
-	run_one_pass();
-	for (std::size_t pass = 0U; ready_ && pass < deferred_pass_count; ++pass)
-		run_one_pass();
+	// One call consumes the cycle.  Most cycles do not close a Basic block and
+	// therefore produce no record and cannot have queued deferred work.  Only
+	// a record-producing input pass can close a Basic block and schedule the
+	// longer completed/open intervals.
+	//
+	// A deferred interval may require an internal preparation pass that emits
+	// no record before a later pass becomes publishable.  Consequently, zero
+	// output is a valid intermediate state and must not terminate the drain.
+	// Run the established bounded drain only at Basic boundaries.  This keeps
+	// the exact engine semantics while reducing the ordinary-cycle cost from
+	// nine HLS calls to one.
+	const auto completed = run_one_pass();
+	if (ready_ && completed != 0U) {
+		for (std::size_t pass = 0U;
+			ready_ && pass < deferred_pass_count; ++pass)
+			(void)run_one_pass();
+	}
 
 	if (!input_.empty() || assembling_words_ != 0U)
 		fail_engine();

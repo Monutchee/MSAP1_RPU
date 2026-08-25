@@ -26,7 +26,9 @@ public:
 		return true;
 	}
 
-	std::array<aggregation::AggregationMeterRecord, 16U> records{};
+	// Fifteen Basic families plus the deferred 150/180-cycle family require
+	// 64 records. Keep headroom for future low-cadence interval assertions.
+	std::array<aggregation::AggregationMeterRecord, 128U> records{};
 	std::size_t count{};
 };
 
@@ -380,6 +382,44 @@ void test_r5_engine_fails_closed_when_output_rejects_record()
 		"authoritative output rejection fails the engine closed");
 }
 
+void test_r5_engine_drains_deferred_aggregate_family()
+{
+	constexpr std::uint32_t generation = 0x12345678U;
+	constexpr std::uint32_t samples_per_cycle = 533U;
+	CapturingRecordSink sink;
+	aggregation::AggregationHealth health;
+	aggregation::R5AggregationEngine engine(sink, health,
+		aggregation::AggregationOutputMode::emit);
+	expect(engine.initialize(), "deferred aggregate engine initialization");
+
+	std::uint64_t first_sample = 0U;
+	// The first Basic block after initialization carries FIRST_BLOCK and is
+	// intentionally ineligible for the normative 150/180-cycle interval.  Feed
+	// one startup block plus fifteen consecutive eligible blocks.
+	for (std::uint32_t cycle = 1U; cycle <= 192U; ++cycle) {
+		auto words = make_zero_cycle(cycle, generation, first_sample,
+			samples_per_cycle);
+		aggregation::AggregationInputView input{};
+		input.sequence = cycle;
+		input.single_cycle_words = words.data();
+		input.single_cycle_word_count = words.size();
+		input.context.configuration_generation = generation;
+		input.context.sample_rate_hz = 32000U;
+		input.context.control_status = 0x00000F7FU;
+		input.context.frequency_status = 0x2U;
+		engine.process(input);
+		first_sample += samples_per_cycle;
+	}
+
+	const auto status = health.snapshot();
+	expect(status.engine_ready,
+		"deferred aggregate processing keeps the engine ready");
+	expect(status.basic_completed == 16U,
+		"192 cycles must complete one startup and fifteen eligible Basic measurements");
+	expect(status.aggregate_completed == 1U,
+		"the fifteenth eligible Basic block must drain one deferred aggregate");
+}
+
 void test_r5_shadow_mode_is_non_authoritative()
 {
 	CapturingRecordSink sink;
@@ -404,6 +444,7 @@ int main()
 	test_health();
 	test_r5_engine_emits_complete_basic_family();
 	test_r5_engine_fails_closed_when_output_rejects_record();
+	test_r5_engine_drains_deferred_aggregate_family();
 	test_r5_shadow_mode_is_non_authoritative();
 	std::cout << "aggregation shadow tests passed\n";
 	return EXIT_SUCCESS;

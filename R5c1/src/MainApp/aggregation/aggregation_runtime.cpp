@@ -7,21 +7,21 @@ namespace {
 constexpr configSTACK_DEPTH_TYPE worker_stack_depth = 2048U;
 
 /*
- * The pipeline uses downstream-first priority.  The output owner is highest:
- * when a completed record is queued it preempts arithmetic long enough to move
- * that record into the AXI FIFO.  The validator is next so it can drain the
- * 64-frame input ring before the receiver accepts another burst.  The receiver
- * runs whenever both downstream stages are blocked.
+ * The hardware receiver is highest so CPU-heavy aggregation can never prevent
+ * the AXI FIFO from being drained into the 64-frame software ring.  The output
+ * owner is next: a completed record preempts arithmetic long enough to move it
+ * back into the FIFO.  Arithmetic runs while both I/O owners are blocked.
  *
- * This ordering is required even though completed intervals are infrequent:
- * each Basic boundary emits a four-record family and may also emit live
- * previews.  With output below an always-runnable validator, the 64-record
- * output ring filled and the authoritative engine correctly failed closed.
+ * This ordering bounds both directions of backpressure.  Giving the validator
+ * priority over RX allowed its synchronous aggregation work to starve the
+ * FIFO, which eventually propagated TREADY low into PL and caused real
+ * single-cycle sample-range discontinuities.  Giving output the lowest
+ * priority can likewise fill the authoritative 64-record output ring.
  * RPMsg remains priority 4 and retains control/health responsiveness.
  */
-constexpr UBaseType_t output_priority = 3U;
-constexpr UBaseType_t validator_priority = 2U;
-constexpr UBaseType_t input_priority = 1U;
+constexpr UBaseType_t input_priority = 3U;
+constexpr UBaseType_t output_priority = 2U;
+constexpr UBaseType_t validator_priority = 1U;
 
 } // namespace
 
