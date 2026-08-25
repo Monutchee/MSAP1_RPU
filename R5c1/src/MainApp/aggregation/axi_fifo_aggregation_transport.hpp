@@ -48,14 +48,38 @@
 #define MSAP1_HAVE_R5_AGGREGATION_FIFO 0
 #endif
 
+/*
+ * Development BSPs may intentionally omit the aggregation FIFO or interrupt
+ * while a block design is being assembled.  Production R5C1 firmware enables
+ * both requirements in UserConfig.cmake so a stale XSA fails at compile time
+ * instead of silently selecting an unavailable or polling-only transport.
+ */
+#ifndef MNC_R5_AGGREGATION_REQUIRE_HARDWARE
+#define MNC_R5_AGGREGATION_REQUIRE_HARDWARE 0
+#endif
+
+#ifndef MNC_R5_AGGREGATION_REQUIRE_IRQ
+#define MNC_R5_AGGREGATION_REQUIRE_IRQ 0
+#endif
+
+#if MNC_R5_AGGREGATION_REQUIRE_HARDWARE && \
+	!MSAP1_HAVE_R5_AGGREGATION_FIFO
+#error "R5C1 production build requires the R5 aggregation AXI4-Stream FIFO"
+#endif
+
+#if MNC_R5_AGGREGATION_REQUIRE_IRQ && \
+	!defined(MSAP1_R5_AGGREGATION_FIFO_INTERRUPT_ID)
+#error "R5C1 production build requires the R5 aggregation FIFO interrupt"
+#endif
+
 namespace msap1::aggregation {
 
 /**
  * AMD AXI4-Stream FIFO MM-S receive adapter.
  *
- * The current checked-in XSA intentionally builds the unavailable stub.  Once
- * the user adds R5_Aggregation_FIFO to the block design, xparameters.h and the
- * XLlFifo BSP driver select the hardware implementation automatically.
+ * xparameters.h and the XLlFifo BSP driver select the hardware implementation
+ * automatically.  Production builds additionally require the FIFO interrupt;
+ * polling remains available only to explicit development builds.
  */
 class AxiFifoAggregationTransport final : public AggregationTransport {
 public:

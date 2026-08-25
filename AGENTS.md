@@ -56,7 +56,11 @@
   validation, aggregation state, record formatting, output-ring ownership,
   and health reporting remain separate classes under
   `R5c1/src/MainApp/aggregation/`. Do not place parsing or arithmetic in the
-  ISR or collapse the offload into `main.cpp`.
+  ISR or collapse the offload into `main.cpp`. The RX worker must retain its
+  bounded four-packet drain and one-tick validator handoff; an unbounded drain
+  starves the lower-priority validator and eventually fills both hardware and
+  software input storage. Production firmware must require the FIFO interrupt
+  rather than silently falling back to polling.
 - ADC health reports both the measured DCLK rate and the physical
   `ADC_DRDY_N` falling-edge rate. Keep these fields coordinated with the APU
   wire-ABI copy when extending capture diagnostics. Health is not valid until

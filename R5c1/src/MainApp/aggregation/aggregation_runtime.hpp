@@ -13,9 +13,10 @@ namespace msap1::aggregation {
 /**
  * Owns the FreeRTOS lifecycle of the optional R5C1 aggregation workers.
  *
- * The runtime is started only after RPMsg has advertised its endpoint.  This
- * ordering is deliberate: an exhausted FreeRTOS heap or unavailable AXI FIFO
- * must leave the control endpoint alive so Linux can read aggregation health.
+ * A one-shot bootstrap task starts the runtime independently of RPMsg endpoint
+ * discovery.  The RPMsg endpoint callback repeats the idempotent start as a
+ * recovery path, so an exhausted FreeRTOS heap or unavailable AXI FIFO still
+ * leaves the control endpoint alive for Linux health diagnostics.
  */
 class AggregationRuntime final {
 public:

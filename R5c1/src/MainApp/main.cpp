@@ -60,16 +60,34 @@ static void comm_task(void *)
 	service.run();
 }
 
-int main(void)
+static void aggregation_bootstrap_task(void *)
 {
 	/*
-	 * Start only the control plane here. Aggregation workers are created after
-	 * the RPMsg endpoint is observable, so an optional-worker allocation or
-	 * FIFO failure can never remove Linux diagnostics.
+	 * Start FIFO service as soon as the scheduler runs.  Waiting for Linux to
+	 * announce an RPMsg endpoint can leave the PL producer filling the FIFO for
+	 * an unbounded interval during boot.  start() is idempotent, so the RPMsg
+	 * callback remains a safe recovery path if this first attempt cannot create
+	 * all workers.
 	 */
+	(void)aggregation_runtime.start();
+	vTaskDelete(nullptr);
+}
+
+int main(void)
+{
+	/* Keep the control plane independent so FIFO failure cannot remove Linux
+	 * diagnostics. */
 	if (xTaskCreate(comm_task, "RPMSG", 2048, NULL, 4,
 			&comm_task_handle) != pdPASS)
 		return -1;
+
+	/*
+	 * This task outranks RPMsg only for its short, one-shot start transaction.
+	 * A creation failure is non-fatal: the endpoint callback retries later and
+	 * exposes the failure through the aggregation-health response.
+	 */
+	(void)xTaskCreate(aggregation_bootstrap_task, "AGG_BOOT", 1024, nullptr,
+		5U, nullptr);
 
 	vTaskStartScheduler();
 

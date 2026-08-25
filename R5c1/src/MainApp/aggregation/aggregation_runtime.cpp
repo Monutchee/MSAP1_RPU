@@ -37,9 +37,10 @@ bool AggregationRuntime::start() noexcept
 		return true;
 
 	/*
-	 * This method runs in the higher-priority RPMsg task.  The new workers
-	 * cannot execute until this transaction has either completed or deleted
-	 * every partially created task.
+	 * This method runs in either the high-priority one-shot bootstrap task or
+	 * the RPMsg recovery callback.  Both callers outrank the workers, so a start
+	 * transaction completes (or deletes every partial task) before a new worker
+	 * can consume shared state.
 	 */
 	if (xTaskCreate(input_task_entry, "AGG_RX", worker_stack_depth, this,
 			input_priority, &input_task_) != pdPASS ||

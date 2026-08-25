@@ -21,6 +21,7 @@ public:
 	[[nodiscard]] bool try_push(const AggregationFrame &frame) noexcept;
 	[[nodiscard]] bool try_pop(AggregationFrame &frame) noexcept;
 	[[nodiscard]] std::size_t size() const noexcept;
+	[[nodiscard]] std::size_t available_capacity() const noexcept;
 
 private:
 	alignas(64) std::array<AggregationFrame, capacity> frames_{};

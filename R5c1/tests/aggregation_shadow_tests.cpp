@@ -178,21 +178,32 @@ void test_invalid_frames()
 void test_ring()
 {
 	aggregation::AggregationFrameRing ring;
+	expect(ring.available_capacity() ==
+		aggregation::AggregationFrameRing::capacity,
+		"empty ring capacity");
 	for (std::uint32_t index = 0U;
 		index < aggregation::AggregationFrameRing::capacity; ++index)
 		expect(ring.try_push(make_frame(index)), "ring accepts capacity");
 	expect(!ring.try_push(make_frame(999U)), "ring rejects overflow");
 	expect(ring.size() == aggregation::AggregationFrameRing::capacity,
 		"ring full size");
+	expect(ring.available_capacity() == 0U, "full ring capacity");
 
 	aggregation::AggregationFrame frame{};
-	for (std::uint32_t index = 0U;
+	expect(ring.try_pop(frame), "ring first pop");
+	expect(frame.words[aggregation::AggregationProtocol::payload_index] == 0U,
+		"ring first FIFO value");
+	expect(ring.available_capacity() == 1U, "released ring capacity");
+	for (std::uint32_t index = 1U;
 		index < aggregation::AggregationFrameRing::capacity; ++index) {
 		expect(ring.try_pop(frame), "ring pop");
 		expect(frame.words[aggregation::AggregationProtocol::payload_index] ==
 			index, "ring preserves FIFO order");
 	}
 	expect(!ring.try_pop(frame), "ring empty");
+	expect(ring.available_capacity() ==
+		aggregation::AggregationFrameRing::capacity,
+		"restored ring capacity");
 }
 
 void test_output_ring()

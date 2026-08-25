@@ -9,6 +9,11 @@ namespace msap1::aggregation {
 bool AxiFifoAggregationTransport::initialize(TaskHandle_t input_task) noexcept
 {
 	input_task_ = input_task;
+	interrupt_errors_ = 0U;
+	last_frame_length_ = 0U;
+	last_tx_vacancy_ = 0U;
+	initialized_ = false;
+	interrupt_enabled_ = false;
 #if MSAP1_HAVE_R5_AGGREGATION_FIFO
 	XLlFifo_Initialize(&fifo_, MSAP1_R5_AGGREGATION_FIFO_BASEADDR);
 	XLlFifo_Reset(&fifo_);
@@ -25,6 +30,16 @@ bool AxiFifoAggregationTransport::initialize(TaskHandle_t input_task) noexcept
 			MSAP1_R5_AGGREGATION_FIFO_INTERRUPT_ID));
 		interrupt_enabled_ = true;
 	}
+#endif
+
+#if MNC_R5_AGGREGATION_REQUIRE_IRQ
+	/*
+	 * An installed interrupt is part of the production data-path contract.
+	 * Continuing with polling here would hide a stale interrupt assignment and
+	 * can starve the FIFO behind a caller-selected health timeout.
+	 */
+	if (!interrupt_enabled_)
+		return false;
 #endif
 	initialized_ = true;
 	return true;
@@ -70,7 +85,11 @@ bool AxiFifoAggregationTransport::wait_for_frame(TickType_t timeout) noexcept
 			return true;
 		(void)ulTaskNotifyTake(pdTRUE, timeout);
 	} else {
-		vTaskDelay(timeout == portMAX_DELAY ? pdMS_TO_TICKS(1U) : timeout);
+		/* Debug-only fallback: poll at a fixed short cadence.  The caller's
+		 * potentially long wait timeout must never become the FIFO service
+		 * period. */
+		const auto ticks = pdMS_TO_TICKS(1U);
+		vTaskDelay(ticks == 0U ? 1U : ticks);
 	}
 	return frame_available();
 }

@@ -33,4 +33,10 @@ std::size_t AggregationFrameRing::size() const noexcept
 	return static_cast<std::size_t>(write - read);
 }
 
+std::size_t AggregationFrameRing::available_capacity() const noexcept
+{
+	const auto used = size();
+	return used >= capacity ? 0U : capacity - used;
+}
+
 } // namespace msap1::aggregation

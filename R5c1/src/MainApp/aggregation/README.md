@@ -24,10 +24,11 @@ flowchart LR
     ENG --> HEALTH["AggregationHealth"]
     TX --> HEALTH
 
-    INPUT["AGG_RX task\npriority 1"] --> RX
-    VALIDATOR["AGG_VAL task\npriority 2"] --> DEC
-    OUTPUT["AGG_TX task\npriority 3"] --> TX
+    BOOT["One-shot bootstrap\npriority 5"] --> RX
     RPMSG["Existing RPMsg task\npriority 4"]
+    INPUT["AGG_RX task\npriority 3"] --> RX
+    OUTPUT["AGG_TX task\npriority 2"] --> TX
+    VALIDATOR["AGG_VAL task\npriority 1"] --> DEC
 ```
 
 `main.cpp` only composes these long-lived objects and creates their tasks.
@@ -47,17 +48,24 @@ Ownership is intentionally split:
 - `AggregationOutputService` alone owns the FIFO TX side and retries a complete
   record when the downstream meter path applies backpressure.
 
-Workers use downstream-first scheduling. `AGG_TX` is notified immediately for
-each complete record and preempts `AGG_VAL`; `AGG_VAL` preempts `AGG_RX` while
-validated input is pending. This prevents either 64-entry software ring from
-being starved by an upstream task that remains runnable under sustained input.
+The I/O tasks outrank arithmetic. `AGG_RX` drains at most four complete packets
+per activation, notifies `AGG_VAL`, and then blocks for at least one RTOS tick.
+That bounded handoff is required because `taskYIELD()` cannot schedule a
+lower-priority task. `AGG_TX` preempts `AGG_VAL` whenever a completed record is
+ready, while `AGG_VAL` performs arithmetic only while both I/O owners are
+blocked. RPMsg remains above all long-lived aggregation workers. A priority-5
+one-shot task starts aggregation independently of Linux/RPMsg endpoint timing;
+the RPMsg callback is an idempotent recovery path.
 
 The ISR masks and acknowledges the receive-complete interrupt, then notifies
-`AGG_RX`. The task drains every complete packet before rearming the interrupt;
-it does not test `XLlFifo_IsRxDone()` after the ISR has already acknowledged
-that condition. Parsing, CRC, and health updates occur in task context. A
-malformed packet is discarded as a whole packet; R5C1 never aggregates across
-a missing sequence.
+`AGG_RX`. The task removes no packet unless the software input ring has a free
+slot, drains at most four complete packets, and then gives the validator a
+deterministic scheduling interval. It does not test `XLlFifo_IsRxDone()` after
+the ISR has already acknowledged that condition. Parsing, CRC, and health
+updates occur in task context. A malformed packet is discarded as a whole
+packet; R5C1 never aggregates across a missing sequence. Production builds
+require both the hardware FIFO and its interrupt; the fixed one-millisecond
+poll is a development-only fallback.
 
 ## Packet contract
 

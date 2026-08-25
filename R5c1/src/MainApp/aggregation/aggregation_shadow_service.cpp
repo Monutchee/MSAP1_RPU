@@ -2,6 +2,25 @@
 
 namespace msap1::aggregation {
 
+namespace {
+
+/*
+ * The RX task has a higher priority than the validator so it can respond to
+ * the FIFO interrupt promptly.  It must not, however, drain an unbounded
+ * number of packets: only the lower-priority validator can release software
+ * ring slots.  A small batch retains ample input throughput while providing a
+ * deterministic scheduling point for validation and aggregation.
+ */
+constexpr std::size_t maximum_input_batch = 4U;
+
+TickType_t validator_handoff_delay() noexcept
+{
+	const auto ticks = pdMS_TO_TICKS(1U);
+	return ticks == 0U ? 1U : ticks;
+}
+
+} // namespace
+
 AggregationShadowService::AggregationShadowService(
 	AggregationTransport &transport, AggregationFrameRing &ring,
 	const AggregationFrameDecoder &decoder, R5AggregationEngine &engine,
@@ -42,17 +61,34 @@ void AggregationShadowService::record_transport_errors() noexcept
 		(void)transport_.wait_for_frame(pdMS_TO_TICKS(100U));
 		record_transport_errors();
 
-		while (transport_.frame_available()) {
+		std::size_t processed = 0U;
+		std::size_t queued = 0U;
+		while (processed < maximum_input_batch &&
+			transport_.frame_available()) {
+			/*
+			 * Do not remove a complete packet from the hardware FIFO unless
+			 * ownership can be transferred to the software ring.  When the ring
+			 * is full, leave the packet intact in hardware and let the PL exporter
+			 * apply its nonblocking whole-packet discard policy upstream.
+			 */
+			if (ring_.available_capacity() == 0U)
+				break;
+
+			++processed;
 			switch (transport_.read(frame)) {
 			case TransportReadResult::frame:
 				health_.record_received();
 				if (!ring_.try_push(frame)) {
+					/*
+					 * This can only occur if the SPSC capacity observation is
+					 * violated.  Retain it as a hard diagnostic rather than
+					 * silently losing a frame.
+					 */
 					health_.record_ring_overflow();
 					engine_.note_transport_discontinuity();
 					break;
 				}
-				if (validator_task_ != nullptr)
-					xTaskNotifyGive(validator_task_);
+				++queued;
 				break;
 			case TransportReadResult::malformed_frame:
 				health_.record_length_error(
@@ -73,6 +109,18 @@ void AggregationShadowService::record_transport_errors() noexcept
 				break;
 			}
 		}
+
+		if ((queued != 0U || ring_.available_capacity() == 0U) &&
+			validator_task_ != nullptr)
+			xTaskNotifyGive(validator_task_);
+
+		/*
+		 * taskYIELD() only selects peers at the same priority.  Block RX for a
+		 * real tick after every nonempty batch so the lower-priority validator
+		 * can consume the frames and free ring capacity.
+		 */
+		if (processed != 0U || ring_.available_capacity() == 0U)
+			vTaskDelay(validator_handoff_delay());
 	}
 }
 

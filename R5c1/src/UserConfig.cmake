@@ -16,6 +16,11 @@ set(USER_COMPILE_DEFINITIONS
 # R5C1 is the production aggregation authority. Complete 256-byte records are
 # returned through the AXI FIFO MM-S transmit channel to the meter DMA switch.
 "MNC_R5_AGGREGATION_EMIT_OUTPUT=1"
+# Never ship a polling-only or hardware-stub R5C1 aggregation firmware.  These
+# compile-time gates turn a stale XSA/address/interrupt contract into a build
+# failure instead of an intermittent target-side overflow.
+"MNC_R5_AGGREGATION_REQUIRE_HARDWARE=1"
+"MNC_R5_AGGREGATION_REQUIRE_IRQ=1"
 )
 
 # Undefine any previously specified compiler definitions, either built in or provided with a -D option
