@@ -7,20 +7,21 @@ namespace {
 constexpr configSTACK_DEPTH_TYPE worker_stack_depth = 2048U;
 
 /*
- * The FIFO receiver is deliberately below the validator.  A receive-complete
- * interrupt can expose a continuously non-empty FIFO, so a higher-priority
- * receiver would remain runnable while draining it and starve the consumer of
- * the 64-frame software ring.  Waking the validator after each accepted frame
- * now preempts intake, bounds ring occupancy, and applies AXI FIFO backpressure
- * if validation cannot keep up.
+ * The pipeline uses downstream-first priority.  The output owner is highest:
+ * when a completed record is queued it preempts arithmetic long enough to move
+ * that record into the AXI FIFO.  The validator is next so it can drain the
+ * 64-frame input ring before the receiver accepts another burst.  The receiver
+ * runs whenever both downstream stages are blocked.
  *
- * Record output is much less frequent than input and may safely run at the
- * lowest worker priority.  RPMsg remains priority 4 and therefore retains
- * control/health responsiveness regardless of aggregation load.
+ * This ordering is required even though completed intervals are infrequent:
+ * each Basic boundary emits a four-record family and may also emit live
+ * previews.  With output below an always-runnable validator, the 64-record
+ * output ring filled and the authoritative engine correctly failed closed.
+ * RPMsg remains priority 4 and retains control/health responsiveness.
  */
-constexpr UBaseType_t validator_priority = 3U;
-constexpr UBaseType_t input_priority = 2U;
-constexpr UBaseType_t output_priority = 1U;
+constexpr UBaseType_t output_priority = 3U;
+constexpr UBaseType_t validator_priority = 2U;
+constexpr UBaseType_t input_priority = 1U;
 
 } // namespace
 
@@ -95,7 +96,7 @@ void AggregationRuntime::validator_task_entry(void *context) noexcept
 {
 	(void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 	const bool initialized = shadow_.initialize(input_task_, validator_task_);
-	output_.initialize();
+	output_.initialize(output_task_);
 	if (!initialized)
 		vTaskSuspend(nullptr);
 

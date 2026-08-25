@@ -24,9 +24,10 @@ flowchart LR
     ENG --> HEALTH["AggregationHealth"]
     TX --> HEALTH
 
-    INPUT["AGG_RX task\npriority 4"] --> RX
-    VALIDATOR["AGG_VAL task\npriority 1"] --> DEC
-    RPMSG["Existing RPMsg task\npriority 2"]
+    INPUT["AGG_RX task\npriority 1"] --> RX
+    VALIDATOR["AGG_VAL task\npriority 2"] --> DEC
+    OUTPUT["AGG_TX task\npriority 3"] --> TX
+    RPMSG["Existing RPMsg task\npriority 4"]
 ```
 
 `main.cpp` only composes these long-lived objects and creates their tasks.
@@ -45,6 +46,11 @@ Ownership is intentionally split:
 - `AggregationRecordRing` decouples arithmetic from the FIFO transmit path.
 - `AggregationOutputService` alone owns the FIFO TX side and retries a complete
   record when the downstream meter path applies backpressure.
+
+Workers use downstream-first scheduling. `AGG_TX` is notified immediately for
+each complete record and preempts `AGG_VAL`; `AGG_VAL` preempts `AGG_RX` while
+validated input is pending. This prevents either 64-entry software ring from
+being starved by an upstream task that remains runnable under sustained input.
 
 The ISR masks and acknowledges the receive-complete interrupt, then notifies
 `AGG_RX`. The task drains every complete packet before rearming the interrupt;

@@ -9,8 +9,9 @@ AggregationOutputService::AggregationOutputService(
 {
 }
 
-void AggregationOutputService::initialize() noexcept
+void AggregationOutputService::initialize(TaskHandle_t output_task) noexcept
 {
+	output_task_ = output_task;
 	health_.set_output_ready(transport_.output_available());
 	health_.set_output_active(false);
 }
@@ -23,6 +24,12 @@ bool AggregationOutputService::try_enqueue(
 		return false;
 	}
 	health_.record_output_queued();
+	// Wake the sole consumer immediately.  A Basic boundary can publish a
+	// four-record family and live interval previews can add more records.  A
+	// polling-only consumer allowed the higher-priority arithmetic task to fill
+	// the complete-record ring before the one-millisecond polling delay expired.
+	if (output_task_ != nullptr)
+		xTaskNotifyGive(output_task_);
 	return true;
 }
 
@@ -38,7 +45,11 @@ bool AggregationOutputService::publish(
 	bool output_fault_reported = false;
 	for (;;) {
 		if (!ring_.try_pop(record)) {
-			vTaskDelay(pdMS_TO_TICKS(1U));
+			// The producer publishes the record before sending this notification.
+			// FreeRTOS notification counts close the push-versus-wait race: if a
+			// record arrives between try_pop() and this call, the take returns
+			// immediately instead of sleeping with work queued.
+			(void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 			continue;
 		}
 

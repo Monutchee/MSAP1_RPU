@@ -17,7 +17,7 @@ public:
 	AggregationOutputService(AggregationTransport &transport,
 		AggregationRecordRing &ring, AggregationHealth &health) noexcept;
 
-	void initialize() noexcept;
+	void initialize(TaskHandle_t output_task) noexcept;
 	[[nodiscard]] bool try_enqueue(const AggregationMeterRecord &record) noexcept;
 	[[nodiscard]] bool publish(
 		const AggregationMeterRecord &record) noexcept override;
@@ -27,6 +27,7 @@ private:
 	AggregationTransport &transport_;
 	AggregationRecordRing &ring_;
 	AggregationHealth &health_;
+	TaskHandle_t output_task_{};
 };
 
 } // namespace msap1::aggregation

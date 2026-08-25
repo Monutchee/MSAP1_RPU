@@ -215,6 +215,20 @@ void test_output_ring()
 			"output ring preserves record and metadata");
 	}
 	expect(!ring.try_pop(overflow), "output ring empty");
+
+	// Exercise more than one complete index wrap.  The production TX task now
+	// drains records concurrently with the validator, so the SPSC ring must be
+	// reusable indefinitely rather than only across its first 64 slots.
+	for (std::uint32_t index = 0U;
+		index < aggregation::AggregationRecordRing::capacity * 4U; ++index) {
+		aggregation::AggregationMeterRecord pushed{};
+		pushed.sequence = index + 1000U;
+		expect(ring.try_push(pushed), "output ring accepts wrapped push");
+		aggregation::AggregationMeterRecord popped{};
+		expect(ring.try_pop(popped), "output ring accepts wrapped pop");
+		expect(popped.sequence == pushed.sequence,
+			"output ring preserves wrapped record order");
+	}
 }
 
 void test_health()
