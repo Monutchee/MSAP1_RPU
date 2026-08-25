@@ -5,9 +5,22 @@ namespace msap1::aggregation {
 namespace {
 
 constexpr configSTACK_DEPTH_TYPE worker_stack_depth = 2048U;
-constexpr UBaseType_t input_priority = 3U;
-constexpr UBaseType_t output_priority = 2U;
-constexpr UBaseType_t validator_priority = 1U;
+
+/*
+ * The FIFO receiver is deliberately below the validator.  A receive-complete
+ * interrupt can expose a continuously non-empty FIFO, so a higher-priority
+ * receiver would remain runnable while draining it and starve the consumer of
+ * the 64-frame software ring.  Waking the validator after each accepted frame
+ * now preempts intake, bounds ring occupancy, and applies AXI FIFO backpressure
+ * if validation cannot keep up.
+ *
+ * Record output is much less frequent than input and may safely run at the
+ * lowest worker priority.  RPMsg remains priority 4 and therefore retains
+ * control/health responsiveness regardless of aggregation load.
+ */
+constexpr UBaseType_t validator_priority = 3U;
+constexpr UBaseType_t input_priority = 2U;
+constexpr UBaseType_t output_priority = 1U;
 
 } // namespace
 
