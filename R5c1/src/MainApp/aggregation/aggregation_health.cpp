@@ -17,6 +17,25 @@ void store(std::uint32_t &target, std::uint32_t value) noexcept
 
 } // namespace
 
+RingPressureLevel classify_ring_pressure(std::uint32_t used,
+	std::uint32_t capacity) noexcept
+{
+	if (capacity == 0U || used == 0U)
+		return RingPressureLevel::normal;
+	if (used >= capacity)
+		return RingPressureLevel::full;
+
+	/* Multiplication avoids truncation around percentage boundaries. */
+	const auto scaled = static_cast<std::uint64_t>(used) * 100U;
+	if (scaled >= static_cast<std::uint64_t>(capacity) * 90U)
+		return RingPressureLevel::critical;
+	if (scaled >= static_cast<std::uint64_t>(capacity) * 75U)
+		return RingPressureLevel::high;
+	if (scaled >= static_cast<std::uint64_t>(capacity) * 50U)
+		return RingPressureLevel::warning;
+	return RingPressureLevel::normal;
+}
+
 void AggregationHealth::increment(std::uint32_t &counter,
 	std::uint32_t amount) noexcept
 {
@@ -27,6 +46,16 @@ void AggregationHealth::increment(std::uint32_t &counter,
 		if (__atomic_compare_exchange_n(&counter, &current, next, false,
 			__ATOMIC_RELEASE, __ATOMIC_RELAXED))
 			return;
+	}
+}
+
+void AggregationHealth::update_maximum(std::uint32_t &maximum,
+	std::uint32_t candidate) noexcept
+{
+	auto current = load(maximum);
+	while (candidate > current &&
+		!__atomic_compare_exchange_n(&maximum, &current, candidate, false,
+			__ATOMIC_RELEASE, __ATOMIC_RELAXED)) {
 	}
 }
 
@@ -109,7 +138,18 @@ void AggregationHealth::record_sequence(std::uint32_t sequence) noexcept
 
 	const auto distance = static_cast<std::int32_t>(sequence - expected);
 	if (distance > 0) {
-		increment(sequence_gaps_, static_cast<std::uint32_t>(distance));
+		const auto dropped = static_cast<std::uint32_t>(distance);
+		increment(sequence_gaps_, dropped);
+		/*
+		 * The sequence gap is the only authoritative evidence that complete
+		 * input records were discarded before validation.  Preserve the first
+		 * and most recent missing sequence so field diagnostics can correlate a
+		 * loss with software-ring or hardware-FIFO pressure.
+		 */
+		if (load(input_records_dropped_) == 0U)
+			store(first_dropped_sequence_, expected);
+		increment(input_records_dropped_, dropped);
+		store(last_dropped_sequence_, sequence - 1U);
 		store(last_sequence_, sequence);
 		store(expected_sequence_, sequence + 1U);
 	} else {
@@ -120,6 +160,7 @@ void AggregationHealth::record_sequence(std::uint32_t sequence) noexcept
 void AggregationHealth::record_ring_overflow() noexcept
 {
 	increment(ring_overflows_);
+	increment(software_ring_push_failures_);
 }
 
 void AggregationHealth::record_fifo_error(std::uint32_t status) noexcept
@@ -178,6 +219,66 @@ void AggregationHealth::record_two_hour_completed() noexcept
 	increment(two_hour_completed_);
 }
 
+void AggregationHealth::observe_software_ring(std::uint32_t used,
+	std::uint32_t capacity) noexcept
+{
+	store(software_ring_current_, used);
+	store(software_ring_capacity_, capacity);
+	update_maximum(software_ring_high_water_, used);
+
+	const auto next = classify_ring_pressure(used, capacity);
+	const auto previous = static_cast<RingPressureLevel>(
+		__atomic_exchange_n(&software_ring_pressure_,
+			static_cast<std::uint32_t>(next), __ATOMIC_ACQ_REL));
+	if (static_cast<std::uint32_t>(next) <=
+		static_cast<std::uint32_t>(previous))
+		return;
+
+	/* Count every newly crossed edge, including a direct normal-to-full jump. */
+	if (previous < RingPressureLevel::warning &&
+		next >= RingPressureLevel::warning)
+		increment(software_ring_warning_entries_);
+	if (previous < RingPressureLevel::high && next >= RingPressureLevel::high)
+		increment(software_ring_high_entries_);
+	if (previous < RingPressureLevel::critical &&
+		next >= RingPressureLevel::critical)
+		increment(software_ring_critical_entries_);
+	if (previous < RingPressureLevel::full && next >= RingPressureLevel::full)
+		increment(software_ring_full_entries_);
+}
+
+void AggregationHealth::observe_hardware_fifo(
+	std::uint32_t occupancy_words) noexcept
+{
+	store(hardware_fifo_current_words_, occupancy_words);
+	update_maximum(hardware_fifo_high_water_words_, occupancy_words);
+}
+
+void AggregationHealth::record_hardware_fifo_full_events(
+	std::uint32_t count) noexcept
+{
+	increment(hardware_fifo_full_events_, count);
+}
+
+void AggregationHealth::record_input_activation(
+	std::uint32_t records_processed, std::uint32_t runtime_us) noexcept
+{
+	increment(input_wake_count_);
+	increment(input_records_processed_, records_processed);
+	update_maximum(input_max_batch_, records_processed);
+	update_maximum(input_max_runtime_us_, runtime_us);
+}
+
+void AggregationHealth::record_validator_activation(
+	std::uint32_t records_processed, std::uint32_t runtime_us,
+	std::uint32_t schedule_gap_us) noexcept
+{
+	increment(validator_wake_count_);
+	increment(validator_records_processed_, records_processed);
+	update_maximum(validator_max_runtime_us_, runtime_us);
+	update_maximum(validator_max_schedule_gap_us_, schedule_gap_us);
+}
+
 AggregationHealthSnapshot AggregationHealth::snapshot() const noexcept
 {
 	AggregationHealthSnapshot result{};
@@ -196,6 +297,10 @@ AggregationHealthSnapshot AggregationHealth::snapshot() const noexcept
 	result.repeated_frames = load(repeated_frames_);
 	result.out_of_order_frames = load(out_of_order_frames_);
 	result.ring_overflows = load(ring_overflows_);
+	result.software_ring_push_failures = load(software_ring_push_failures_);
+	result.input_records_dropped = load(input_records_dropped_);
+	result.first_dropped_sequence = load(first_dropped_sequence_);
+	result.last_dropped_sequence = load(last_dropped_sequence_);
 	result.fifo_errors = load(fifo_errors_);
 	result.length_errors = load(length_errors_);
 	result.records_queued = load(records_queued_);
@@ -214,6 +319,30 @@ AggregationHealthSnapshot AggregationHealth::snapshot() const noexcept
 	result.last_tx_vacancy = load(last_tx_vacancy_);
 	result.last_validation_error = static_cast<FrameValidationError>(
 		load(last_validation_error_));
+	result.software_ring_current = load(software_ring_current_);
+	result.software_ring_high_water = load(software_ring_high_water_);
+	result.software_ring_capacity = load(software_ring_capacity_);
+	result.software_ring_pressure = static_cast<RingPressureLevel>(
+		load(software_ring_pressure_));
+	result.software_ring_warning_entries = load(
+		software_ring_warning_entries_);
+	result.software_ring_high_entries = load(software_ring_high_entries_);
+	result.software_ring_critical_entries = load(
+		software_ring_critical_entries_);
+	result.software_ring_full_entries = load(software_ring_full_entries_);
+	result.hardware_fifo_current_words = load(hardware_fifo_current_words_);
+	result.hardware_fifo_high_water_words = load(
+		hardware_fifo_high_water_words_);
+	result.hardware_fifo_full_events = load(hardware_fifo_full_events_);
+	result.input_wake_count = load(input_wake_count_);
+	result.input_records_processed = load(input_records_processed_);
+	result.input_max_batch = load(input_max_batch_);
+	result.input_max_runtime_us = load(input_max_runtime_us_);
+	result.validator_wake_count = load(validator_wake_count_);
+	result.validator_records_processed = load(validator_records_processed_);
+	result.validator_max_runtime_us = load(validator_max_runtime_us_);
+	result.validator_max_schedule_gap_us = load(
+		validator_max_schedule_gap_us_);
 	return result;
 }
 

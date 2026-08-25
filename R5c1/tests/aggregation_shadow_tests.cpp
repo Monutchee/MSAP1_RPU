@@ -2,6 +2,7 @@
 #include "aggregation_frame_ring.hpp"
 #include "aggregation_health.hpp"
 #include "aggregation_record_ring.hpp"
+#include "aggregation_scheduler_policy.hpp"
 #include "crc32c.hpp"
 #include "r5_aggregation_engine.hpp"
 
@@ -26,9 +27,11 @@ public:
 		return true;
 	}
 
-	// Fifteen Basic families plus the deferred 150/180-cycle family require
-	// 64 records. Keep headroom for future low-cadence interval assertions.
-	std::array<aggregation::AggregationMeterRecord, 128U> records{};
+	// Thirty-one Basic families plus two deferred 150/180-cycle families need
+	// 132 records. Keep enough headroom for additional low-cadence interval
+	// assertions so a test of the engine scheduler cannot fail merely because
+	// this capture-only sink filled first.
+	std::array<aggregation::AggregationMeterRecord, 256U> records{};
 	std::size_t count{};
 };
 
@@ -273,8 +276,126 @@ void test_health()
 	expect(value.format_errors == 1U, "format counter");
 	expect(value.ring_overflows == 1U && value.fifo_errors == 1U &&
 		value.length_errors == 1U, "transport counters");
+	expect(value.software_ring_push_failures == 1U,
+		"software-ring push failure counter");
+	expect(value.input_records_dropped == 1U &&
+		value.first_dropped_sequence == 0U &&
+		value.last_dropped_sequence == 0U,
+		"deterministic dropped-sequence telemetry");
 	expect(value.last_fifo_error == 0x55AAU && value.last_frame_length == 12U,
 		"last-error context");
+}
+
+void test_ring_pressure_telemetry()
+{
+	using aggregation::RingPressureLevel;
+
+	expect(aggregation::classify_ring_pressure(0U, 64U) ==
+		RingPressureLevel::normal, "empty ring pressure");
+	expect(aggregation::classify_ring_pressure(31U, 64U) ==
+		RingPressureLevel::normal, "below-warning ring pressure");
+	expect(aggregation::classify_ring_pressure(32U, 64U) ==
+		RingPressureLevel::warning, "warning ring pressure boundary");
+	expect(aggregation::classify_ring_pressure(48U, 64U) ==
+		RingPressureLevel::high, "high ring pressure boundary");
+	expect(aggregation::classify_ring_pressure(57U, 64U) ==
+		RingPressureLevel::high, "below-critical ring pressure");
+	expect(aggregation::classify_ring_pressure(58U, 64U) ==
+		RingPressureLevel::critical, "critical ring pressure boundary");
+	expect(aggregation::classify_ring_pressure(63U, 64U) ==
+		RingPressureLevel::critical, "below-full ring pressure");
+	expect(aggregation::classify_ring_pressure(64U, 64U) ==
+		RingPressureLevel::full, "full ring pressure boundary");
+
+	aggregation::AggregationHealth health;
+	health.observe_software_ring(31U, 64U);
+	health.observe_software_ring(32U, 64U);
+	health.observe_software_ring(48U, 64U);
+	health.observe_software_ring(58U, 64U);
+	health.observe_software_ring(64U, 64U);
+	// Returning below a threshold rearms that threshold's edge counter.
+	health.observe_software_ring(1U, 64U);
+	health.observe_software_ring(32U, 64U);
+	health.observe_hardware_fifo(12U);
+	health.observe_hardware_fifo(7U);
+	health.record_hardware_fifo_full_events(2U);
+	health.record_input_activation(4U, 10U);
+	health.record_input_activation(2U, 20U);
+	health.record_validator_activation(4U, 7U, 100U);
+	health.record_validator_activation(2U, 11U, 80U);
+
+	const auto value = health.snapshot();
+	expect(value.software_ring_current == 32U &&
+		value.software_ring_capacity == 64U &&
+		value.software_ring_high_water == 64U,
+		"software-ring occupancy telemetry");
+	expect(value.software_ring_pressure == RingPressureLevel::warning,
+		"software-ring current pressure");
+	expect(value.software_ring_warning_entries == 2U &&
+		value.software_ring_high_entries == 1U &&
+		value.software_ring_critical_entries == 1U &&
+		value.software_ring_full_entries == 1U,
+		"software-ring edge counters");
+	expect(value.hardware_fifo_current_words == 7U &&
+		value.hardware_fifo_high_water_words == 12U,
+		"hardware FIFO occupancy telemetry");
+	expect(value.hardware_fifo_full_events == 2U,
+		"hardware FIFO programmable-full telemetry");
+	expect(value.input_wake_count == 2U &&
+		value.input_records_processed == 6U &&
+		value.input_max_batch == 4U &&
+		value.input_max_runtime_us == 20U,
+		"input-task activation telemetry");
+	expect(value.validator_wake_count == 2U &&
+		value.validator_records_processed == 6U &&
+		value.validator_max_runtime_us == 11U &&
+		value.validator_max_schedule_gap_us == 100U,
+		"validator-task activation telemetry");
+}
+
+void test_bounded_input_handoff_preserves_validator_progress()
+{
+	constexpr std::uint32_t backlog = 256U;
+	constexpr std::uint32_t ring_capacity = 64U;
+	static_assert(
+		aggregation::scheduler_policy::maximum_input_batch == 4U,
+		"production input drain must remain bounded to four packets");
+
+	std::uint32_t hardware_pending = backlog;
+	std::uint32_t software_pending = 0U;
+	std::uint32_t validated = 0U;
+	std::uint32_t input_activations = 0U;
+	std::uint32_t validator_activations = 0U;
+	std::uint32_t ring_high_water = 0U;
+
+	while (validated < backlog) {
+		const auto available = ring_capacity - software_pending;
+		const auto queued = hardware_pending <
+			aggregation::scheduler_policy::maximum_input_batch ?
+			hardware_pending :
+			aggregation::scheduler_policy::maximum_input_batch;
+		const auto accepted = queued < available ? queued : available;
+		hardware_pending -= accepted;
+		software_pending += accepted;
+		if (software_pending > ring_high_water)
+			ring_high_water = software_pending;
+		++input_activations;
+
+		// The production one-tick block after each bounded input batch gives
+		// the validator a real scheduling point even though it has lower
+		// priority than the FIFO task.
+		validated += software_pending;
+		software_pending = 0U;
+		++validator_activations;
+	}
+
+	expect(hardware_pending == 0U && software_pending == 0U &&
+		validated == backlog, "bounded scheduler drains the complete backlog");
+	expect(input_activations == validator_activations,
+		"validator runs after every bounded input activation");
+	expect(ring_high_water <=
+		aggregation::scheduler_policy::maximum_input_batch,
+		"bounded input handoff prevents software-ring accumulation");
 }
 
 std::array<std::uint32_t, aggregation::AggregationProtocol::single_cycle_words>
@@ -360,7 +481,7 @@ void test_r5_engine_emits_complete_basic_family()
 
 void test_r5_engine_fails_closed_when_output_rejects_record()
 {
-	constexpr std::uint32_t generation = 0x12345678U;
+	constexpr std::uint32_t generation = 0x22345678U;
 	constexpr std::uint32_t samples_per_cycle = 533U;
 	RejectingRecordSink sink;
 	aggregation::AggregationHealth health;
@@ -378,7 +499,12 @@ void test_r5_engine_fails_closed_when_output_rejects_record()
 		input.single_cycle_word_count = words.size();
 		input.context.configuration_generation = generation;
 		input.context.sample_rate_hz = 32000U;
-		input.context.control_status = 0x00000F7FU;
+		// Toggle APPLY low for this independent engine instance.  The host-side
+		// HLS model intentionally retains its static state between calls, just as
+		// the synthesized engine does; changing only the generation is not an
+		// APPLY event.
+		input.context.control_status =
+			0x00000F7FU & ~(1U << AGG_CONTEXT_APPLY_BIT);
 		input.context.frequency_status = 0x2U;
 		engine.process(input);
 		first_sample += samples_per_cycle;
@@ -395,7 +521,7 @@ void test_r5_engine_fails_closed_when_output_rejects_record()
 
 void test_r5_engine_drains_deferred_aggregate_family()
 {
-	constexpr std::uint32_t generation = 0x12345678U;
+	constexpr std::uint32_t generation = 0x32345678U;
 	constexpr std::uint32_t samples_per_cycle = 533U;
 	CapturingRecordSink sink;
 	aggregation::AggregationHealth health;
@@ -405,9 +531,11 @@ void test_r5_engine_drains_deferred_aggregate_family()
 
 	std::uint64_t first_sample = 0U;
 	// The first Basic block after initialization carries FIRST_BLOCK and is
-	// intentionally ineligible for the normative 150/180-cycle interval.  Feed
-	// one startup block plus fifteen consecutive eligible blocks.
-	for (std::uint32_t cycle = 1U; cycle <= 192U; ++cycle) {
+	// intentionally ineligible for the normative 150/180-cycle interval. Feed
+	// one startup block plus two groups of fifteen consecutive eligible blocks.
+	// Requiring the second aggregate prevents a scheduler regression where the
+	// first deferred family drains but later Basic boundaries stop advancing.
+	for (std::uint32_t cycle = 1U; cycle <= 372U; ++cycle) {
 		auto words = make_zero_cycle(cycle, generation, first_sample,
 			samples_per_cycle);
 		aggregation::AggregationInputView input{};
@@ -425,10 +553,10 @@ void test_r5_engine_drains_deferred_aggregate_family()
 	const auto status = health.snapshot();
 	expect(status.engine_ready,
 		"deferred aggregate processing keeps the engine ready");
-	expect(status.basic_completed == 16U,
-		"192 cycles must complete one startup and fifteen eligible Basic measurements");
-	expect(status.aggregate_completed == 1U,
-		"the fifteenth eligible Basic block must drain one deferred aggregate");
+	expect(status.basic_completed == 31U,
+		"372 cycles must complete one startup and thirty eligible Basic measurements");
+	expect(status.aggregate_completed == 2U,
+		"each group of fifteen eligible Basic blocks must drain an aggregate");
 }
 
 void test_r5_shadow_mode_is_non_authoritative()
@@ -453,6 +581,8 @@ int main()
 	test_ring();
 	test_output_ring();
 	test_health();
+	test_ring_pressure_telemetry();
+	test_bounded_input_handoff_preserves_validator_progress();
 	test_r5_engine_emits_complete_basic_family();
 	test_r5_engine_fails_closed_when_output_rejects_record();
 	test_r5_engine_drains_deferred_aggregate_family();

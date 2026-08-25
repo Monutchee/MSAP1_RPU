@@ -7,6 +7,18 @@
 
 namespace msap1::aggregation {
 
+/** Edge-triggered software-ring pressure state used by diagnostics. */
+enum class RingPressureLevel : std::uint32_t {
+	normal = 0U,
+	warning = 1U,
+	high = 2U,
+	critical = 3U,
+	full = 4U,
+};
+
+[[nodiscard]] RingPressureLevel classify_ring_pressure(
+	std::uint32_t used, std::uint32_t capacity) noexcept;
+
 /** Coherent diagnostic copy returned to future RPMsg health reporting. */
 struct AggregationHealthSnapshot final {
 	bool transport_available{};
@@ -24,6 +36,10 @@ struct AggregationHealthSnapshot final {
 	std::uint32_t repeated_frames{};
 	std::uint32_t out_of_order_frames{};
 	std::uint32_t ring_overflows{};
+	std::uint32_t software_ring_push_failures{};
+	std::uint32_t input_records_dropped{};
+	std::uint32_t first_dropped_sequence{};
+	std::uint32_t last_dropped_sequence{};
 	std::uint32_t fifo_errors{};
 	std::uint32_t length_errors{};
 	std::uint32_t records_queued{};
@@ -40,11 +56,30 @@ struct AggregationHealthSnapshot final {
 	std::uint32_t last_frame_length{};
 	std::uint32_t last_output_sequence{};
 	std::uint32_t last_tx_vacancy{};
+	std::uint32_t software_ring_current{};
+	std::uint32_t software_ring_high_water{};
+	std::uint32_t software_ring_capacity{};
+	RingPressureLevel software_ring_pressure{RingPressureLevel::normal};
+	std::uint32_t software_ring_warning_entries{};
+	std::uint32_t software_ring_high_entries{};
+	std::uint32_t software_ring_critical_entries{};
+	std::uint32_t software_ring_full_entries{};
+	std::uint32_t hardware_fifo_current_words{};
+	std::uint32_t hardware_fifo_high_water_words{};
+	std::uint32_t hardware_fifo_full_events{};
+	std::uint32_t input_wake_count{};
+	std::uint32_t input_records_processed{};
+	std::uint32_t input_max_batch{};
+	std::uint32_t input_max_runtime_us{};
+	std::uint32_t validator_wake_count{};
+	std::uint32_t validator_records_processed{};
+	std::uint32_t validator_max_runtime_us{};
+	std::uint32_t validator_max_schedule_gap_us{};
 	FrameValidationError last_validation_error{FrameValidationError::none};
 };
 
 /**
- * Saturating telemetry for the observational shadow receiver.
+ * Saturating telemetry for the authoritative aggregation receive pipeline.
  *
  * The input and validation tasks update different counters.  GCC atomic
  * builtins keep snapshots race-free without heap allocation or libatomic.
@@ -73,12 +108,22 @@ public:
 	void record_aggregate_completed() noexcept;
 	void record_ten_minute_completed() noexcept;
 	void record_two_hour_completed() noexcept;
+	void observe_software_ring(std::uint32_t used,
+		std::uint32_t capacity) noexcept;
+	void observe_hardware_fifo(std::uint32_t occupancy_words) noexcept;
+	void record_hardware_fifo_full_events(std::uint32_t count) noexcept;
+	void record_input_activation(std::uint32_t records_processed,
+		std::uint32_t runtime_us) noexcept;
+	void record_validator_activation(std::uint32_t records_processed,
+		std::uint32_t runtime_us, std::uint32_t schedule_gap_us) noexcept;
 
 	[[nodiscard]] AggregationHealthSnapshot snapshot() const noexcept;
 
 private:
 	static void increment(std::uint32_t &counter,
 		std::uint32_t amount = 1U) noexcept;
+	static void update_maximum(std::uint32_t &maximum,
+		std::uint32_t candidate) noexcept;
 
 	std::uint32_t transport_available_{};
 	std::uint32_t transport_initialized_{};
@@ -95,6 +140,10 @@ private:
 	std::uint32_t repeated_frames_{};
 	std::uint32_t out_of_order_frames_{};
 	std::uint32_t ring_overflows_{};
+	std::uint32_t software_ring_push_failures_{};
+	std::uint32_t input_records_dropped_{};
+	std::uint32_t first_dropped_sequence_{};
+	std::uint32_t last_dropped_sequence_{};
 	std::uint32_t fifo_errors_{};
 	std::uint32_t length_errors_{};
 	std::uint32_t records_queued_{};
@@ -113,6 +162,25 @@ private:
 	std::uint32_t last_tx_vacancy_{};
 	std::uint32_t last_validation_error_{};
 	std::uint32_t have_sequence_{};
+	std::uint32_t software_ring_current_{};
+	std::uint32_t software_ring_high_water_{};
+	std::uint32_t software_ring_capacity_{};
+	std::uint32_t software_ring_pressure_{};
+	std::uint32_t software_ring_warning_entries_{};
+	std::uint32_t software_ring_high_entries_{};
+	std::uint32_t software_ring_critical_entries_{};
+	std::uint32_t software_ring_full_entries_{};
+	std::uint32_t hardware_fifo_current_words_{};
+	std::uint32_t hardware_fifo_high_water_words_{};
+	std::uint32_t hardware_fifo_full_events_{};
+	std::uint32_t input_wake_count_{};
+	std::uint32_t input_records_processed_{};
+	std::uint32_t input_max_batch_{};
+	std::uint32_t input_max_runtime_us_{};
+	std::uint32_t validator_wake_count_{};
+	std::uint32_t validator_records_processed_{};
+	std::uint32_t validator_max_runtime_us_{};
+	std::uint32_t validator_max_schedule_gap_us_{};
 };
 
 } // namespace msap1::aggregation

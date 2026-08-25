@@ -1,5 +1,8 @@
 #include "r5c1_service.hpp"
 
+static_assert(sizeof(msap1_aggregation_health_payload) == 200U,
+	"R5C1 aggregation-health wire payload changed unexpectedly");
+
 R5c1Service::R5c1Service(const msap1::CoreConfig &config,
 	msap1::aggregation::AggregationHealth &health,
 	msap1::aggregation::AggregationRuntime &runtime) noexcept
@@ -58,6 +61,11 @@ bool R5c1Service::handle_custom(const msap1_rpu_msg_header &request,
 	response.repeated_frames = value.repeated_frames;
 	response.out_of_order_frames = value.out_of_order_frames;
 	response.ring_overflows = value.ring_overflows;
+	response.software_ring_push_failures =
+		value.software_ring_push_failures;
+	response.input_records_dropped = value.input_records_dropped;
+	response.first_dropped_sequence = value.first_dropped_sequence;
+	response.last_dropped_sequence = value.last_dropped_sequence;
 	response.fifo_errors = value.fifo_errors;
 	response.length_errors = value.length_errors;
 	response.records_queued = value.records_queued;
@@ -76,6 +84,30 @@ bool R5c1Service::handle_custom(const msap1_rpu_msg_header &request,
 	response.last_validation_error =
 		static_cast<std::uint32_t>(value.last_validation_error);
 	response.last_tx_vacancy = value.last_tx_vacancy;
+	response.software_ring_current = value.software_ring_current;
+	response.software_ring_high_water = value.software_ring_high_water;
+	response.software_ring_capacity = value.software_ring_capacity;
+	response.software_ring_pressure =
+		static_cast<std::uint32_t>(value.software_ring_pressure);
+	response.software_ring_warning_entries =
+		value.software_ring_warning_entries;
+	response.software_ring_high_entries = value.software_ring_high_entries;
+	response.software_ring_critical_entries =
+		value.software_ring_critical_entries;
+	response.software_ring_full_entries = value.software_ring_full_entries;
+	response.hardware_fifo_current_words = value.hardware_fifo_current_words;
+	response.hardware_fifo_high_water_words =
+		value.hardware_fifo_high_water_words;
+	response.hardware_fifo_full_events = value.hardware_fifo_full_events;
+	response.input_wake_count = value.input_wake_count;
+	response.input_records_processed = value.input_records_processed;
+	response.input_max_batch = value.input_max_batch;
+	response.input_max_runtime_us = value.input_max_runtime_us;
+	response.validator_wake_count = value.validator_wake_count;
+	response.validator_records_processed = value.validator_records_processed;
+	response.validator_max_runtime_us = value.validator_max_runtime_us;
+	response.validator_max_schedule_gap_us =
+		value.validator_max_schedule_gap_us;
 
 	(void)send_response(&request, src, MSAP1_RPU_MSG_AGGREGATION_HEALTH,
 		MSAP1_RPU_STATUS_OK, &response, sizeof(response));

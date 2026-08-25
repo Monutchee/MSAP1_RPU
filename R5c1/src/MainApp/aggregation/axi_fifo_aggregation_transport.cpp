@@ -3,13 +3,36 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <limits>
 
 namespace msap1::aggregation {
+
+namespace {
+
+#if MSAP1_HAVE_R5_AGGREGATION_FIFO && defined(XLLF_INT_RFPF_MASK)
+constexpr std::uint32_t input_pressure_interrupt_mask = XLLF_INT_RFPF_MASK;
+#else
+constexpr std::uint32_t input_pressure_interrupt_mask = 0U;
+#endif
+
+#if MSAP1_HAVE_R5_AGGREGATION_FIFO
+void saturating_increment(std::uint32_t &counter) noexcept
+{
+	auto current = __atomic_load_n(&counter, __ATOMIC_RELAXED);
+	while (current != std::numeric_limits<std::uint32_t>::max() &&
+		!__atomic_compare_exchange_n(&counter, &current, current + 1U,
+			false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+	}
+}
+#endif
+
+} // namespace
 
 bool AxiFifoAggregationTransport::initialize(TaskHandle_t input_task) noexcept
 {
 	input_task_ = input_task;
 	interrupt_errors_ = 0U;
+	input_full_events_ = 0U;
 	last_frame_length_ = 0U;
 	last_tx_vacancy_ = 0U;
 	initialized_ = false;
@@ -25,7 +48,8 @@ bool AxiFifoAggregationTransport::initialize(TaskHandle_t input_task) noexcept
 		static_cast<std::uint16_t>(
 			MSAP1_R5_AGGREGATION_FIFO_INTERRUPT_ID),
 		&interrupt_handler, this) == pdPASS) {
-		XLlFifo_IntEnable(&fifo_, XLLF_INT_RC_MASK | XLLF_INT_ERROR_MASK);
+		XLlFifo_IntEnable(&fifo_, XLLF_INT_RC_MASK | XLLF_INT_ERROR_MASK |
+			input_pressure_interrupt_mask);
 		vPortEnableInterrupt(static_cast<std::uint16_t>(
 			MSAP1_R5_AGGREGATION_FIFO_INTERRUPT_ID));
 		interrupt_enabled_ = true;
@@ -121,9 +145,25 @@ std::uint32_t AxiFifoAggregationTransport::take_interrupt_errors() noexcept
 	return __atomic_exchange_n(&interrupt_errors_, 0U, __ATOMIC_ACQ_REL);
 }
 
+std::uint32_t AxiFifoAggregationTransport::take_input_full_events() noexcept
+{
+	return __atomic_exchange_n(&input_full_events_, 0U, __ATOMIC_ACQ_REL);
+}
+
 std::uint32_t AxiFifoAggregationTransport::last_frame_length() const noexcept
 {
 	return __atomic_load_n(&last_frame_length_, __ATOMIC_ACQUIRE);
+}
+
+std::uint32_t AxiFifoAggregationTransport::input_occupancy_words() const noexcept
+{
+#if MSAP1_HAVE_R5_AGGREGATION_FIFO
+	if (!initialized_)
+		return 0U;
+	return XLlFifo_iRxOccupancy(const_cast<XLlFifo *>(&fifo_));
+#else
+	return 0U;
+#endif
 }
 
 bool AxiFifoAggregationTransport::output_available() const noexcept
@@ -178,9 +218,14 @@ void AxiFifoAggregationTransport::handle_interrupt() noexcept
 {
 	const auto pending = XLlFifo_IntPending(&fifo_);
 	const auto errors = pending & XLLF_INT_ERROR_MASK;
+	const auto pressure = pending & input_pressure_interrupt_mask;
 	if (errors != 0U) {
 		(void)__atomic_fetch_or(&interrupt_errors_, errors, __ATOMIC_RELEASE);
 		XLlFifo_IntClear(&fifo_, errors);
+	}
+	if (pressure != 0U) {
+		saturating_increment(input_full_events_);
+		XLlFifo_IntClear(&fifo_, pressure);
 	}
 
 	/*
@@ -193,11 +238,13 @@ void AxiFifoAggregationTransport::handle_interrupt() noexcept
 		XLlFifo_IntClear(&fifo_, XLLF_INT_RC_MASK);
 	}
 
-	const auto other = pending & ~(XLLF_INT_RC_MASK | XLLF_INT_ERROR_MASK);
+	const auto other = pending & ~(XLLF_INT_RC_MASK | XLLF_INT_ERROR_MASK |
+		input_pressure_interrupt_mask);
 	if (other != 0U)
 		XLlFifo_IntClear(&fifo_, other);
 
-	if ((pending & (XLLF_INT_RC_MASK | XLLF_INT_ERROR_MASK)) != 0U &&
+	if ((pending & (XLLF_INT_RC_MASK | XLLF_INT_ERROR_MASK |
+		input_pressure_interrupt_mask)) != 0U &&
 		input_task_ != nullptr) {
 		BaseType_t higher_priority_task_woken = pdFALSE;
 		vTaskNotifyGiveFromISR(input_task_, &higher_priority_task_woken);
@@ -208,7 +255,8 @@ void AxiFifoAggregationTransport::handle_interrupt() noexcept
 void AxiFifoAggregationTransport::rearm_receive_interrupt() noexcept
 {
 	XLlFifo_IntClear(&fifo_, XLLF_INT_RC_MASK);
-	XLlFifo_IntEnable(&fifo_, XLLF_INT_RC_MASK | XLLF_INT_ERROR_MASK);
+	XLlFifo_IntEnable(&fifo_, XLLF_INT_RC_MASK | XLLF_INT_ERROR_MASK |
+		input_pressure_interrupt_mask);
 }
 
 void AxiFifoAggregationTransport::drain(std::uint32_t bytes) noexcept

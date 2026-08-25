@@ -195,23 +195,20 @@ void R5AggregationEngine::process(const AggregationInputView &input) noexcept
 	for (const auto word : context)
 		input_.write(single_cycle_word_t(word));
 
-	// One call consumes the cycle.  Most cycles do not close a Basic block and
-	// therefore produce no record and cannot have queued deferred work.  Only
-	// a record-producing input pass can close a Basic block and schedule the
-	// longer completed/open intervals.
-	//
-	// A deferred interval may require an internal preparation pass that emits
-	// no record before a later pass becomes publishable.  Consequently, zero
-	// output is a valid intermediate state and must not terminate the drain.
-	// Run the established bounded drain only at Basic boundaries.  This keeps
-	// the exact engine semantics while reducing the ordinary-cycle cost from
-	// nine HLS calls to one.
-	const auto completed = run_one_pass();
-	if (ready_ && completed != 0U) {
-		for (std::size_t pass = 0U;
-			ready_ && pass < deferred_pass_count; ++pass)
-			(void)run_one_pass();
-	}
+	// One call consumes the cycle.  Deferred 150/180-cycle, ten-minute,
+	// two-hour, and preview work is then drained only while the shared engine
+	// reports it as pending.  The previous fixed eight-pass drain ran seven or
+	// eight empty arbitrary-precision passes after every Basic result and made
+	// R5C1 slower than the 50/60 Hz producer, eventually forcing PL to discard
+	// whole source packets.  The bound remains a fail-closed guard against a
+	// scheduler bug.
+	(void)run_one_pass();
+	for (std::size_t pass = 0U;
+		ready_ && hls_aggregation_engine_has_pending_work() &&
+		pass < deferred_pass_count; ++pass)
+		(void)run_one_pass();
+	if (ready_ && hls_aggregation_engine_has_pending_work())
+		fail_engine();
 
 	if (!input_.empty() || assembling_words_ != 0U)
 		fail_engine();

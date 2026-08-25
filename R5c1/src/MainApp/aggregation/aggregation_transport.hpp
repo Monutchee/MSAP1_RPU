@@ -35,10 +35,14 @@ public:
 	virtual bool wait_for_frame(TickType_t timeout) noexcept = 0;
 	virtual TransportReadResult read(AggregationFrame &frame) noexcept = 0;
 	virtual std::uint32_t take_interrupt_errors() noexcept = 0;
+	/** Return and clear receive programmable-full interrupt edges. */
+	virtual std::uint32_t take_input_full_events() noexcept = 0;
 	[[nodiscard]] virtual std::uint32_t last_frame_length() const noexcept = 0;
+	/** Sampled receive occupancy.  Units are 32-bit FIFO words. */
+	[[nodiscard]] virtual std::uint32_t input_occupancy_words() const noexcept = 0;
 
 	/**
-	 * Non-blocking transmit side used by the future R5C1 aggregation engine.
+	 * Non-blocking transmit side used by the authoritative R5C1 engine.
 	 * A false-ready result must never stall the input/validation tasks.
 	 */
 	[[nodiscard]] virtual bool output_available() const noexcept = 0;

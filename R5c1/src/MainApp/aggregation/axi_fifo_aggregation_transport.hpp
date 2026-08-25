@@ -89,7 +89,9 @@ public:
 	bool wait_for_frame(TickType_t timeout) noexcept override;
 	TransportReadResult read(AggregationFrame &frame) noexcept override;
 	std::uint32_t take_interrupt_errors() noexcept override;
+	std::uint32_t take_input_full_events() noexcept override;
 	[[nodiscard]] std::uint32_t last_frame_length() const noexcept override;
+	[[nodiscard]] std::uint32_t input_occupancy_words() const noexcept override;
 	[[nodiscard]] bool output_available() const noexcept override;
 	[[nodiscard]] std::uint32_t output_vacancy_words() const noexcept override;
 	TransportWriteResult write(
@@ -106,6 +108,7 @@ private:
 #endif
 	TaskHandle_t input_task_{};
 	std::uint32_t interrupt_errors_{};
+	std::uint32_t input_full_events_{};
 	std::uint32_t last_frame_length_{};
 	std::uint32_t last_tx_vacancy_{};
 	bool initialized_{};

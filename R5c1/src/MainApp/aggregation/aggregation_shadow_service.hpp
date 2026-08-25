@@ -10,6 +10,8 @@
 #include "FreeRTOS.h"
 #include "task.h"
 
+#include <cstdint>
+
 namespace msap1::aggregation {
 
 /**
@@ -33,6 +35,7 @@ public:
 
 private:
 	void record_transport_errors() noexcept;
+	void notify_validator() noexcept;
 
 	AggregationTransport &transport_;
 	AggregationFrameRing &ring_;
@@ -40,6 +43,13 @@ private:
 	R5AggregationEngine &engine_;
 	AggregationHealth &health_;
 	TaskHandle_t validator_task_{};
+	/*
+	 * The input task records the first outstanding notification time.  The
+	 * validator atomically consumes it when it runs, producing a direct
+	 * measurement of lower-priority scheduling latency without adding a queue
+	 * or taking a lock in the high-priority path.
+	 */
+	std::uint32_t validator_notification_time_us_{};
 };
 
 } // namespace msap1::aggregation
