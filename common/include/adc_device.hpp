@@ -48,10 +48,10 @@ struct SimulatorConfiguration {
 	/* Keep phase/scheduler/packet framing across APPLY so the waveform
 	 * continues seamlessly instead of restarting at 0 degrees. */
 	bool preserve_phase = false;
-	/* Four harmonic slots, two packed words each (the PL register
-	 * layout: word0 = order | mask<<8 | fraction_q16<<16; word1 = phase
+	/* Four harmonic/interharmonic slots, three packed words each (the PL
+	 * register layout: ratio Q16.16; mask | fraction_q16<<16; phase
 	 * Q0.32). All-zero slots are disabled. */
-	std::array<std::uint32_t, 8> harmonic_words{};
+	std::array<std::uint32_t, 12> harmonic_words{};
 };
 
 /*

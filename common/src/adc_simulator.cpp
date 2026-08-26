@@ -33,7 +33,7 @@ constexpr std::uint32_t reg_active_dc_base = 0xb0;
 constexpr std::uint32_t reg_shadow_noise_base = 0xd0;
 constexpr std::uint32_t reg_active_noise_base = 0x100;
 constexpr std::uint32_t reg_shadow_harmonic_base = 0x200;
-constexpr std::uint32_t reg_active_harmonic_base = 0x220;
+constexpr std::uint32_t reg_active_harmonic_base = 0x240;
 constexpr std::uint32_t reg_shadow_event_control = 0x300;
 constexpr std::uint32_t reg_shadow_event_scale = 0x304;
 constexpr std::uint32_t reg_shadow_event_timing = 0x308;
@@ -47,8 +47,8 @@ constexpr std::uint32_t reg_active_event_timing = 0x320;
 constexpr std::uint32_t simulator_id = 0x53494d31u; // SIM1
 constexpr std::uint32_t supported_major_version = 1u;
 /* 1.1: DC offset, noise, preserve-phase, counter clears. 1.2: the four
- * global harmonic slots. */
-constexpr std::uint32_t required_minor_version = 3u;
+ * global harmonic slots. 1.3: event sequencer. 1.4: Q16.16 slot ratios. */
+constexpr std::uint32_t required_minor_version = 4u;
 constexpr std::uint32_t control_source_simulator = 1u << 0;
 constexpr std::uint32_t control_enable = 1u << 1;
 constexpr std::uint32_t control_preserve_phase = 1u << 2;
@@ -88,8 +88,24 @@ bool valid(const Configuration &configuration,
 			return false;
 	}
 	for (std::size_t slot = 0; slot < 4; ++slot) {
-		/* order 1 would silently double the fundamental. */
-		if ((simulator.harmonic_words[slot * 2] & 0xffu) == 1u)
+		const auto ratio_q16 = simulator.harmonic_words[slot * 3];
+		const auto control = simulator.harmonic_words[slot * 3 + 1];
+		const auto phase = simulator.harmonic_words[slot * 3 + 2];
+		if (ratio_q16 == 0u) {
+			if (control != 0u || phase != 0u)
+				return false;
+			continue;
+		}
+		/* Ratios at or below 1 duplicate/subdivide the fundamental; M16
+		 * slots cover harmonic/interharmonic content above it through 127. */
+		if (ratio_q16 <= 0x00010000u || ratio_q16 >= 0x00800000u ||
+		    (control & 0x0000ff00u) != 0u || (control & 0x7fu) == 0u ||
+		    (control & 0x80u) != 0u)
+			return false;
+		const std::uint64_t tone_millihz =
+			(static_cast<std::uint64_t>(ratio_q16) *
+			 simulator.frequency_millihz) >> 16;
+		if (tone_millihz * 2u >= static_cast<std::uint64_t>(rate) * 1000u)
 			return false;
 	}
 	return true;
@@ -175,9 +191,10 @@ Error AdcSimulator::configure(const Configuration &configuration,
 		      static_cast<std::uint32_t>(simulator.dc_offset_counts[channel]));
 		write(reg_shadow_noise_base + channel * 4u,
 		      simulator.noise_level_counts[channel]);
-		write(reg_shadow_harmonic_base + channel * 4u,
-		      simulator.harmonic_words[channel]);
 	}
+	for (std::size_t word = 0; word < simulator.harmonic_words.size(); ++word)
+		write(reg_shadow_harmonic_base + word * 4u,
+		      simulator.harmonic_words[word]);
 	write(reg_shadow_phase_step, simulator.phase_step_q32);
 
 	/* apply() folds the preserve-phase level into CONTROL. */
@@ -199,10 +216,12 @@ Error AdcSimulator::configure(const Configuration &configuration,
 				static_cast<std::uint32_t>(
 					simulator.dc_offset_counts[channel]) &&
 			read(reg_active_noise_base + channel * 4u) ==
-				simulator.noise_level_counts[channel] &&
-			read(reg_active_harmonic_base + channel * 4u) ==
-				simulator.harmonic_words[channel];
+				simulator.noise_level_counts[channel];
 	}
+	for (std::size_t word = 0; matches && word < simulator.harmonic_words.size();
+	     ++word)
+		matches = read(reg_active_harmonic_base + word * 4u) ==
+			simulator.harmonic_words[word];
 	if (!matches)
 		return Error::AdcRegisterMismatch;
 
