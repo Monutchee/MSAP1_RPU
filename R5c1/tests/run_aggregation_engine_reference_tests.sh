@@ -34,9 +34,6 @@ common_flags="-std=c++20 -O2 -Wall -Wextra -Wpedantic \
 	-I$source_dir \
 	-I$pl_hls_dir/common/include"
 
-if [ "${MNC_REQUIRE_IEC_UTC_OVERLAP:-0}" = "1" ]; then
-	common_flags="$common_flags -DMNC_REQUIRE_IEC_UTC_OVERLAP=1"
-fi
 if [ "${MNC_REQUIRE_M15_INVALIDATION_MATRIX:-0}" = "1" ]; then
 	common_flags="$common_flags -DMNC_REQUIRE_M15_INVALIDATION_MATRIX=1"
 fi

@@ -56,10 +56,6 @@
 
 #include "aggregation_engine.hpp"
 
-#ifndef MNC_REQUIRE_IEC_UTC_OVERLAP
-#define MNC_REQUIRE_IEC_UTC_OVERLAP 0
-#endif
-
 #ifndef MNC_REQUIRE_M15_INVALIDATION_MATRIX
 #define MNC_REQUIRE_M15_INVALIDATION_MATRIX 0
 #endif
@@ -2028,15 +2024,18 @@ int main() {
               ten_minute_results);
 #endif
 
-#if MNC_REQUIRE_IEC_UTC_OVERLAP
   // IEC 61000-4-30 resynchronizes the Basic and 150/180-cycle windows at
   // every UTC ten-minute boundary.  When the boundary lands inside an open
   // window, the old window continues to completion while a synchronized
-  // window starts.  The resulting records overlap by construction.  Keep
-  // these checks opt-in until M15 adds the two required shadow accumulator
-  // states; they are the executable red gate for that work.
+  // window starts.  The resulting records overlap by construction.  This is
+  // a permanent regression gate for the dual-slot M15 implementation.
   auto drain_aggregate_records = [&](unsigned long long *first_samples,
                                      unsigned long long *last_samples,
+                                     unsigned *statuses,
+                                     unsigned *sample_counts,
+                                     unsigned *first_sequences,
+                                     unsigned *last_sequences,
+                                     unsigned long long *rms_values,
                                      unsigned &aggregate_count) {
     ap_uint<32> words[MREC_WORDS];
     while (!b.m_agg.empty()) {
@@ -2049,6 +2048,21 @@ int main() {
         last_samples[aggregate_count] =
             (unsigned long long)words[AGG_LAST_SAMPLE_LOW_WORD] |
             ((unsigned long long)words[AGG_LAST_SAMPLE_HIGH_WORD] << 32);
+        statuses[aggregate_count] = (unsigned)words[MREC_STATUS_WORD];
+        sample_counts[aggregate_count] =
+            (unsigned)words[MREC_SAMPLE_COUNT_WORD];
+        first_sequences[aggregate_count] =
+            (unsigned)words[MTR2_FIRST_BASIC_SEQ_WORD];
+        last_sequences[aggregate_count] =
+            (unsigned)words[MTR2_LAST_BASIC_SEQ_WORD];
+        for (int lane = 0; lane < MET_ACTIVE_CHANNELS; ++lane) {
+          rms_values[aggregate_count * MET_ACTIVE_CHANNELS + lane] =
+              (unsigned long long)
+                  words[MTR2_CH_BASE_WORD + lane * MTR2_CH_STRIDE_WORDS] |
+              ((unsigned long long)
+                   words[MTR2_CH_BASE_WORD + lane * MTR2_CH_STRIDE_WORDS + 1]
+               << 32);
+        }
       }
       ++aggregate_count;
     }
@@ -2084,6 +2098,7 @@ int main() {
     b.ten_minute_update = !b.ten_minute_update;
 
     unsigned basic_count = 0;
+    unsigned synchronized_count = 0;
     unsigned long long first_samples[4] = {};
     unsigned long long last_samples[4] = {};
     const unsigned cycles_to_drive = target_cycle + cycles_per_block + 1u;
@@ -2109,6 +2124,10 @@ int main() {
               (unsigned long long)words[BASIC_LAST_SAMPLE_LOW_WORD] |
               ((unsigned long long)words[BASIC_LAST_SAMPLE_HIGH_WORD] << 32);
         }
+        if (words[MTR1_TIMING_WORD].bit(
+                MTR1_TIMING_UTC_RESYNCHRONIZED_BIT)) {
+          ++synchronized_count;
+        }
         ++basic_count;
         take_power_record(b, words);
         take_phasor_record(b, words);
@@ -2132,6 +2151,9 @@ int main() {
     }
     CHECK(found_overlap,
           "%u Hz UTC-resynchronized Basic records must overlap", nominal_hz);
+    CHECK(synchronized_count == 1u,
+          "%u Hz UTC resynchronization must mark exactly one Basic, got %u",
+          nominal_hz, synchronized_count);
   };
 
   run_basic_utc_overlap(60u, 12u, 5u, 70000u, 7000000ull);
@@ -2176,9 +2198,11 @@ int main() {
     ap_uint<32> words[MREC_WORDS];
     take_agg(b, words, /*any format=*/0u);
   }
+  GoldenAgg continuing_golden;
   for (unsigned block = 0; block < 5u; ++block) {
     GoldenBlock golden;
     run_block(b, overlap, 12u, golden);
+    fold_block(continuing_golden, golden, 12u, overlap.freq_mhz);
     drain_basic_families();
   }
 
@@ -2191,24 +2215,116 @@ int main() {
   unsigned aggregate_count = 0;
   unsigned long long aggregate_first[4] = {};
   unsigned long long aggregate_last[4] = {};
+  unsigned aggregate_status[4] = {};
+  unsigned aggregate_samples[4] = {};
+  unsigned aggregate_first_sequence[4] = {};
+  unsigned aggregate_last_sequence[4] = {};
+  unsigned long long aggregate_rms[4 * MET_ACTIVE_CHANNELS] = {};
+  GoldenBlock continuing_boundary;
+  GoldenBlock synchronized_blocks[MET_BASIC_BLOCKS_PER_AGGREGATE] = {};
+  bool correction_after_promotion = false;
   for (unsigned cycle_index = 0; cycle_index < 186u; ++cycle_index) {
-    GoldenBlock golden;
-    b.send(make_cycle(overlap, golden));
+    GoldenBlock transmitted;
+    const auto cycle = make_cycle(overlap, transmitted);
+    if (cycle_index < 12u) {
+      (void)make_cycle(overlap, continuing_boundary);
+    }
+    if (cycle_index >= 6u) {
+      const unsigned synchronized_index = (cycle_index - 6u) / 12u;
+      if (synchronized_index < MET_BASIC_BLOCKS_PER_AGGREGATE) {
+        (void)make_cycle(overlap, synchronized_blocks[synchronized_index]);
+      }
+    }
+    b.send(cycle);
     overlap.sequence += 1;
     overlap.cycle_sequence += 1;
     overlap.first_sample += overlap.samples;
     overlap.seed += 1;
     drain_basic_families();
-    drain_aggregate_records(aggregate_first, aggregate_last, aggregate_count);
+    drain_aggregate_records(aggregate_first, aggregate_last, aggregate_status,
+                            aggregate_samples, aggregate_first_sequence,
+                            aggregate_last_sequence, aggregate_rms,
+                            aggregate_count);
+    if (!correction_after_promotion && aggregate_count == 1u) {
+      // The old interval has just closed and the synchronized shadow is now
+      // authoritative. A newer UTC mapping may cancel a still-concurrent
+      // shadow, but must not erase this promoted active interval.
+      b.ten_minute_target =
+          overlap.first_sample + 600ull * b.sample_rate;
+      b.ten_minute_update = !b.ten_minute_update;
+      correction_after_promotion = true;
+    }
   }
+  CHECK(correction_after_promotion,
+        "UTC correction exercise must run after aggregate promotion");
   CHECK(aggregate_count >= 2u,
         "UTC-spanning 150/180-cycle windows must both complete, got %u",
         aggregate_count);
   CHECK(aggregate_count >= 2u && aggregate_first[1] <= aggregate_last[0] &&
             aggregate_first[1] > aggregate_first[0],
         "UTC-spanning 150/180-cycle aggregate ranges must overlap");
-#endif
+  CHECK(aggregate_count >= 2u &&
+            (aggregate_status[0] &
+             (1u << MTR2_STATUS_UTC_OVERLAP_BIT)) != 0u &&
+            (aggregate_status[0] &
+             (1u << MTR2_STATUS_UTC_RESYNCHRONIZED_BIT)) == 0u,
+        "continuing 150/180-cycle aggregate must carry UTC-overlap provenance");
+  CHECK(aggregate_count >= 2u &&
+            (aggregate_status[1] &
+             (1u << MTR2_STATUS_UTC_RESYNCHRONIZED_BIT)) != 0u &&
+            (aggregate_status[1] &
+             (1u << MTR2_STATUS_UTC_OVERLAP_BIT)) == 0u,
+        "new 150/180-cycle aggregate must carry UTC-resynchronized provenance");
+  CHECK(aggregate_count >= 2u &&
+            aggregate_last_sequence[0] - aggregate_first_sequence[0] ==
+                MET_BASIC_BLOCKS_PER_AGGREGATE - 1u &&
+            aggregate_last_sequence[1] - aggregate_first_sequence[1] ==
+                MET_BASIC_BLOCKS_PER_AGGREGATE - 1u,
+        "both UTC-spanning aggregates must contain exactly 15 Basic sequences");
+  CHECK(aggregate_count >= 2u &&
+            aggregate_samples[0] >
+                aggregate_last[0] - aggregate_first[0] + 1u &&
+            aggregate_samples[1] ==
+                aggregate_last[1] - aggregate_first[1] + 1u,
+        "only the continuing aggregate may have a shortened physical span");
 
+  fold_block(continuing_golden, continuing_boundary, 12u,
+             overlap.freq_mhz);
+  GoldenAgg synchronized_golden;
+  for (unsigned block = 0; block < MET_BASIC_BLOCKS_PER_AGGREGATE; ++block) {
+    fold_block(synchronized_golden, synchronized_blocks[block], 12u,
+               overlap.freq_mhz);
+    // Five clean pre-boundary blocks plus the continuing boundary block
+    // leave nine synchronized-cadence Basics in the old 15-Basic result.
+    if (block <= 8u) {
+      fold_block(continuing_golden, synchronized_blocks[block], 12u,
+                 overlap.freq_mhz);
+    }
+  }
+  CHECK(continuing_golden.blocks == MET_BASIC_BLOCKS_PER_AGGREGATE &&
+            synchronized_golden.blocks == MET_BASIC_BLOCKS_PER_AGGREGATE,
+        "UTC aggregate goldens must each fold exactly 15 Basics");
+  CHECK(aggregate_count >= 2u &&
+            aggregate_samples[0] == continuing_golden.count &&
+            aggregate_samples[1] == synchronized_golden.count,
+        "UTC aggregate contribution counts must match independent goldens");
+  for (int lane = 0; lane < MET_ACTIVE_CHANNELS; ++lane) {
+    const unsigned long long continuing_rms =
+        golden_rms_q16(continuing_golden.square[lane],
+                       continuing_golden.sum[lane], continuing_golden.count,
+                       true) >>
+        16;
+    const unsigned long long synchronized_rms =
+        golden_rms_q16(synchronized_golden.square[lane],
+                       synchronized_golden.sum[lane], synchronized_golden.count,
+                       true) >>
+        16;
+    CHECK(aggregate_count >= 2u &&
+              aggregate_rms[lane] == continuing_rms &&
+              aggregate_rms[MET_ACTIVE_CHANNELS + lane] == synchronized_rms,
+          "UTC aggregate lane %d RMS must match both independent goldens",
+          lane);
+  }
   if (failures != 0) {
     if (completed_trace != nullptr) std::fclose(completed_trace);
     std::printf("COMPLETED_RECORD_DIGEST=%016llx COUNT=%u\n",
