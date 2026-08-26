@@ -86,6 +86,13 @@ protected:
 				   const void *payload, std::uint16_t payload_len,
 				   std::uint32_t src);
 
+	/*
+	 * Called after the local RPMsg endpoint has been created successfully.
+	 * Product services may start optional workers here so failures in those
+	 * workers cannot prevent the control endpoint from becoming observable.
+	 */
+	virtual void on_endpoint_ready() {}
+
 	/* Called when Linux removes its endpoint. */
 	virtual void on_transport_unbind() {}
 

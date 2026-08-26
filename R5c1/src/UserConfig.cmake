@@ -13,6 +13,14 @@ enable_language(C ASM CXX)
 set(USER_COMPILE_DEFINITIONS
 # Pull shared-memory and mailbox policy from openamp_contract.h.
 "MNC_OPENAMP_CONTRACT"
+# R5C1 is the production aggregation authority. Complete 256-byte records are
+# returned through the AXI FIFO MM-S transmit channel to the meter DMA switch.
+"MNC_R5_AGGREGATION_EMIT_OUTPUT=1"
+# Never ship a polling-only or hardware-stub R5C1 aggregation firmware.  These
+# compile-time gates turn a stale XSA/address/interrupt contract into a build
+# failure instead of an intermittent target-side overflow.
+"MNC_R5_AGGREGATION_REQUIRE_HARDWARE=1"
+"MNC_R5_AGGREGATION_REQUIRE_IRQ=1"
 )
 
 # Undefine any previously specified compiler definitions, either built in or provided with a -D option
@@ -29,6 +37,12 @@ set(USER_UNDEFINED_SYMBOLS
 
 set(USER_INCLUDE_DIRECTORIES
 "../../common/include"
+"MainApp/aggregation"
+"MainApp/aggregation/hls_compat"
+# Shared metrology contracts remain defined with the PL SingleCycle producer
+# and are compiled directly by the R5C1 interval-aggregation owner.
+"../../../MSAP1_PL/SourceData/HLS_DesignFile/common/include"
+"$ENV{XILINX_VITIS}/include"
 # generic OpenAMP helper library (git submodule)
 "../../libs/openamp-helper/include"
 "../../libs/openamp-helper/machine/zynqmp_r5"
@@ -42,6 +56,18 @@ set(USER_INCLUDE_DIRECTORIES
 #Example 3: Adding ${MY_ENV}/data/helloworld.c are expanded using project-specific environment settings.
 set(USER_COMPILE_SOURCES
 "MainApp/main.cpp"
+"MainApp/r5c1_service.cpp"
+"MainApp/aggregation/aggregation_frame_decoder.cpp"
+"MainApp/aggregation/aggregation_frame_ring.cpp"
+"MainApp/aggregation/aggregation_health.cpp"
+"MainApp/aggregation/aggregation_output_service.cpp"
+"MainApp/aggregation/aggregation_record_ring.cpp"
+"MainApp/aggregation/aggregation_runtime.cpp"
+"MainApp/aggregation/aggregation_shadow_service.cpp"
+"MainApp/aggregation/axi_fifo_aggregation_transport.cpp"
+"MainApp/aggregation/crc32c.cpp"
+"MainApp/aggregation/r5_aggregation_engine.cpp"
+"MainApp/aggregation/aggregation_engine.cpp"
 # Generic OpenAMP helper library (git submodule: libs/openamp-helper)
 "../../libs/openamp-helper/src/openamp_platform.cpp"
 "../../libs/openamp-helper/src/rpmsg_endpoint.cpp"
@@ -79,7 +105,7 @@ set(USER_COMPILE_WARNINGS_INHIBIT_ALL )
 # -----------------------------------------
 
 # Optimization level   "-O0" [None], "-O1" [Optimize] , "-O2" [Optimize More], "-O3" [Optimize Most] or "-Os" [Optimize Size]
-set(USER_COMPILE_OPTIMIZATION_LEVEL -O0)
+set(USER_COMPILE_OPTIMIZATION_LEVEL -O2)
 
 # Other flags related to optimization
 set(USER_COMPILE_OPTIMIZATION_OTHER_FLAGS )
@@ -87,7 +113,7 @@ set(USER_COMPILE_OPTIMIZATION_OTHER_FLAGS )
 # -----------------------------------------
 
 # Debug level "" [None], "-g1" [Minimum], "g2" [Default], "g3" [Maximum]
-set(USER_COMPILE_DEBUG_LEVEL -g3)
+set(USER_COMPILE_DEBUG_LEVEL -g1)
 
 # Other flags related to debugging
 set(USER_COMPILE_DEBUG_OTHER_FLAGS )
@@ -108,7 +134,7 @@ set(USER_COMPILE_RELAXATION "-Wl,--no-relax")
 set(USER_COMPILE_GARBAGE "")
 # Add any compiler options that are not covered by the above variables, they will be added as extra compiler options
 # To enable profiling -pg [ for gprof ]  or -p [ for prof information ]
-set(USER_COMPILE_OTHER_FLAGS )
+set(USER_COMPILE_OTHER_FLAGS "-Wno-unknown-pragmas")
 
 # -----------------------------------------
 

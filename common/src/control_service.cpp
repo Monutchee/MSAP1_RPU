@@ -223,6 +223,7 @@ void ControlService::run()
 
 		ML_INFO("Creating RPMsg endpoint %s\r\n", config_.service_name);
 		if (endpoint_.create(rpdev, config_.service_name, *this)) {
+			on_endpoint_ready();
 			platform_.poll_until_reset(rpdev);
 			/* A vdev reset may occur without a separate endpoint unbind. */
 			on_transport_unbind();

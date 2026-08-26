@@ -1,9 +1,9 @@
 /*
  * MSAP1 RPU firmware - R5 core 1 entry point.
  *
- * This file owns the FreeRTOS task and its handle. The rpmsg communication
- * lives in msap1::ControlService (../../common); R5c1Service is a thin
- * subclass. R5c1 has no LED on the KR260 board, so there is no LED task.
+ * This file only composes the long-lived objects and FreeRTOS tasks.  FIFO
+ * ownership, buffering, validation, and health are separate classes under
+ * MainApp/aggregation; RPMsg remains in msap1::ControlService.
  */
 
 #include "FreeRTOS.h"
@@ -12,7 +12,46 @@
 #include "control_service.hpp"
 #include "r5c1_service.hpp"
 
-static R5c1Service service(msap1::CoreConfig::current());
+#include "aggregation/aggregation_frame_decoder.hpp"
+#include "aggregation/aggregation_frame_ring.hpp"
+#include "aggregation/aggregation_health.hpp"
+#include "aggregation/aggregation_output_service.hpp"
+#include "aggregation/aggregation_record_ring.hpp"
+#include "aggregation/aggregation_runtime.hpp"
+#include "aggregation/r5_aggregation_engine.hpp"
+#include "aggregation/aggregation_shadow_service.hpp"
+#include "aggregation/axi_fifo_aggregation_transport.hpp"
+
+#ifndef MNC_R5_AGGREGATION_EMIT_OUTPUT
+#define MNC_R5_AGGREGATION_EMIT_OUTPUT 1
+#endif
+
+namespace {
+
+constexpr auto aggregation_output_mode =
+	MNC_R5_AGGREGATION_EMIT_OUTPUT != 0
+		? msap1::aggregation::AggregationOutputMode::emit
+		: msap1::aggregation::AggregationOutputMode::shadow;
+
+} // namespace
+
+static msap1::aggregation::AggregationHealth aggregation_health;
+static msap1::aggregation::AxiFifoAggregationTransport aggregation_transport;
+static msap1::aggregation::AggregationFrameRing aggregation_ring;
+static msap1::aggregation::AggregationFrameDecoder aggregation_decoder;
+static msap1::aggregation::AggregationRecordRing aggregation_output_ring;
+static msap1::aggregation::AggregationOutputService aggregation_output(
+	aggregation_transport, aggregation_output_ring, aggregation_health);
+static msap1::aggregation::R5AggregationEngine aggregation_engine(
+	aggregation_output, aggregation_health,
+	aggregation_output_mode);
+static msap1::aggregation::AggregationShadowService aggregation_shadow(
+	aggregation_transport, aggregation_ring, aggregation_decoder,
+	aggregation_engine, aggregation_health);
+static msap1::aggregation::AggregationRuntime aggregation_runtime(
+	aggregation_shadow, aggregation_output, aggregation_health);
+static R5c1Service service(msap1::CoreConfig::current(), aggregation_health,
+	aggregation_runtime);
 
 static TaskHandle_t comm_task_handle;
 
@@ -21,11 +60,34 @@ static void comm_task(void *)
 	service.run();
 }
 
+static void aggregation_bootstrap_task(void *)
+{
+	/*
+	 * Start FIFO service as soon as the scheduler runs.  Waiting for Linux to
+	 * announce an RPMsg endpoint can leave the PL producer filling the FIFO for
+	 * an unbounded interval during boot.  start() is idempotent, so the RPMsg
+	 * callback remains a safe recovery path if this first attempt cannot create
+	 * all workers.
+	 */
+	(void)aggregation_runtime.start();
+	vTaskDelete(nullptr);
+}
+
 int main(void)
 {
-	if (xTaskCreate(comm_task, "RPMSG", 2048, NULL, 2,
+	/* Keep the control plane independent so FIFO failure cannot remove Linux
+	 * diagnostics. */
+	if (xTaskCreate(comm_task, "RPMSG", 2048, NULL, 4,
 			&comm_task_handle) != pdPASS)
 		return -1;
+
+	/*
+	 * This task outranks RPMsg only for its short, one-shot start transaction.
+	 * A creation failure is non-fatal: the endpoint callback retries later and
+	 * exposes the failure through the aggregation-health response.
+	 */
+	(void)xTaskCreate(aggregation_bootstrap_task, "AGG_BOOT", 1024, nullptr,
+		5U, nullptr);
 
 	vTaskStartScheduler();
 
