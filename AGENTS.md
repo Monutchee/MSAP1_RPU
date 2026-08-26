@@ -119,6 +119,14 @@ vitis -s scripts/create_platform_from_xsa.py -- --force
   path. The historical test-script name is retained, but production firmware
   emits complete records. A stale XSA may keep RPMsg alive for diagnostics,
   but aggregation must report unhealthy and there is no PL fallback.
+- Run `bash R5c1/tests/run_aggregation_engine_reference_tests.sh` after
+  changing aggregation arithmetic, interval state, record serialization, or
+  live previews. It runs the recovered exact-golden engine suite with previews
+  both enabled and disabled, then byte-compares every completed record. Set
+  `MNC_REQUIRE_IEC_UTC_OVERLAP=1` to enable the M15 red-gate checks for
+  overlapping Basic and 150/180-cycle windows at a UTC ten-minute boundary;
+  set `MNC_REQUIRE_M15_INVALIDATION_MATRIX=1` to exercise accelerated
+  ten-minute contamination and clean-recovery behavior across discontinuities.
 
 ## Maintaining this file
 
