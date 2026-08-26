@@ -309,15 +309,25 @@ void hls_aggregation_engine(hls::stream<single_cycle_word_t> &s_result,
   static ap_uint<1> arithmetic_overflow = 0;  // sticky until APPLY
   static ap_uint<32> sequence = 0;            // first emitted result carries 1
 
-  // Block assembly state.
-  static ap_uint<8> cycles_in_block = 0;
-  static ap_uint<8> block_cycles_target = 12;
-  static ap_uint<8> block_nominal = 60;
-  static ap_uint<32> block_sample_count = 0;
-  static ap_uint<64> block_first_sample = 0;
-  static ap_uint<8> block_mask = 0x7F;
-  static ap_uint<1> block_locked_and = 1;
-  static ap_uint<1> block_fallback_or = 0;
+  // Block assembly state.  Slot 0/1 are the normal cadence and the one
+  // transient UTC-resynchronization shadow.  The active-slot selector is
+  // swapped when the old block closes, so no wide accumulator image is
+  // copied at the ten-minute boundary.
+  static ap_uint<1> basic_active_slot = 0;
+  static ap_uint<1> basic_shadow_active = 0;
+  static ap_uint<1> basic_shadow_slot = 1;
+  static ap_uint<8> basic_cycles_in_block[2] = {};
+  static ap_uint<8> basic_cycles_target[2] = {12, 12};
+  static ap_uint<8> basic_nominal[2] = {60, 60};
+  static ap_uint<32> basic_sample_count[2] = {};
+  static ap_uint<64> basic_first_sample[2] = {};
+  static ap_uint<8> basic_mask[2] = {0x7F, 0x7F};
+  static ap_uint<1> basic_locked_and[2] = {1, 1};
+  static ap_uint<1> basic_fallback_or[2] = {};
+  static ap_uint<1> basic_phasor_invalid[2] = {};
+  static ap_uint<1> basic_utc_resynchronized[2] = {};
+  static ap_uint<64> basic_utc_target_sample = 0;
+  static ap_uint<1> basic_utc_target_valid = 0;
   static ap_uint<32> expected_result_seq = 0;
   static ap_uint<32> expected_cycle_seq = 0;
   static ap_uint<1> have_expectation = 0;
@@ -325,18 +335,22 @@ void hls_aggregation_engine(hls::stream<single_cycle_word_t> &s_result,
   static ap_uint<1> disc_pending = 1;
   // Any merged cycle without a usable frequency reference poisons the
   // block's phasor products (PHASOR/UNBAL record status bit 1).
-  static ap_uint<1> block_phasor_invalid = 0;
+  // `basic_slot` remains the slot consumed by this invocation even if a
+  // close promotes the shadow for the next invocation.
+  ap_uint<1> basic_slot = basic_active_slot;
 
   // All four aggregation tiers use one indexed bank per statistic.  The
   // first dimension selects Basic, 150/180-cycle, 10-minute, or 2-hour;
   // the second selects the channel/pair.  This preserves independent state
   // while replacing forty tiny forced-LUTRAM memories (and their wide tier
   // muxes) with ten serially accessed BRAM-backed banks.
-  static const int MET_TIER_BASIC = 0;
-  static const int MET_TIER_AGGREGATE = 1;
-  static const int MET_TIER_TEN_MINUTE = 2;
-  static const int MET_TIER_TWO_HOUR = 3;
-  static const int MET_TIER_COUNT = 4;
+  static const int MET_TIER_BASIC_0 = 0;
+  static const int MET_TIER_BASIC_1 = 1;
+  static const int MET_TIER_AGGREGATE_0 = 2;
+  static const int MET_TIER_AGGREGATE_1 = 3;
+  static const int MET_TIER_TEN_MINUTE = 4;
+  static const int MET_TIER_TWO_HOUR = 5;
+  static const int MET_TIER_COUNT = 6;
 
   static ap_int<128>
       met_acc_sum[MET_TIER_COUNT][MET_ACTIVE_CHANNELS];
@@ -371,25 +385,33 @@ void hls_aggregation_engine(hls::stream<single_cycle_word_t> &s_result,
 
   // Open-aggregate bookkeeping; syn.rtl.reset=state re-zeroes on aresetn.
   static ap_uint<1> a3s_apply_seen = 0;
-  static ap_uint<5> a3s_blocks_accumulated = 0;
-  static ap_uint<32> a3s_agg_generation = 0;
-  static ap_uint<8> a3s_agg_nominal = 0;
-  static ap_uint<32> a3s_agg_sample_rate = 0;
-  static ap_uint<1> a3s_agg_dc_remove = 1;
-  static ap_uint<64> a3s_agg_first_sample = 0;
-  static ap_uint<64> a3s_agg_last_sample = 0;
-  static ap_uint<32> a3s_agg_first_seq = 0;
-  static ap_uint<32> a3s_agg_total_samples = 0;
-  static ap_uint<16> a3s_agg_total_cycles = 0;
-  static ap_uint<8> a3s_mask_and = 0;
-  static ap_uint<36> a3s_freq_sum = 0;
-  static ap_uint<1> a3s_freq_all_valid = 0;
-  static ap_uint<1> a3s_arithmetic_flag = 0;
-  static ap_uint<1> a3s_phasor_invalid_or = 0;
+  static ap_uint<1> a3s_active_slot = 0;
+  static ap_uint<1> a3s_shadow_active = 0;
+  static ap_uint<1> a3s_shadow_slot = 1;
+  static ap_uint<1> a3s_finalize_slot = 0;
+  static ap_uint<5> a3s_blocks_accumulated_slot[2] = {};
+  static ap_uint<32> a3s_agg_generation_slot[2] = {};
+  static ap_uint<8> a3s_agg_nominal_slot[2] = {};
+  static ap_uint<32> a3s_agg_sample_rate_slot[2] = {};
+  static ap_uint<1> a3s_agg_dc_remove_slot[2] = {1, 1};
+  static ap_uint<64> a3s_agg_first_sample_slot[2] = {};
+  static ap_uint<64> a3s_agg_last_sample_slot[2] = {};
+  static ap_uint<32> a3s_agg_first_seq_slot[2] = {};
+  static ap_uint<32> a3s_agg_last_seq_slot[2] = {};
+  static ap_uint<32> a3s_agg_total_samples_slot[2] = {};
+  static ap_uint<16> a3s_agg_total_cycles_slot[2] = {};
+  static ap_uint<8> a3s_mask_and_slot[2] = {};
+  static ap_uint<36> a3s_freq_sum_slot[2] = {};
+  static ap_uint<1> a3s_freq_all_valid_slot[2] = {};
+  static ap_uint<1> a3s_arithmetic_flag_slot[2] = {};
+  static ap_uint<1> a3s_phasor_invalid_or_slot[2] = {};
+  static ap_uint<1> a3s_utc_overlap_slot[2] = {};
+  static ap_uint<1> a3s_utc_resynchronized_slot[2] = {};
+  static ap_uint<1> a3s_sync_seed_pending = 0;
   // Unsigned arithmetic wraps at 2**32 / 2**64, so sequence and sample
   // continuity survive wraparound without special cases (Mtr2 rule).
-  static ap_uint<32> a3s_expected_next_seq = 0;
-  static ap_uint<64> a3s_expected_next_first = 0;
+  static ap_uint<32> a3s_expected_next_seq_slot[2] = {};
+  static ap_uint<64> a3s_expected_next_first_slot[2] = {};
   static ap_uint<32> a3s_out_sequence = 0;
 
   // Diagnostics (record-carried, words 33..35 — the AGG_* register tap).
@@ -463,30 +485,69 @@ void hls_aggregation_engine(hls::stream<single_cycle_word_t> &s_result,
   static ap_uint<64> a2h_last_target = 0;
   static ap_uint<32> a2h_last_overshoot = 0;
 
+  ap_uint<1> a3s_slot =
+      (aggregation_interval_pending.bit(0) == 1)
+          ? a3s_finalize_slot
+          : a3s_active_slot;
+
   // Readable constant-tier aliases keep the measurement algorithm below
   // close to the standards terminology while all storage remains physically
   // indexed.  They are undefined at the end of this translation unit.
-#define acc_sum met_acc_sum[MET_TIER_BASIC]
-#define acc_square met_acc_square[MET_TIER_BASIC]
-#define acc_raw_sum met_acc_raw_sum[MET_TIER_BASIC]
-#define acc_raw_square met_acc_raw_square[MET_TIER_BASIC]
-#define acc_vll_square met_acc_vll_square[MET_TIER_BASIC]
-#define acc_power met_acc_power[MET_TIER_BASIC]
-#define acc_minimum met_acc_minimum[MET_TIER_BASIC]
-#define acc_maximum met_acc_maximum[MET_TIER_BASIC]
-#define acc_phasor_re met_acc_phasor_re[MET_TIER_BASIC]
-#define acc_phasor_im met_acc_phasor_im[MET_TIER_BASIC]
+#define cycles_in_block basic_cycles_in_block[basic_slot]
+#define block_cycles_target basic_cycles_target[basic_slot]
+#define block_nominal basic_nominal[basic_slot]
+#define block_sample_count basic_sample_count[basic_slot]
+#define block_first_sample basic_first_sample[basic_slot]
+#define block_mask basic_mask[basic_slot]
+#define block_locked_and basic_locked_and[basic_slot]
+#define block_fallback_or basic_fallback_or[basic_slot]
+#define block_phasor_invalid basic_phasor_invalid[basic_slot]
+#define block_utc_resynchronized basic_utc_resynchronized[basic_slot]
 
-#define a3s_acc_sum met_acc_sum[MET_TIER_AGGREGATE]
-#define a3s_acc_square met_acc_square[MET_TIER_AGGREGATE]
-#define a3s_acc_raw_sum met_acc_raw_sum[MET_TIER_AGGREGATE]
-#define a3s_acc_raw_square met_acc_raw_square[MET_TIER_AGGREGATE]
-#define a3s_acc_vll_square met_acc_vll_square[MET_TIER_AGGREGATE]
-#define a3s_acc_power met_acc_power[MET_TIER_AGGREGATE]
-#define a3s_acc_minimum met_acc_minimum[MET_TIER_AGGREGATE]
-#define a3s_acc_maximum met_acc_maximum[MET_TIER_AGGREGATE]
-#define a3s_acc_phasor_re met_acc_phasor_re[MET_TIER_AGGREGATE]
-#define a3s_acc_phasor_im met_acc_phasor_im[MET_TIER_AGGREGATE]
+#define a3s_blocks_accumulated a3s_blocks_accumulated_slot[a3s_slot]
+#define a3s_agg_generation a3s_agg_generation_slot[a3s_slot]
+#define a3s_agg_nominal a3s_agg_nominal_slot[a3s_slot]
+#define a3s_agg_sample_rate a3s_agg_sample_rate_slot[a3s_slot]
+#define a3s_agg_dc_remove a3s_agg_dc_remove_slot[a3s_slot]
+#define a3s_agg_first_sample a3s_agg_first_sample_slot[a3s_slot]
+#define a3s_agg_last_sample a3s_agg_last_sample_slot[a3s_slot]
+#define a3s_agg_first_seq a3s_agg_first_seq_slot[a3s_slot]
+#define a3s_agg_last_seq a3s_agg_last_seq_slot[a3s_slot]
+#define a3s_agg_total_samples a3s_agg_total_samples_slot[a3s_slot]
+#define a3s_agg_total_cycles a3s_agg_total_cycles_slot[a3s_slot]
+#define a3s_mask_and a3s_mask_and_slot[a3s_slot]
+#define a3s_freq_sum a3s_freq_sum_slot[a3s_slot]
+#define a3s_freq_all_valid a3s_freq_all_valid_slot[a3s_slot]
+#define a3s_arithmetic_flag a3s_arithmetic_flag_slot[a3s_slot]
+#define a3s_phasor_invalid_or a3s_phasor_invalid_or_slot[a3s_slot]
+#define a3s_expected_next_seq a3s_expected_next_seq_slot[a3s_slot]
+#define a3s_expected_next_first a3s_expected_next_first_slot[a3s_slot]
+#define a3s_utc_overlap a3s_utc_overlap_slot[a3s_slot]
+#define a3s_utc_resynchronized a3s_utc_resynchronized_slot[a3s_slot]
+
+#define BASIC_TIER(slot) ((slot) == 0 ? MET_TIER_BASIC_0 : MET_TIER_BASIC_1)
+#define acc_sum met_acc_sum[BASIC_TIER(basic_slot)]
+#define acc_square met_acc_square[BASIC_TIER(basic_slot)]
+#define acc_raw_sum met_acc_raw_sum[BASIC_TIER(basic_slot)]
+#define acc_raw_square met_acc_raw_square[BASIC_TIER(basic_slot)]
+#define acc_vll_square met_acc_vll_square[BASIC_TIER(basic_slot)]
+#define acc_power met_acc_power[BASIC_TIER(basic_slot)]
+#define acc_minimum met_acc_minimum[BASIC_TIER(basic_slot)]
+#define acc_maximum met_acc_maximum[BASIC_TIER(basic_slot)]
+#define acc_phasor_re met_acc_phasor_re[BASIC_TIER(basic_slot)]
+#define acc_phasor_im met_acc_phasor_im[BASIC_TIER(basic_slot)]
+
+#define A3S_TIER(slot) ((slot) == 0 ? MET_TIER_AGGREGATE_0 : MET_TIER_AGGREGATE_1)
+#define a3s_acc_sum met_acc_sum[A3S_TIER(a3s_slot)]
+#define a3s_acc_square met_acc_square[A3S_TIER(a3s_slot)]
+#define a3s_acc_raw_sum met_acc_raw_sum[A3S_TIER(a3s_slot)]
+#define a3s_acc_raw_square met_acc_raw_square[A3S_TIER(a3s_slot)]
+#define a3s_acc_vll_square met_acc_vll_square[A3S_TIER(a3s_slot)]
+#define a3s_acc_power met_acc_power[A3S_TIER(a3s_slot)]
+#define a3s_acc_minimum met_acc_minimum[A3S_TIER(a3s_slot)]
+#define a3s_acc_maximum met_acc_maximum[A3S_TIER(a3s_slot)]
+#define a3s_acc_phasor_re met_acc_phasor_re[A3S_TIER(a3s_slot)]
+#define a3s_acc_phasor_im met_acc_phasor_im[A3S_TIER(a3s_slot)]
 
 #define t10m_acc_sum met_acc_sum[MET_TIER_TEN_MINUTE]
 #define t10m_acc_square met_acc_square[MET_TIER_TEN_MINUTE]
@@ -590,6 +651,19 @@ void hls_aggregation_engine(hls::stream<single_cycle_word_t> &s_result,
       t10m_target_sample = ctx_t10m_target;
       t10m_target_valid =
           ctx_target_controls.bit(AGG_CONTEXT_TARGET_VALID_BIT);
+      basic_utc_target_sample = ctx_t10m_target;
+      basic_utc_target_valid = t10m_target_valid;
+      // A UTC correction supersedes an unfinished synchronization attempt,
+      // but the old authoritative window is still allowed to complete.
+      basic_shadow_active = 0;
+      if (a3s_shadow_active == 1) {
+        if (a3s_blocks_accumulated_slot[a3s_shadow_slot] != 0) {
+          a3s_reset_count += 1;
+        }
+        a3s_blocks_accumulated_slot[a3s_shadow_slot] = 0;
+        a3s_shadow_active = 0;
+      }
+      a3s_sync_seed_pending = 0;
       // Linux normally programs the next UTC mark while capture is already
       // inside the interval, so the first emitted result is explicitly
       // partial.  The following auto-advanced intervals are complete.
@@ -617,7 +691,11 @@ void hls_aggregation_engine(hls::stream<single_cycle_word_t> &s_result,
       active_enable = ctx_controls.bit(AGG_CONTEXT_ENABLE_BIT);
       active_dc_remove = ctx_controls.bit(AGG_CONTEXT_DC_REMOVE_BIT);
       arithmetic_overflow = 0;
-      cycles_in_block = 0;
+      basic_active_slot = 0;
+      basic_slot = 0;
+      basic_cycles_in_block[0] = 0;
+      basic_cycles_in_block[1] = 0;
+      basic_shadow_active = 0;
       have_expectation = 0;
       disc_pending = 1;
       if (a2h_intervals_accumulated != 0) {
@@ -637,6 +715,7 @@ void hls_aggregation_engine(hls::stream<single_cycle_word_t> &s_result,
     // Generation boundary: results of another generation never merge.
     if (cycle.generation != active_generation) {
       cycles_in_block = 0;
+      basic_shadow_active = 0;
       have_expectation = 0;
       disc_pending = 1;
       return;
@@ -654,6 +733,7 @@ void hls_aggregation_engine(hls::stream<single_cycle_word_t> &s_result,
         cycles_in_block != 0 && cycle.nominal_hz != block_nominal;
     if (upstream_gap || sequence_break || nominal_change) {
       cycles_in_block = 0;
+      basic_shadow_active = 0;
       disc_pending = 1;
     }
     expected_result_seq = cycle.sequence + 1;
@@ -662,6 +742,33 @@ void hls_aggregation_engine(hls::stream<single_cycle_word_t> &s_result,
 
     // The cycles' own arithmetic flags fold into the sticky block flag.
     arithmetic_overflow |= cycle.status.bit(SCYC_STATUS_OVERFLOW_BIT);
+
+    bool start_primary_utc = false;
+    bool start_shadow_utc = false;
+    if (basic_utc_target_valid == 1 &&
+        cycle.first_sample >= basic_utc_target_sample) {
+      if (cycles_in_block == 0) {
+        start_primary_utc = true;
+      } else {
+        basic_shadow_slot = basic_slot ^ ap_uint<1>(1);
+        basic_cycles_in_block[basic_shadow_slot] = 0;
+        basic_shadow_active = 1;
+        start_shadow_utc = true;
+      }
+
+      // Skip directly to the first future UTC target if a late correction
+      // mapped a boundary that is already more than one interval behind.
+      const ap_uint<64> interval_samples =
+          ap_uint<64>(active_sample_rate) * 600u;
+      if (interval_samples == 0) {
+        basic_utc_target_valid = 0;
+      } else {
+        const ap_uint<64> elapsed =
+            cycle.first_sample - basic_utc_target_sample;
+        const ap_uint<64> intervals = elapsed / interval_samples + 1u;
+        basic_utc_target_sample += intervals * interval_samples;
+      }
+    }
 
     const bool first_cycle = (cycles_in_block == 0);
     if (first_cycle) {
@@ -672,6 +779,7 @@ void hls_aggregation_engine(hls::stream<single_cycle_word_t> &s_result,
       block_mask = 0x7F;
       block_locked_and = 1;
       block_fallback_or = 0;
+      block_utc_resynchronized = start_primary_utc;
     }
     block_sample_count += cycle.sample_count;
     block_mask &= cycle.valid_mask;
@@ -734,12 +842,112 @@ void hls_aggregation_engine(hls::stream<single_cycle_word_t> &s_result,
           im_base, cycle.phasor_im[lane], arithmetic_overflow);
     }
 
+    if (basic_shadow_active == 1) {
+      const ap_uint<1> shadow_slot = basic_shadow_slot;
+      const int shadow_tier =
+          (shadow_slot == 0) ? MET_TIER_BASIC_0 : MET_TIER_BASIC_1;
+      const bool shadow_first_cycle =
+          (basic_cycles_in_block[shadow_slot] == 0);
+      if (shadow_first_cycle) {
+        basic_nominal[shadow_slot] = cycle.nominal_hz;
+        basic_cycles_target[shadow_slot] =
+            met_expected_cycles(cycle.nominal_hz);
+        basic_first_sample[shadow_slot] = cycle.first_sample;
+        basic_sample_count[shadow_slot] = 0;
+        basic_mask[shadow_slot] = 0x7F;
+        basic_locked_and[shadow_slot] = 1;
+        basic_fallback_or[shadow_slot] = 0;
+        basic_utc_resynchronized[shadow_slot] = start_shadow_utc;
+      }
+      basic_sample_count[shadow_slot] += cycle.sample_count;
+      basic_mask[shadow_slot] &= cycle.valid_mask;
+      basic_locked_and[shadow_slot] &=
+          ctx_controls.bit(AGG_CONTEXT_LOCKED_BIT);
+      basic_fallback_or[shadow_slot] |=
+          ctx_controls.bit(AGG_CONTEXT_FALLBACK_BIT);
+      basic_phasor_invalid[shadow_slot] =
+          shadow_first_cycle
+              ? cycle_phasor_invalid
+              : ap_uint<1>(basic_phasor_invalid[shadow_slot] |
+                           cycle_phasor_invalid);
+
+    merge_shadow_lanes:
+      for (int lane = 0; lane < MET_ACTIVE_CHANNELS; ++lane) {
+      #pragma HLS PIPELINE off
+        const ap_int<128> sum_base =
+            shadow_first_cycle ? ap_int<128>(0)
+                               : met_acc_sum[shadow_tier][lane];
+        met_acc_sum[shadow_tier][lane] = sum_base + cycle.sum[lane];
+        const ap_uint<128> square_base =
+            shadow_first_cycle ? ap_uint<128>(0)
+                               : met_acc_square[shadow_tier][lane];
+        met_acc_square[shadow_tier][lane] =
+            met_add_square_saturating<128>(
+                square_base, cycle.square[lane], arithmetic_overflow);
+        const ap_int<64> raw_sum_base =
+            shadow_first_cycle ? ap_int<64>(0)
+                               : met_acc_raw_sum[shadow_tier][lane];
+        met_acc_raw_sum[shadow_tier][lane] =
+            raw_sum_base + cycle.raw_sum[lane];
+        const ap_uint<96> raw_square_base =
+            shadow_first_cycle ? ap_uint<96>(0)
+                               : met_acc_raw_square[shadow_tier][lane];
+        met_acc_raw_square[shadow_tier][lane] =
+            raw_square_base + cycle.raw_square[lane];
+        if (shadow_first_cycle ||
+            cycle.minimum[lane] < met_acc_minimum[shadow_tier][lane]) {
+          met_acc_minimum[shadow_tier][lane] = cycle.minimum[lane];
+        }
+        if (shadow_first_cycle ||
+            cycle.maximum[lane] > met_acc_maximum[shadow_tier][lane]) {
+          met_acc_maximum[shadow_tier][lane] = cycle.maximum[lane];
+        }
+        const ap_int<128> re_base =
+            shadow_first_cycle ? ap_int<128>(0)
+                               : met_acc_phasor_re[shadow_tier][lane];
+        met_acc_phasor_re[shadow_tier][lane] =
+            met_add_signed_saturating<128>(
+                re_base, cycle.phasor_re[lane], arithmetic_overflow);
+        const ap_int<128> im_base =
+            shadow_first_cycle ? ap_int<128>(0)
+                               : met_acc_phasor_im[shadow_tier][lane];
+        met_acc_phasor_im[shadow_tier][lane] =
+            met_add_signed_saturating<128>(
+                im_base, cycle.phasor_im[lane], arithmetic_overflow);
+      }
+    merge_shadow_power:
+      for (int phase = 0; phase < MET_POWER_PHASES; ++phase) {
+      #pragma HLS PIPELINE off
+        const ap_int<128> power_base =
+            shadow_first_cycle ? ap_int<128>(0)
+                               : met_acc_power[shadow_tier][phase];
+        met_acc_power[shadow_tier][phase] =
+            met_add_signed_saturating<128>(
+                power_base, cycle.power_sum[phase], arithmetic_overflow);
+      }
+    merge_shadow_pairs:
+      for (int pair = 0; pair < MET_VLL_PAIRS; ++pair) {
+      #pragma HLS PIPELINE off
+        const ap_uint<128> vll_base =
+            shadow_first_cycle ? ap_uint<128>(0)
+                               : met_acc_vll_square[shadow_tier][pair];
+        met_acc_vll_square[shadow_tier][pair] =
+            met_add_square_saturating<128>(
+                vll_base, cycle.vll_square[pair], arithmetic_overflow);
+      }
+      basic_cycles_in_block[shadow_slot] += 1;
+    }
+
     const ap_uint<8> cycles_now = cycles_in_block + 1;
     if (cycles_now < block_cycles_target) {
       cycles_in_block = cycles_now;
       return;
     }
     cycles_in_block = 0;
+    if (basic_shadow_active == 1) {
+      basic_active_slot = basic_shadow_slot;
+      basic_shadow_active = 0;
+    }
 
     // ---- Shared finalize: ONE call site, up to four passes ---------------
     // pass 0 closes the 10/12-cycle block, pass 1 the 150/180-cycle
@@ -777,12 +985,9 @@ void hls_aggregation_engine(hls::stream<single_cycle_word_t> &s_result,
   record_image_t record_image;
 #pragma HLS BIND_STORAGE variable=fin_out type=ram_s2p impl=bram
 #pragma HLS BIND_STORAGE variable=record_image.word type=ram_s2p impl=bram
-  // Set by the interval merge in pass 0, read by its emitter in pass 1 --
-  // and since A1 deferred the interval pass to the NEXT invocation, this
-  // MUST be static or it re-initialises to 0 in between. It read 0 in
-  // every aggregate record's MTR2_LAST_BASIC_SEQ_WORD until the
-  // differential harness caught it.
-  static ap_uint<32> a3s_agg_last_seq = 0;
+  // The selected slot's metadata is static because pass 1 is deferred to the
+  // next invocation.  a3s_finalize_slot selects the immutable completed image
+  // while the synchronized slot continues accumulating.
 
 finalize_passes:
   for (int pass = 0;
@@ -801,13 +1006,13 @@ finalize_passes:
         || (pass == 4)
 #endif
         ;
-    const ap_uint<2> fin_tier =
-        (pass == 0) ? ap_uint<2>(MET_TIER_BASIC)
+    const ap_uint<3> fin_tier =
+        (pass == 0) ? ap_uint<3>(BASIC_TIER(basic_slot))
                     : ((pass == 1)
-                           ? ap_uint<2>(MET_TIER_AGGREGATE)
+                           ? ap_uint<3>(A3S_TIER(a3s_slot))
                            : (fin_t10m
-                                  ? ap_uint<2>(MET_TIER_TEN_MINUTE)
-                                  : ap_uint<2>(MET_TIER_TWO_HOUR)));
+                                  ? ap_uint<3>(MET_TIER_TEN_MINUTE)
+                                  : ap_uint<3>(MET_TIER_TWO_HOUR)));
     if (pass == 0) {
       fin_count = count_now;
       fin_dc = active_dc_remove;
@@ -899,6 +1104,7 @@ finalize_passes:
     result.frequency_valid = cycle.frequency_valid;
     result.apply_toggle = apply_seen;
     result.dc_remove = active_dc_remove;
+    result.utc_resynchronized = block_utc_resynchronized;
   result_accumulators:
     for (int lane = 0; lane < MET_ACTIVE_CHANNELS; ++lane) {
   #pragma HLS PIPELINE off
@@ -929,7 +1135,9 @@ finalize_passes:
     record_image.word[MTR1_TIMING_WORD] =
         (ap_uint<32>(block_nominal) << MTR1_TIMING_NOMINAL_LSB) |
         (ap_uint<32>(block_cycles_target) << MTR1_TIMING_CYCLES_LSB) |
-        (ap_uint<32>(flags) << MTR1_TIMING_FLAGS_LSB);
+        (ap_uint<32>(flags) << MTR1_TIMING_FLAGS_LSB) |
+        (ap_uint<32>(block_utc_resynchronized)
+         << MTR1_TIMING_UTC_RESYNCHRONIZED_BIT);
     record_image.word[BASIC_LAST_SAMPLE_LOW_WORD] =
         cycle.last_sample.range(31, 0);
     record_image.word[BASIC_LAST_SAMPLE_HIGH_WORD] =
@@ -1171,10 +1379,15 @@ finalize_passes:
     // accumulated aggregate before this beat is considered (Mtr2 rule).
     if (result.apply_toggle != a3s_apply_seen) {
       a3s_apply_seen = result.apply_toggle;
-      if (a3s_blocks_accumulated != 0) {
+      if (a3s_blocks_accumulated_slot[0] != 0 ||
+          a3s_blocks_accumulated_slot[1] != 0) {
         a3s_reset_count += 1;
       }
-      a3s_blocks_accumulated = 0;
+      a3s_blocks_accumulated_slot[0] = 0;
+      a3s_blocks_accumulated_slot[1] = 0;
+      a3s_shadow_active = 0;
+      a3s_sync_seed_pending = 0;
+      a3s_slot = a3s_active_slot;
     }
 
     // Eligibility: identical predicate to the retired Mtr2 engine and the
@@ -1190,13 +1403,18 @@ finalize_passes:
       // An ineligible block invalidates the running aggregate and never
       // seeds a new one: the 150/180-cycle interval must stay contiguous.
       a3s_ineligible_count += 1;
-      if (a3s_blocks_accumulated != 0) {
+      if (a3s_blocks_accumulated_slot[0] != 0 ||
+          a3s_blocks_accumulated_slot[1] != 0) {
         a3s_reset_count += 1;
       }
-      a3s_blocks_accumulated = 0;
+      a3s_blocks_accumulated_slot[0] = 0;
+      a3s_blocks_accumulated_slot[1] = 0;
+      a3s_shadow_active = 0;
+      a3s_sync_seed_pending = result.utc_resynchronized;
       return;
     }
 
+    a3s_slot = a3s_active_slot;
     bool a3s_seed = (a3s_blocks_accumulated == 0);
     if (!a3s_seed) {
       if (result.generation != a3s_agg_generation || result.nominal_hz != a3s_agg_nominal ||
@@ -1205,98 +1423,148 @@ finalize_passes:
         // Generation, nominal, sample-rate, or dc_remove change: discard
         // the partial aggregate; this block seeds the next one.
         a3s_reset_count += 1;
+        a3s_blocks_accumulated_slot[0] = 0;
+        a3s_blocks_accumulated_slot[1] = 0;
+        a3s_shadow_active = 0;
         a3s_seed = true;
-      } else if (result.sequence != a3s_expected_next_seq ||
-                 result.first_sample != a3s_expected_next_first) {
-        // Lost/reordered block or a sample-domain discontinuity: the 15
-        // inputs would not describe one contiguous interval.
-        a3s_continuity_count += 1;
+      } else {
+        const bool sequence_continuous =
+            result.sequence == a3s_expected_next_seq;
+        const bool sample_continuous =
+            result.first_sample == a3s_expected_next_first;
+        const bool marked_overlap =
+            result.utc_resynchronized == 1 && sequence_continuous &&
+            result.first_sample <= a3s_agg_last_sample &&
+            result.last_sample > a3s_agg_last_sample;
+        if (!sequence_continuous || (!sample_continuous && !marked_overlap)) {
+          // Lost/reordered block or an unmarked sample-domain break cannot
+          // enter either interval.  The one marked UTC overlap is deliberate.
+          a3s_continuity_count += 1;
+          a3s_reset_count += 1;
+          a3s_blocks_accumulated_slot[0] = 0;
+          a3s_blocks_accumulated_slot[1] = 0;
+          a3s_shadow_active = 0;
+          a3s_seed = true;
+        }
+      }
+    }
+
+    const bool start_synchronized_shadow =
+        result.utc_resynchronized == 1 && !a3s_seed;
+    if (start_synchronized_shadow) {
+      if (a3s_shadow_active == 1 &&
+          a3s_blocks_accumulated_slot[a3s_shadow_slot] != 0) {
         a3s_reset_count += 1;
-        a3s_seed = true;
       }
+      a3s_shadow_slot = a3s_slot ^ ap_uint<1>(1);
+      a3s_blocks_accumulated_slot[a3s_shadow_slot] = 0;
+      a3s_shadow_active = 1;
+      a3s_utc_overlap = 1;
+    }
+    if (result.utc_resynchronized == 1) {
+      a3s_sync_seed_pending = 1;
     }
 
-    if (a3s_seed) {
-      a3s_agg_generation = result.generation;
-      a3s_agg_nominal = result.nominal_hz;
-      a3s_agg_sample_rate = result.sample_rate_hz;
-      a3s_agg_dc_remove = result.dc_remove;
-      a3s_agg_first_sample = result.first_sample;
-      a3s_agg_first_seq = result.sequence;
-      a3s_agg_total_samples = result.sample_count;
-      a3s_agg_total_cycles = result.cycle_count;
-      a3s_mask_and = result.valid_mask;
-      a3s_freq_sum = result.frequency_millihz;
-      a3s_freq_all_valid = result.frequency_valid;
-      a3s_arithmetic_flag = result.status.bit(MREC_STATUS_ARITHMETIC_BIT);
-      a3s_phasor_invalid_or = result.status.bit(PHASOR_STATUS_INVALID_BIT);
-      a3s_blocks_accumulated = 1;
-    } else {
-      a3s_agg_total_samples += result.sample_count;
-      a3s_agg_total_cycles += result.cycle_count;
-      a3s_mask_and &= result.valid_mask;
-      a3s_freq_sum += result.frequency_millihz;
-      a3s_freq_all_valid &= result.frequency_valid;
-      a3s_arithmetic_flag |= result.status.bit(MREC_STATUS_ARITHMETIC_BIT);
-      a3s_phasor_invalid_or |= result.status.bit(PHASOR_STATUS_INVALID_BIT);
-      a3s_blocks_accumulated += 1;
-    }
-    a3s_agg_last_sample = result.last_sample;
-      a3s_agg_last_seq = result.sequence;
-    a3s_expected_next_seq = result.sequence + 1;
-    a3s_expected_next_first = result.first_sample + result.sample_count;
+    auto merge_a3s_slot = [&](const ap_uint<1> slot, const bool seed,
+                              const bool synchronized_seed) {
+      const int tier =
+          (slot == 0) ? MET_TIER_AGGREGATE_0 : MET_TIER_AGGREGATE_1;
+      if (seed) {
+        a3s_agg_generation_slot[slot] = result.generation;
+        a3s_agg_nominal_slot[slot] = result.nominal_hz;
+        a3s_agg_sample_rate_slot[slot] = result.sample_rate_hz;
+        a3s_agg_dc_remove_slot[slot] = result.dc_remove;
+        a3s_agg_first_sample_slot[slot] = result.first_sample;
+        a3s_agg_first_seq_slot[slot] = result.sequence;
+        a3s_agg_total_samples_slot[slot] = result.sample_count;
+        a3s_agg_total_cycles_slot[slot] = result.cycle_count;
+        a3s_mask_and_slot[slot] = result.valid_mask;
+        a3s_freq_sum_slot[slot] = result.frequency_millihz;
+        a3s_freq_all_valid_slot[slot] = result.frequency_valid;
+        a3s_arithmetic_flag_slot[slot] =
+            result.status.bit(MREC_STATUS_ARITHMETIC_BIT);
+        a3s_phasor_invalid_or_slot[slot] =
+            result.status.bit(PHASOR_STATUS_INVALID_BIT);
+        a3s_utc_overlap_slot[slot] = 0;
+        a3s_utc_resynchronized_slot[slot] = synchronized_seed;
+        a3s_blocks_accumulated_slot[slot] = 1;
+      } else {
+        a3s_agg_total_samples_slot[slot] += result.sample_count;
+        a3s_agg_total_cycles_slot[slot] += result.cycle_count;
+        a3s_mask_and_slot[slot] &= result.valid_mask;
+        a3s_freq_sum_slot[slot] += result.frequency_millihz;
+        a3s_freq_all_valid_slot[slot] &= result.frequency_valid;
+        a3s_arithmetic_flag_slot[slot] |=
+            result.status.bit(MREC_STATUS_ARITHMETIC_BIT);
+        a3s_phasor_invalid_or_slot[slot] |=
+            result.status.bit(PHASOR_STATUS_INVALID_BIT);
+        a3s_blocks_accumulated_slot[slot] += 1;
+      }
+      a3s_agg_last_sample_slot[slot] = result.last_sample;
+      a3s_agg_last_seq_slot[slot] = result.sequence;
+      a3s_expected_next_seq_slot[slot] = result.sequence + 1;
+      a3s_expected_next_first_slot[slot] =
+          result.first_sample + result.sample_count;
 
-    const bool a3s_first_block_fold = a3s_seed;
-  a3s_merge_lanes:
-    for (int lane = 0; lane < MET_ACTIVE_CHANNELS; ++lane) {
-  #pragma HLS PIPELINE off
-      const ap_int<128> sum_base =
-          a3s_first_block_fold ? ap_int<128>(0) : a3s_acc_sum[lane];
-      a3s_acc_sum[lane] = sum_base + result.sum[lane];
-      const ap_uint<128> square_base =
-          a3s_first_block_fold ? ap_uint<128>(0) : a3s_acc_square[lane];
-      a3s_acc_square[lane] = met_add_square_saturating<128>(
-          square_base, result.square[lane], a3s_arithmetic_flag);
-      const ap_int<64> raw_sum_base =
-          a3s_first_block_fold ? ap_int<64>(0) : a3s_acc_raw_sum[lane];
-      a3s_acc_raw_sum[lane] = raw_sum_base + result.raw_sum[lane];
-      const ap_uint<96> raw_square_base =
-          a3s_first_block_fold ? ap_uint<96>(0) : a3s_acc_raw_square[lane];
-      a3s_acc_raw_square[lane] = raw_square_base + result.raw_square[lane];
-      if (a3s_first_block_fold || result.minimum[lane] < a3s_acc_minimum[lane]) {
-        a3s_acc_minimum[lane] = result.minimum[lane];
+      for (int lane = 0; lane < MET_ACTIVE_CHANNELS; ++lane) {
+        const ap_int<128> sum_base =
+            seed ? ap_int<128>(0) : met_acc_sum[tier][lane];
+        met_acc_sum[tier][lane] = sum_base + result.sum[lane];
+        const ap_uint<128> square_base =
+            seed ? ap_uint<128>(0) : met_acc_square[tier][lane];
+        met_acc_square[tier][lane] = met_add_square_saturating<128>(
+            square_base, result.square[lane],
+            a3s_arithmetic_flag_slot[slot]);
+        const ap_int<64> raw_sum_base =
+            seed ? ap_int<64>(0) : met_acc_raw_sum[tier][lane];
+        met_acc_raw_sum[tier][lane] = raw_sum_base + result.raw_sum[lane];
+        const ap_uint<96> raw_square_base =
+            seed ? ap_uint<96>(0) : met_acc_raw_square[tier][lane];
+        met_acc_raw_square[tier][lane] =
+            raw_square_base + result.raw_square[lane];
+        if (seed || result.minimum[lane] < met_acc_minimum[tier][lane]) {
+          met_acc_minimum[tier][lane] = result.minimum[lane];
+        }
+        if (seed || result.maximum[lane] > met_acc_maximum[tier][lane]) {
+          met_acc_maximum[tier][lane] = result.maximum[lane];
+        }
+        const ap_int<128> re_base =
+            seed ? ap_int<128>(0) : met_acc_phasor_re[tier][lane];
+        met_acc_phasor_re[tier][lane] = met_add_signed_saturating<128>(
+            re_base, result.phasor_re[lane],
+            a3s_arithmetic_flag_slot[slot]);
+        const ap_int<128> im_base =
+            seed ? ap_int<128>(0) : met_acc_phasor_im[tier][lane];
+        met_acc_phasor_im[tier][lane] = met_add_signed_saturating<128>(
+            im_base, result.phasor_im[lane],
+            a3s_arithmetic_flag_slot[slot]);
       }
-      if (a3s_first_block_fold || result.maximum[lane] > a3s_acc_maximum[lane]) {
-        a3s_acc_maximum[lane] = result.maximum[lane];
+      for (int phase = 0; phase < MET_POWER_PHASES; ++phase) {
+        const ap_int<128> power_base =
+            seed ? ap_int<128>(0) : met_acc_power[tier][phase];
+        met_acc_power[tier][phase] = met_add_signed_saturating<128>(
+            power_base, result.power_sum[phase],
+            a3s_arithmetic_flag_slot[slot]);
       }
+      for (int pair = 0; pair < MET_VLL_PAIRS; ++pair) {
+        const ap_uint<128> vll_base =
+            seed ? ap_uint<128>(0) : met_acc_vll_square[tier][pair];
+        met_acc_vll_square[tier][pair] = met_add_square_saturating<128>(
+            vll_base, result.vll_square[pair],
+            a3s_arithmetic_flag_slot[slot]);
+      }
+    };
+
+    const bool active_synchronized_seed =
+        a3s_seed && a3s_sync_seed_pending == 1;
+    merge_a3s_slot(a3s_slot, a3s_seed, active_synchronized_seed);
+    if (start_synchronized_shadow) {
+      merge_a3s_slot(a3s_shadow_slot, true, true);
+    } else if (a3s_shadow_active == 1 && a3s_shadow_slot != a3s_slot) {
+      merge_a3s_slot(a3s_shadow_slot, false, false);
     }
-  a3s_merge_power:
-    for (int phase = 0; phase < MET_POWER_PHASES; ++phase) {
-  #pragma HLS PIPELINE off
-      const ap_int<128> power_base =
-          a3s_first_block_fold ? ap_int<128>(0) : a3s_acc_power[phase];
-      a3s_acc_power[phase] = met_add_signed_saturating<128>(
-          power_base, result.power_sum[phase], a3s_arithmetic_flag);
-    }
-  a3s_merge_pairs:
-    for (int pair = 0; pair < MET_VLL_PAIRS; ++pair) {
-  #pragma HLS PIPELINE off
-      const ap_uint<128> vll_base =
-          a3s_first_block_fold ? ap_uint<128>(0) : a3s_acc_vll_square[pair];
-      a3s_acc_vll_square[pair] = met_add_square_saturating<128>(
-          vll_base, result.vll_square[pair], a3s_arithmetic_flag);
-    }
-  a3s_merge_phasor:
-    for (int lane = 0; lane < MET_ACTIVE_CHANNELS; ++lane) {
-  #pragma HLS PIPELINE off
-      const ap_int<128> re_base =
-          a3s_first_block_fold ? ap_int<128>(0) : a3s_acc_phasor_re[lane];
-      a3s_acc_phasor_re[lane] = met_add_signed_saturating<128>(
-          re_base, result.phasor_re[lane], a3s_arithmetic_flag);
-      const ap_int<128> im_base =
-          a3s_first_block_fold ? ap_int<128>(0) : a3s_acc_phasor_im[lane];
-      a3s_acc_phasor_im[lane] = met_add_signed_saturating<128>(
-          im_base, result.phasor_im[lane], a3s_arithmetic_flag);
+    if (active_synchronized_seed || start_synchronized_shadow) {
+      a3s_sync_seed_pending = 0;
     }
 
     if (a3s_blocks_accumulated != MET_BASIC_BLOCKS_PER_AGGREGATE) {
@@ -1308,7 +1576,12 @@ finalize_passes:
       // Arming pass 1: reaching here means the merge accepted this block
       // and it was the fifteenth, so the interval closes on this beat too.
       // Do not run pass 1 now -- defer it to the next invocation.
+      a3s_finalize_slot = a3s_slot;
       aggregation_interval_pending.bit(0) = 1;
+      if (a3s_shadow_active == 1 && a3s_shadow_slot != a3s_slot) {
+        a3s_active_slot = a3s_shadow_slot;
+        a3s_shadow_active = 0;
+      }
     } else if (pass == 1) {
       // Derived from the interval statics the merge just updated; these
       // used to sit immediately above the second finalize call.
@@ -1332,7 +1605,10 @@ finalize_passes:
     const ap_uint<32> agg_status =
         (ap_uint<32>(a3s_arithmetic_flag) << MREC_STATUS_ARITHMETIC_BIT) |
         (ap_uint<32>(1) << MTR2_STATUS_COMPLETE_BIT) |
-        (ap_uint<32>(a3s_freq_all_valid) << MTR2_STATUS_FREQUENCY_BIT);
+        (ap_uint<32>(a3s_freq_all_valid) << MTR2_STATUS_FREQUENCY_BIT) |
+        (ap_uint<32>(a3s_utc_overlap) << MTR2_STATUS_UTC_OVERLAP_BIT) |
+        (ap_uint<32>(a3s_utc_resynchronized)
+         << MTR2_STATUS_UTC_RESYNCHRONIZED_BIT);
     fill_envelope(record_image, a3s_out_sequence, a3s_agg_generation,
                   a3s_agg_sample_rate,
                   a3s_count_now, a3s_result_mask, agg_status, a3s_agg_first_sample);
@@ -1370,7 +1646,10 @@ finalize_passes:
     // Sibling a3s_status: common arithmetic bit, plus phasor-invalid (bit 1)
     // on the phasor-domain records — the basic-period siblings' semantics.
     const ap_uint<32> sibling_status =
-        ap_uint<32>(a3s_arithmetic_flag) << MREC_STATUS_ARITHMETIC_BIT;
+        (ap_uint<32>(a3s_arithmetic_flag) << MREC_STATUS_ARITHMETIC_BIT) |
+        (ap_uint<32>(a3s_utc_overlap) << MTR2_STATUS_UTC_OVERLAP_BIT) |
+        (ap_uint<32>(a3s_utc_resynchronized)
+         << MTR2_STATUS_UTC_RESYNCHRONIZED_BIT);
     const ap_uint<32> a3s_phasor_status =
         sibling_status |
         (ap_uint<32>(a3s_phasor_invalid_or) << PHASOR_STATUS_INVALID_BIT);
@@ -1855,6 +2134,38 @@ finalize_passes:
   }
 }
 
+#undef cycles_in_block
+#undef block_cycles_target
+#undef block_nominal
+#undef block_sample_count
+#undef block_first_sample
+#undef block_mask
+#undef block_locked_and
+#undef block_fallback_or
+#undef block_phasor_invalid
+#undef block_utc_resynchronized
+#undef a3s_blocks_accumulated
+#undef a3s_agg_generation
+#undef a3s_agg_nominal
+#undef a3s_agg_sample_rate
+#undef a3s_agg_dc_remove
+#undef a3s_agg_first_sample
+#undef a3s_agg_last_sample
+#undef a3s_agg_first_seq
+#undef a3s_agg_last_seq
+#undef a3s_agg_total_samples
+#undef a3s_agg_total_cycles
+#undef a3s_mask_and
+#undef a3s_freq_sum
+#undef a3s_freq_all_valid
+#undef a3s_arithmetic_flag
+#undef a3s_phasor_invalid_or
+#undef a3s_expected_next_seq
+#undef a3s_expected_next_first
+#undef a3s_utc_overlap
+#undef a3s_utc_resynchronized
+#undef BASIC_TIER
+#undef A3S_TIER
 #undef acc_sum
 #undef acc_square
 #undef acc_raw_sum

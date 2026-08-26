@@ -44,6 +44,16 @@
   the same FIFO's TX side. Aggregate measurement data never travels over
   RPMsg; the FIFO return stream joins the existing meter AXIS switch and Linux
   DMA path.
+- At each valid UTC ten-minute sample target, R5C1 starts one transient Basic
+  shadow on the first whole cycle at or after the target while the old Basic
+  completes. The first synchronized Basic carries timing-word bit 19. That
+  Basic similarly seeds one transient 150/180-cycle shadow while the old
+  15-Basic interval completes; aggregate status bit 3 marks the continuing
+  overlap and bit 4 marks the synchronized interval. Keep exactly two slots
+  per affected tier, promote by selector, and continue using the one shared
+  finalizer. AGG-v3 words 36/37 are the actual last contributing sample, so
+  only a bit-3 overlap record may have a physical range shorter than its
+  summed sample count.
 - Physical and simulated ADC sources share the raw PL stream boundary. Stop
   capture before switching sources and commit a source change only after
   target-device configuration and PL readback succeed. While simulation is
@@ -119,6 +129,13 @@ vitis -s scripts/create_platform_from_xsa.py -- --force
   path. The historical test-script name is retained, but production firmware
   emits complete records. A stale XSA may keep RPMsg alive for diagnostics,
   but aggregation must report unhealthy and there is no PL fallback.
+- Run `bash R5c1/tests/run_aggregation_engine_reference_tests.sh` after
+  changing aggregation arithmetic, interval state, record serialization, or
+  live previews. It runs the recovered exact-golden engine suite with previews
+  both enabled and disabled, then byte-compares every completed record. Set
+  Basic and 150/180-cycle UTC-overlap checks at 50/60 Hz are permanent parts
+  of this suite. Set `MNC_REQUIRE_M15_INVALIDATION_MATRIX=1` to exercise accelerated
+  ten-minute contamination and clean-recovery behavior across discontinuities.
 
 ## Maintaining this file
 
