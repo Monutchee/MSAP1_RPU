@@ -43,7 +43,9 @@ Ownership is intentionally split:
 - `AggregationHealth` owns saturating validation and continuity counters.
 - `AggregationShadowService` coordinates the input and validator tasks without
   knowing register layouts or performing aggregation arithmetic.
-- `R5AggregationEngine` owns interval state and complete-record construction.
+- `aggregation_engine.cpp/.hpp` own the fixed-point interval algorithm and
+  complete-record construction; `R5AggregationEngine` adapts that engine to
+  the firmware lifecycle, transport, output ring, and health model.
 - `AggregationRecordRing` decouples arithmetic from the FIFO transmit path.
 - `AggregationOutputService` alone owns the FIFO TX side and retries a complete
   record when the downstream meter path applies backpressure.
@@ -85,11 +87,10 @@ CRC32C uses reflected polynomial `0x82F63B78`, initial and final XOR
 
 ## Authority and failure behavior
 
-The production build uses `AggregationOutputMode::emit`. The PL wrapper does
-not elaborate its retained HLS aggregation reference, so there is only one
-source of Basic, 150/180-cycle, 10-minute, and 2-hour records. Each FIFO TX
-transaction contains one complete 256-byte record and one asserted packet
-length/TLAST boundary.
+The production build uses `AggregationOutputMode::emit`. R5C1 owns the only
+aggregation implementation, so there is only one source of Basic,
+150/180-cycle, 10-minute, and 2-hour records. Each FIFO TX transaction contains
+one complete 256-byte record and one asserted packet length/TLAST boundary.
 
 The PL and R5C1 images are released together. If the FIFO is absent, input is
 corrupt, the engine fails, or output cannot make progress, aggregation health

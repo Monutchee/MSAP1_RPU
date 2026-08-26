@@ -27,7 +27,6 @@ common_flags="-std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror \
 	-Wno-error=unused-label \
 	-I$source_dir \
 	-I$source_dir/hls_compat \
-	-I$pl_hls_dir/MeterProcessing/AggregationEngine/src \
 	-I$pl_hls_dir/common/include \
 	-I$vitis_root/include"
 
@@ -54,7 +53,7 @@ done
 "$cxx" $common_flags \
 	-Wno-error=extra \
 	-Wno-error=sign-compare \
-	-c "$pl_hls_dir/MeterProcessing/AggregationEngine/src/aggregation_engine.cpp" \
+	-c "$source_dir/aggregation_engine.cpp" \
 	-o "$build_dir/aggregation_engine.o"
 
 gmp_library=$($cxx -print-file-name=libgmp.so)

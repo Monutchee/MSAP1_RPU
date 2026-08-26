@@ -196,7 +196,7 @@ void R5AggregationEngine::process(const AggregationInputView &input) noexcept
 		input_.write(single_cycle_word_t(word));
 
 	// One call consumes the cycle.  Deferred 150/180-cycle, ten-minute,
-	// two-hour, and preview work is then drained only while the shared engine
+	// two-hour, and preview work is then drained only while the engine
 	// reports it as pending.  The previous fixed eight-pass drain ran seven or
 	// eight empty arbitrary-precision passes after every Basic result and made
 	// R5C1 slower than the 50/60 Hz producer, eventually forcing PL to discard

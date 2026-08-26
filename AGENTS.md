@@ -13,7 +13,8 @@
   Linux owns AXI DMA, descriptors, interrupts, and DDR sample buffers. R5 core
   1 has no ADC or KR260 status-LED ownership. R5 core 1 is the production
   interval-aggregation authority: it receives the PL SingleCycle packet,
-  finalizes all interval tiers, and returns complete meter records to PL.
+  finalizes all interval tiers using the RPU-owned implementation under
+  `R5c1/src/MainApp/aggregation/`, and returns complete meter records to PL.
 
 ## Hardware and software contract
 

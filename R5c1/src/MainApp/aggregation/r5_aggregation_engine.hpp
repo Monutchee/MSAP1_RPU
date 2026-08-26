@@ -23,13 +23,12 @@ enum class AggregationOutputMode : std::uint8_t {
 };
 
 /**
- * R5C1 owner of the shared, fixed-point aggregation algorithm.
+ * R5C1 owner of the fixed-point aggregation algorithm.
  *
- * The arithmetic source is compiled from the same implementation used by the
- * current HLS block during the equivalence phase.  This wrapper owns the
+ * The arithmetic source is owned beside this wrapper. This class owns the
  * firmware lifecycle, fixed-width transport adaptation, record framing,
- * health counters, and optional FIFO publication.  It deliberately exposes
- * no HLS types to the rest of the R5 application.
+ * health counters, and optional FIFO publication. It deliberately exposes no
+ * HLS types to the rest of the R5 application.
  */
 class R5AggregationEngine final {
 public:
@@ -54,7 +53,7 @@ private:
 	static constexpr std::size_t deferred_pass_count = 8U;
 
 	/**
-	 * Run one shared-engine scheduling pass and return the number of complete
+	 * Run one engine scheduling pass and return the number of complete
 	 * records produced by that pass.  A zero result may be either an ordinary
 	 * non-boundary cycle or an internal deferred-finalizer preparation pass;
 	 * callers must not treat it as a general pending-work indication.

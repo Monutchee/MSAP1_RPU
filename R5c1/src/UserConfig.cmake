@@ -39,9 +39,8 @@ set(USER_INCLUDE_DIRECTORIES
 "../../common/include"
 "MainApp/aggregation"
 "MainApp/aggregation/hls_compat"
-# Transitional equivalence source.  The R5 wrapper hides HLS types from the
-# application and will become the owner before the PL component is retired.
-"../../../MSAP1_PL/SourceData/HLS_DesignFile/MeterProcessing/AggregationEngine/src"
+# Shared metrology contracts remain defined with the PL SingleCycle producer
+# and are compiled directly by the R5C1 interval-aggregation owner.
 "../../../MSAP1_PL/SourceData/HLS_DesignFile/common/include"
 "$ENV{XILINX_VITIS}/include"
 # generic OpenAMP helper library (git submodule)
@@ -68,7 +67,7 @@ set(USER_COMPILE_SOURCES
 "MainApp/aggregation/axi_fifo_aggregation_transport.cpp"
 "MainApp/aggregation/crc32c.cpp"
 "MainApp/aggregation/r5_aggregation_engine.cpp"
-"../../../MSAP1_PL/SourceData/HLS_DesignFile/MeterProcessing/AggregationEngine/src/aggregation_engine.cpp"
+"MainApp/aggregation/aggregation_engine.cpp"
 # Generic OpenAMP helper library (git submodule: libs/openamp-helper)
 "../../libs/openamp-helper/src/openamp_platform.cpp"
 "../../libs/openamp-helper/src/rpmsg_endpoint.cpp"
