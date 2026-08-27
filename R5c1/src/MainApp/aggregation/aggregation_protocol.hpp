@@ -45,6 +45,11 @@ struct AggregationProtocol final {
 	static constexpr std::uint32_t utc_target_status_mask = 0x00000003U;
 };
 
+/* HRM1 is the largest private packet sharing the FIFO: four header words,
+ * 42 complete 64-word records, and one CRC word. Keep the generic transport
+ * buffer independent of either decoder while bounding all static storage. */
+inline constexpr std::size_t maximum_transport_frame_words = 2693U;
+
 static_assert(AggregationProtocol::frame_words == 239U);
 static_assert(AggregationProtocol::frame_bytes == 956U);
 static_assert(AggregationProtocol::single_cycle_words +
@@ -52,7 +57,8 @@ static_assert(AggregationProtocol::single_cycle_words +
 
 /** One complete FIFO packet. The fixed extent prevents partial-frame use. */
 struct AggregationFrame final {
-	std::array<std::uint32_t, AggregationProtocol::frame_words> words{};
+	std::array<std::uint32_t, maximum_transport_frame_words> words{};
+	std::size_t word_count{};
 };
 
 /** Context captured atomically when the SingleCycle result begins. */
@@ -88,6 +94,8 @@ enum class FrameValidationError : std::uint8_t {
 	sequence_mismatch,
 	crc_mismatch,
 	reserved_bits_nonzero,
+	invalid_record_geometry,
+	provenance_mismatch,
 };
 
 } // namespace msap1::aggregation

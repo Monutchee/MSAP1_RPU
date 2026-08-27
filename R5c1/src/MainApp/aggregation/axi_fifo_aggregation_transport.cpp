@@ -127,11 +127,14 @@ TransportReadResult AxiFifoAggregationTransport::read(
 
 	const auto bytes = XLlFifo_RxGetLen(&fifo_);
 	__atomic_store_n(&last_frame_length_, bytes, __ATOMIC_RELEASE);
-	if (bytes != AggregationProtocol::frame_bytes) {
+	if ((bytes % sizeof(std::uint32_t)) != 0U ||
+	    bytes == 0U ||
+	    bytes > maximum_transport_frame_words * sizeof(std::uint32_t)) {
 		drain(bytes);
 		return TransportReadResult::malformed_frame;
 	}
 
+	frame.word_count = bytes / sizeof(std::uint32_t);
 	XLlFifo_Read(&fifo_, frame.words.data(), bytes);
 	return TransportReadResult::frame;
 #else

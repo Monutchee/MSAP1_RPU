@@ -15,6 +15,8 @@
 #include "aggregation/aggregation_frame_decoder.hpp"
 #include "aggregation/aggregation_frame_ring.hpp"
 #include "aggregation/aggregation_health.hpp"
+#include "aggregation/harmonic_aggregation_engine.hpp"
+#include "aggregation/harmonic_frame_decoder.hpp"
 #include "aggregation/aggregation_output_service.hpp"
 #include "aggregation/aggregation_record_ring.hpp"
 #include "aggregation/aggregation_runtime.hpp"
@@ -39,15 +41,18 @@ static msap1::aggregation::AggregationHealth aggregation_health;
 static msap1::aggregation::AxiFifoAggregationTransport aggregation_transport;
 static msap1::aggregation::AggregationFrameRing aggregation_ring;
 static msap1::aggregation::AggregationFrameDecoder aggregation_decoder;
+static msap1::aggregation::HarmonicFrameDecoder harmonic_decoder;
 static msap1::aggregation::AggregationRecordRing aggregation_output_ring;
 static msap1::aggregation::AggregationOutputService aggregation_output(
 	aggregation_transport, aggregation_output_ring, aggregation_health);
 static msap1::aggregation::R5AggregationEngine aggregation_engine(
 	aggregation_output, aggregation_health,
 	aggregation_output_mode);
+static msap1::aggregation::HarmonicAggregationEngine harmonic_engine(
+	aggregation_output, aggregation_health);
 static msap1::aggregation::AggregationShadowService aggregation_shadow(
 	aggregation_transport, aggregation_ring, aggregation_decoder,
-	aggregation_engine, aggregation_health);
+	aggregation_engine, harmonic_decoder, harmonic_engine, aggregation_health);
 static msap1::aggregation::AggregationRuntime aggregation_runtime(
 	aggregation_shadow, aggregation_output, aggregation_health);
 static R5c1Service service(msap1::CoreConfig::current(), aggregation_health,

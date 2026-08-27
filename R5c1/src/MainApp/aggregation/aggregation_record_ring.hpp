@@ -16,7 +16,8 @@ namespace msap1::aggregation {
  */
 class AggregationRecordRing final {
 public:
-	static constexpr std::size_t capacity = 64U;
+	/* Six complete 42-record harmonic families plus normal AGG1 traffic. */
+	static constexpr std::size_t capacity = 256U;
 
 	[[nodiscard]] bool try_push(const AggregationMeterRecord &record) noexcept;
 	[[nodiscard]] bool try_pop(AggregationMeterRecord &record) noexcept;

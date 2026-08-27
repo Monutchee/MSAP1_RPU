@@ -102,6 +102,13 @@ void AggregationHealth::record_valid(std::uint32_t sequence) noexcept
 		static_cast<std::uint32_t>(FrameValidationError::none));
 }
 
+void AggregationHealth::record_auxiliary_valid() noexcept
+{
+	increment(frames_valid_);
+	store(last_validation_error_,
+		static_cast<std::uint32_t>(FrameValidationError::none));
+}
+
 void AggregationHealth::record_invalid(FrameValidationError error) noexcept
 {
 	increment(frames_invalid_);
@@ -112,7 +119,9 @@ void AggregationHealth::record_invalid(FrameValidationError error) noexcept
 		error == FrameValidationError::contract_mismatch ||
 		error == FrameValidationError::invalid_payload_count ||
 		error == FrameValidationError::sequence_mismatch ||
-		error == FrameValidationError::reserved_bits_nonzero)
+		error == FrameValidationError::reserved_bits_nonzero ||
+		error == FrameValidationError::invalid_record_geometry ||
+		error == FrameValidationError::provenance_mismatch)
 		increment(format_errors_);
 }
 

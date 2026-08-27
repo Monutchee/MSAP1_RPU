@@ -34,16 +34,21 @@
   existing apply toggle, and verifies `GRID_ACTIVE_CONFIG` readback. The RMS
   window register `0x18` remains the PL's free-run fallback window.
 - PL aggregate health registers `0x78`-`0x8C` remain read-only status inputs.
-  R5C1 receives the exact 234-word pre-aggregation input via one AXI FIFO MM-S
-  and validates it in a dedicated input/validator pipeline.
-  The private packet contract is an exact co-release interface between the
-  bitstream and R5C1 firmware: its fixed contract word is a mixed-image guard,
-  not a negotiated protocol version, and no legacy decoder or fallback mode is
-  maintained. R5C1 owns Basic, 150/180-cycle,
-  10-minute, and 2-hour aggregation and writes complete 256-byte records into
-  the same FIFO's TX side. Aggregate measurement data never travels over
-  RPMsg; the FIFO return stream joins the existing meter AXIS switch and Linux
-  DMA path.
+  One AXI FIFO MM-S carries two exact PL-to-R5C1 packet contracts: the 239-word
+  AGG1 packet (234-word SingleCycle input plus framing/CRC) and the 2,693-word
+  HRM1 packet (one byte-exact 42-record base-harmonic family plus
+  framing/CRC). AGG1 has priority only at whole-packet boundaries. The
+  dedicated validator dispatches by magic and must reject a mixed-image
+  contract, malformed family geometry, inconsistent provenance, or CRC error.
+  These are exact co-release interfaces, not negotiated protocol versions;
+  no legacy decoder is maintained. R5C1 owns Basic, 150/180-cycle,
+  10-minute, and 2-hour aggregation for ordinary measurements, plus
+  magnitude-only 150/180-cycle, UTC 10-minute, and 2-hour harmonic aggregation.
+  It writes complete 256-byte records into the same FIFO's TX side. Aggregate
+  measurement data never travels over RPMsg; the FIFO return stream joins the
+  existing meter AXIS switch and Linux DMA path. The PL direct harmonic output
+  remains only as a temporary target-proof fallback and is not another
+  aggregation authority.
 - At each valid UTC ten-minute sample target, R5C1 starts one transient Basic
   shadow on the first whole cycle at or after the target while the old Basic
   completes. The first synchronized Basic carries timing-word bit 19. That
@@ -71,7 +76,9 @@
   bounded four-packet drain and one-tick validator handoff; an unbounded drain
   starves the lower-priority validator and eventually fills both hardware and
   software input storage. Production firmware must require the FIFO interrupt
-  rather than silently falling back to polling.
+  rather than silently falling back to polling. The static transport frame is
+  sized to the 2,693-word HRM1 maximum, while the AXI FIFO must hold at least
+  one complete HRM1 packet. Keep large frames out of the worker-task stacks.
 - ADC health reports both the measured DCLK rate and the physical
   `ADC_DRDY_N` falling-edge rate. Keep these fields coordinated with the APU
   wire-ABI copy when extending capture diagnostics. Health is not valid until
@@ -125,10 +132,13 @@ vitis -s scripts/create_platform_from_xsa.py -- --force
   and a continuing heartbeat.
 - Run `bash R5c1/tests/run_aggregation_shadow_tests.sh` after changing the
   private aggregation packet, decoder, ring, CRC32C, continuity, or health
-  logic. A refreshed XSA is required before validating the XLlFifo hardware
-  path. The historical test-script name is retained, but production firmware
-  emits complete records. A stale XSA may keep RPMsg alive for diagnostics,
-  but aggregation must report unhealthy and there is no PL fallback.
+  logic, including HRM1 or harmonic interval state. Its accelerated harmonic
+  case must retain one contaminated startup 10-minute family, twelve clean
+  10-minute families, and their one clean 2-hour result. A refreshed XSA is
+  required before validating the XLlFifo hardware path. The historical
+  test-script name is retained, but production firmware emits complete
+  records. A stale XSA may keep RPMsg alive for diagnostics, but ordinary
+  aggregation must report unhealthy and has no PL fallback.
 - Run `bash R5c1/tests/run_aggregation_engine_reference_tests.sh` after
   changing aggregation arithmetic, interval state, record serialization, or
   live previews. It runs the recovered exact-golden engine suite with previews

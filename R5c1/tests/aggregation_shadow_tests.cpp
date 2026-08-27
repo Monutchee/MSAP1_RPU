@@ -4,6 +4,8 @@
 #include "aggregation_record_ring.hpp"
 #include "aggregation_scheduler_policy.hpp"
 #include "crc32c.hpp"
+#include "harmonic_aggregation_engine.hpp"
+#include "harmonic_frame_decoder.hpp"
 #include "r5_aggregation_engine.hpp"
 
 #include <array>
@@ -47,6 +49,26 @@ public:
 	std::size_t attempts{};
 };
 
+class CountingHarmonicSink final : public aggregation::AggregationRecordSink {
+public:
+	[[nodiscard]] bool publish(
+		const aggregation::AggregationMeterRecord &record) noexcept override
+	{
+		const auto period = static_cast<std::size_t>(record.words[14U] & 0x3U);
+		if (period >= records_by_period.size())
+			return false;
+		++records_by_period[period];
+		if ((record.words[8U] & (1U << 3U)) != 0U)
+			++valid_records_by_period[period];
+		last_record_by_period[period] = record;
+		return true;
+	}
+
+	std::array<std::size_t, 4U> records_by_period{};
+	std::array<std::size_t, 4U> valid_records_by_period{};
+	std::array<aggregation::AggregationMeterRecord, 4U> last_record_by_period{};
+};
+
 [[noreturn]] void fail(std::string_view message)
 {
 	std::cerr << "aggregation shadow test failed: " << message << '\n';
@@ -62,6 +84,7 @@ void expect(bool condition, std::string_view message)
 aggregation::AggregationFrame make_frame(std::uint32_t sequence = 42U)
 {
 	aggregation::AggregationFrame frame{};
+	frame.word_count = aggregation::AggregationProtocol::frame_words;
 	for (std::size_t index = aggregation::AggregationProtocol::payload_index;
 		index < aggregation::AggregationProtocol::crc_index; ++index)
 		frame.words[index] = static_cast<std::uint32_t>(index * 0x10203U);
@@ -176,6 +199,219 @@ void test_invalid_frames()
 	expect(decoder.decode(frame, input) ==
 		aggregation::FrameValidationError::reserved_bits_nonzero,
 		"target reserved-bit guard");
+}
+
+aggregation::AggregationFrame make_harmonic_frame(
+	std::uint32_t sequence = 1U, std::uint64_t first_sample = 0U,
+	std::uint32_t sample_rate_hz = 32000U,
+	std::uint32_t sample_count = 6400U)
+{
+	aggregation::AggregationFrame frame{};
+	frame.word_count = aggregation::HarmonicProtocol::frame_words;
+	frame.words[aggregation::HarmonicProtocol::magic_index] =
+		aggregation::HarmonicProtocol::magic;
+	frame.words[aggregation::HarmonicProtocol::contract_revision_index] =
+		aggregation::HarmonicProtocol::contract_revision;
+	frame.words[aggregation::HarmonicProtocol::payload_count_index] =
+		aggregation::HarmonicProtocol::payload_words;
+	frame.words[aggregation::HarmonicProtocol::transport_sequence_index] =
+		sequence;
+
+	for (std::size_t channel = 0U;
+	     channel < aggregation::HarmonicProtocol::channels; ++channel) {
+		for (std::size_t chunk = 0U;
+		     chunk < aggregation::HarmonicProtocol::chunks_per_channel;
+		     ++chunk) {
+			const auto record_index = channel *
+				aggregation::HarmonicProtocol::chunks_per_channel + chunk;
+			auto *record = frame.words.data() +
+				aggregation::HarmonicProtocol::payload_index + record_index *
+					aggregation::HarmonicProtocol::record_words;
+			record[0U] = aggregation::HarmonicProtocol::record_magic;
+			record[1U] = aggregation::HarmonicProtocol::base_record_format;
+			record[2U] = aggregation::HarmonicProtocol::record_bytes;
+			record[3U] = sequence;
+			record[4U] = 0x12345678U;
+			record[5U] = sample_rate_hz;
+			record[6U] = sample_count;
+			record[7U] = 0x7FU;
+			record[8U] = 0x3EU;
+			record[9U] = static_cast<std::uint32_t>(first_sample);
+			record[10U] = static_cast<std::uint32_t>(first_sample >> 32U);
+			const auto first_order = chunk *
+				aggregation::HarmonicProtocol::orders_per_chunk + 1U;
+			const auto count = std::min(
+				aggregation::HarmonicProtocol::orders_per_chunk,
+				aggregation::HarmonicProtocol::maximum_order - first_order + 1U);
+			record[13U] = static_cast<std::uint32_t>(channel) |
+				(static_cast<std::uint32_t>(chunk) << 3U) |
+				(static_cast<std::uint32_t>(first_order) << 7U) |
+				(static_cast<std::uint32_t>(count) << 15U) |
+				(static_cast<std::uint32_t>(
+					aggregation::HarmonicProtocol::chunks_per_channel) << 20U) |
+				(static_cast<std::uint32_t>(
+					aggregation::HarmonicProtocol::maximum_order) << 24U);
+			record[14U] = 50000U;
+			record[15U] = 127U | (50U << 8U) | (10U << 16U) |
+				(3U << 24U);
+			for (std::size_t entry = 0U; entry < count; ++entry) {
+				const auto order = first_order + entry;
+				const std::uint64_t magnitude =
+					channel * 1000000U + order;
+				const std::uint64_t angle = order * 1000U;
+				const auto packed = magnitude | (angle << 40U) |
+					(std::uint64_t{1} << 60U) |
+					(std::uint64_t{1} << 61U);
+				record[16U + entry * 2U] =
+					static_cast<std::uint32_t>(packed);
+				record[17U + entry * 2U] =
+					static_cast<std::uint32_t>(packed >> 32U);
+			}
+		}
+	}
+	frame.words[aggregation::HarmonicProtocol::crc_index] =
+		aggregation::crc32c_words(frame.words.data(),
+			aggregation::HarmonicProtocol::crc_index);
+	return frame;
+}
+
+void refresh_harmonic_crc(aggregation::AggregationFrame &frame)
+{
+	frame.words[aggregation::HarmonicProtocol::crc_index] =
+		aggregation::crc32c_words(frame.words.data(),
+			aggregation::HarmonicProtocol::crc_index);
+}
+
+void set_last_harmonic_magnitude(aggregation::AggregationFrame &frame,
+	std::uint64_t magnitude)
+{
+	const auto last_record = aggregation::HarmonicProtocol::payload_index +
+		(aggregation::HarmonicProtocol::records_per_family - 1U) *
+			aggregation::HarmonicProtocol::record_words;
+	const auto last_entry_word = last_record + 16U + 6U * 2U;
+	const auto packed = magnitude | (std::uint64_t{1} << 60U);
+	frame.words[last_entry_word] = static_cast<std::uint32_t>(packed);
+	frame.words[last_entry_word + 1U] =
+		static_cast<std::uint32_t>(packed >> 32U);
+	refresh_harmonic_crc(frame);
+}
+
+void test_harmonic_frame_decoder()
+{
+	aggregation::HarmonicFrameDecoder decoder;
+	aggregation::HarmonicInputView input{};
+	auto frame = make_harmonic_frame(7U, 0x1000U);
+	expect(decoder.decode(frame, input) ==
+		aggregation::FrameValidationError::none,
+		"valid HRM1 family rejected");
+	expect(input.sequence == 7U && input.first_sample == 0x1000U &&
+		input.records != nullptr,
+		"HRM1 family provenance decode");
+
+	frame.words[20U] ^= 1U;
+	expect(decoder.decode(frame, input) ==
+		aggregation::FrameValidationError::crc_mismatch,
+		"HRM1 CRC guard");
+
+	frame = make_harmonic_frame();
+	const auto second_record = aggregation::HarmonicProtocol::payload_index +
+		aggregation::HarmonicProtocol::record_words;
+	frame.words[second_record + 5U] = 64000U;
+	refresh_harmonic_crc(frame);
+	expect(decoder.decode(frame, input) ==
+		aggregation::FrameValidationError::provenance_mismatch,
+		"HRM1 cross-record provenance guard");
+}
+
+void test_harmonic_engine_emits_complete_three_second_family()
+{
+	constexpr std::uint64_t large_magnitude = 0xFEDCBA9876ULL;
+	CapturingRecordSink sink;
+	aggregation::AggregationHealth health;
+	aggregation::HarmonicFrameDecoder decoder;
+	aggregation::HarmonicAggregationEngine engine(sink, health);
+	expect(engine.initialize(), "harmonic aggregation engine initialization");
+
+	for (std::uint32_t index = 0U; index < 15U; ++index) {
+		auto frame = make_harmonic_frame(index + 1U,
+			static_cast<std::uint64_t>(index) * 6400U);
+		set_last_harmonic_magnitude(frame, large_magnitude);
+		aggregation::HarmonicInputView input{};
+		expect(decoder.decode(frame, input) ==
+			aggregation::FrameValidationError::none,
+			"three-second source family decode");
+		engine.process(input);
+	}
+
+	expect(engine.ready(), "harmonic aggregation engine remains ready");
+	expect(sink.count == aggregation::HarmonicProtocol::records_per_family,
+		"fifteen base spectra emit one 42-record three-second family");
+	for (std::size_t index = 0U; index < sink.count; ++index) {
+		const auto &record = sink.records[index];
+		expect(record.words[0U] == aggregation::HarmonicProtocol::record_magic &&
+			record.words[1U] ==
+				aggregation::HarmonicProtocol::aggregate_record_format &&
+			record.words[2U] == aggregation::HarmonicProtocol::record_bytes,
+			"aggregate harmonic record envelope");
+		expect((record.words[14U] & 0x3U) == 1U &&
+			((record.words[14U] >> 2U) & 0xFFFU) == 15U,
+			"aggregate harmonic period and contributor count");
+		expect(record.words[62U] == 1U && record.words[63U] == 15U,
+			"aggregate harmonic base-family provenance");
+	}
+	const auto &last = sink.records[sink.count - 1U];
+	const auto packed = static_cast<std::uint64_t>(last.words[38U]) |
+		(static_cast<std::uint64_t>(last.words[39U]) << 32U);
+	expect((packed & ((std::uint64_t{1} << 40U) - 1U)) == large_magnitude &&
+		(packed & (std::uint64_t{1} << 60U)) != 0U,
+		"aggregate harmonic RMS preserves a full-width 40-bit magnitude");
+}
+
+void test_harmonic_engine_emits_clean_ten_minute_and_two_hour_families()
+{
+	CountingHarmonicSink sink;
+	aggregation::AggregationHealth health;
+	aggregation::HarmonicFrameDecoder decoder;
+	aggregation::HarmonicAggregationEngine engine(sink, health);
+	expect(engine.initialize(), "long-interval harmonic engine initialization");
+
+	/* Accelerate the exact interval state machine without changing it: each
+	 * synthetic base family spans 40 samples at 1 sample/s, so fifteen inputs
+	 * reach one 600-second boundary. The first interval is deliberately
+	 * contaminated; twelve subsequent clean intervals form one 2-hour result. */
+	aggregation::AggregationContext timing{};
+	timing.utc_target_sample = 600U;
+	timing.utc_target_status = 1U;
+	engine.observe_timing_context(timing);
+
+	for (std::uint32_t index = 0U; index < 195U; ++index) {
+		const auto frame = make_harmonic_frame(index + 1U,
+			static_cast<std::uint64_t>(index) * 40U, 1U, 40U);
+		aggregation::HarmonicInputView input{};
+		expect(decoder.decode(frame, input) ==
+			aggregation::FrameValidationError::none,
+			"long-interval source family decode");
+		engine.process(input);
+	}
+
+	constexpr auto family_records =
+		aggregation::HarmonicProtocol::records_per_family;
+	expect(engine.ready(), "long-interval harmonic engine remains ready");
+	expect(sink.records_by_period[1U] == 13U * family_records,
+		"long test emits every 15-family spectrum");
+	expect(sink.records_by_period[2U] == 13U * family_records &&
+		sink.valid_records_by_period[2U] == 12U * family_records,
+		"first 10-minute family is contaminated and twelve are clean");
+	expect(sink.records_by_period[3U] == family_records &&
+		sink.valid_records_by_period[3U] == family_records,
+		"twelve clean 10-minute families emit one valid 2-hour family");
+
+	const auto &two_hour = sink.last_record_by_period[3U];
+	expect(((two_hour.words[14U] >> 2U) & 0xFFFU) == 12U &&
+		two_hour.words[11U] == 7800U && two_hour.words[12U] == 0U,
+		"2-hour contributor count and aligned target");
+	expect(two_hour.words[62U] == 16U && two_hour.words[63U] == 195U,
+		"2-hour family preserves exact base-family provenance");
 }
 
 void test_ring()
@@ -578,6 +814,9 @@ int main()
 	test_crc32c();
 	test_valid_frame();
 	test_invalid_frames();
+	test_harmonic_frame_decoder();
+	test_harmonic_engine_emits_complete_three_second_family();
+	test_harmonic_engine_emits_clean_ten_minute_and_two_hour_families();
 	test_ring();
 	test_output_ring();
 	test_health();

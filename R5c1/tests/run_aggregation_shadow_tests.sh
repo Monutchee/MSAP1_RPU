@@ -42,6 +42,8 @@ for source in \
 	"$source_dir/aggregation_health.cpp" \
 	"$source_dir/aggregation_record_ring.cpp" \
 	"$source_dir/crc32c.cpp" \
+	"$source_dir/harmonic_aggregation_engine.cpp" \
+	"$source_dir/harmonic_frame_decoder.cpp" \
 	"$source_dir/r5_aggregation_engine.cpp"
 do
 	object="$build_dir/$(basename "$source" .cpp).o"
