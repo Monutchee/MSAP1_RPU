@@ -57,6 +57,8 @@ public:
 		const auto period = static_cast<std::size_t>(record.words[14U] & 0x3U);
 		if (period >= records_by_period.size())
 			return false;
+		if (records_by_period[period] == 0U)
+			first_record_by_period[period] = record;
 		++records_by_period[period];
 		if ((record.words[8U] & (1U << 3U)) != 0U)
 			++valid_records_by_period[period];
@@ -66,6 +68,7 @@ public:
 
 	std::array<std::size_t, 4U> records_by_period{};
 	std::array<std::size_t, 4U> valid_records_by_period{};
+	std::array<aggregation::AggregationMeterRecord, 4U> first_record_by_period{};
 	std::array<aggregation::AggregationMeterRecord, 4U> last_record_by_period{};
 };
 
@@ -419,6 +422,34 @@ void test_harmonic_engine_resets_partial_tiers_in_place()
 		"post-discontinuity harmonic family lost its boundary marker");
 }
 
+void test_harmonic_engine_accepts_one_sample_endpoint_quantization()
+{
+	CapturingRecordSink sink;
+	aggregation::AggregationHealth health;
+	aggregation::HarmonicFrameDecoder decoder;
+	aggregation::HarmonicAggregationEngine engine(sink, health);
+	expect(engine.initialize(), "harmonic endpoint test initialization");
+
+	std::uint64_t first_sample = 0U;
+	for (std::uint32_t index = 0U; index < 15U; ++index) {
+		const auto frame = make_harmonic_frame(index + 1U, first_sample,
+			32000U, 6400U);
+		aggregation::HarmonicInputView input{};
+		expect(decoder.decode(frame, input) ==
+			aggregation::FrameValidationError::none,
+			"endpoint-quantized harmonic family decode");
+		engine.process(input);
+		/* The record keeps the exact nominal 6,400-sample lattice while
+		 * successive detected cycle boundaries alternate by one frame. */
+		first_sample += (index & 1U) == 0U ? 6399U : 6401U;
+	}
+
+	expect(sink.count == aggregation::HarmonicProtocol::records_per_family,
+		"one-sample endpoint quantization reset the three-second tier");
+	expect((sink.records.front().words[8U] & (1U << 6U)) != 0U,
+		"endpoint-quantized startup family lost its boundary marker");
+}
+
 void test_harmonic_engine_emits_clean_ten_minute_and_two_hour_families()
 {
 	CountingHarmonicSink sink;
@@ -457,6 +488,13 @@ void test_harmonic_engine_emits_clean_ten_minute_and_two_hour_families()
 	expect(sink.records_by_period[3U] == family_records &&
 		sink.valid_records_by_period[3U] == family_records,
 		"twelve clean 10-minute families emit one valid 2-hour family");
+
+	const auto &contaminated = sink.first_record_by_period[2U];
+	expect((contaminated.words[8U] & ((1U << 3U) | (1U << 4U))) == 0U,
+		"startup 10-minute family unexpectedly claims valid magnitudes");
+	for (std::size_t word = 16U; word < 62U; ++word)
+		expect(contaminated.words[word] == 0U,
+			"contaminated 10-minute family retained an invalid payload");
 
 	const auto &two_hour = sink.last_record_by_period[3U];
 	expect(((two_hour.words[14U] >> 2U) & 0xFFFU) == 12U &&
@@ -869,6 +907,7 @@ int main()
 	test_harmonic_frame_decoder();
 	test_harmonic_engine_emits_complete_three_second_family();
 	test_harmonic_engine_resets_partial_tiers_in_place();
+	test_harmonic_engine_accepts_one_sample_endpoint_quantization();
 	test_harmonic_engine_emits_clean_ten_minute_and_two_hour_families();
 	test_ring();
 	test_output_ring();

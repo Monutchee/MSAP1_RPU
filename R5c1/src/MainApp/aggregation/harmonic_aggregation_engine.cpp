@@ -413,9 +413,16 @@ bool HarmonicAggregationEngine::emit_family(const TierAccumulator &tier,
 			for (std::size_t entry = 0U; entry < entry_count; ++entry) {
 				const auto order = first_order + entry - 1U;
 				const auto point = channel * HarmonicProtocol::maximum_order + order;
-				std::uint64_t packed = finalized_magnitude_[point];
-				if (!contaminated && finalized_valid_[point] != 0U)
-					packed |= std::uint64_t{1} << 60U;
+				/* Invalid packed entries must be all-zero.  In particular, a
+				 * contaminated long interval deliberately clears the family and
+				 * entry validity bits; retaining its diagnostic RMS magnitude while
+				 * clearing bit 60 creates a self-contradictory wire image that every
+				 * conforming HARMONIC-v1 decoder must reject. */
+				std::uint64_t packed = 0U;
+				if (!contaminated && finalized_valid_[point] != 0U) {
+					packed = finalized_magnitude_[point] |
+						(std::uint64_t{1} << 60U);
+				}
 				words[16U + entry * 2U] = low(packed);
 				words[17U + entry * 2U] = high(packed);
 			}
@@ -445,7 +452,18 @@ bool HarmonicAggregationEngine::accept_sequence(
 		expected_sequence);
 	if (delta < 0)
 		return false;
-	if (delta > 0 || input.first_sample != expected_first_sample_)
+	/* A qualified crossing is represented by one accepted ADC frame.  At a
+	 * nominal 10/12-cycle boundary, interpolation/noise may select the frame
+	 * immediately before or after the ideal crossing even though the
+	 * conditioner retains the exact nominal L/25 spectral lattice.  Accept
+	 * only that one-frame endpoint quantization; a larger displacement or a
+	 * sequence gap remains a real discontinuity. */
+	const bool adjacent_sample = input.first_sample == expected_first_sample_ ||
+		(expected_first_sample_ != 0U &&
+		 input.first_sample == expected_first_sample_ - 1U) ||
+		(expected_first_sample_ != std::numeric_limits<std::uint64_t>::max() &&
+		 input.first_sample == expected_first_sample_ + 1U);
+	if (delta > 0 || !adjacent_sample)
 		discontinuity_pending_ = true;
 	last_input_sequence_ = input.sequence;
 	expected_first_sample_ = input.first_sample + input.sample_count;
