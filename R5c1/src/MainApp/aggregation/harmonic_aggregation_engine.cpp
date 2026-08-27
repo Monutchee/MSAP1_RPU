@@ -47,9 +47,9 @@ HarmonicAggregationEngine::HarmonicAggregationEngine(
 
 bool HarmonicAggregationEngine::initialize() noexcept
 {
-	three_second_ = {};
-	ten_minute_ = {};
-	two_hour_ = {};
+	clear_tier(three_second_, true);
+	clear_tier(ten_minute_, true);
+	clear_tier(two_hour_, true);
 	finalized_magnitude_.fill(0U);
 	finalized_valid_.fill(0U);
 	output_sequence_.fill(0U);
@@ -62,6 +62,38 @@ bool HarmonicAggregationEngine::initialize() noexcept
 	discontinuity_pending_ = true;
 	ready_ = true;
 	return true;
+}
+
+void HarmonicAggregationEngine::clear_tier(TierAccumulator &tier,
+	bool first_after_discontinuity) noexcept
+{
+	/*
+	 * TierAccumulator is larger than an aggregation worker's stack.  A whole
+	 * object `tier = {}` assignment makes the ARM compiler materialize a full
+	 * temporary on that stack before copying it into place.  Clear every field
+	 * in situ so resets remain bounded regardless of the accumulator size.
+	 */
+	for (auto &sum : tier.square_sum) {
+		sum.high = 0U;
+		sum.low = 0U;
+	}
+	tier.valid.fill(0U);
+	tier.contributors = 0U;
+	tier.configuration_generation = 0U;
+	tier.sample_rate_hz = 0U;
+	tier.sample_count = 0U;
+	tier.valid_mask = 0U;
+	tier.first_sample = 0U;
+	tier.last_sample = 0U;
+	tier.first_source_sequence = 0U;
+	tier.last_source_sequence = 0U;
+	tier.qualified_max_order = 0U;
+	tier.nominal_frequency_hz = 0U;
+	tier.cycle_count = 0U;
+	tier.filter_profile_id = 0U;
+	tier.arithmetic_error = false;
+	tier.active = false;
+	tier.first_after_discontinuity = first_after_discontinuity;
 }
 
 void HarmonicAggregationEngine::note_transport_discontinuity() noexcept
@@ -96,8 +128,7 @@ void HarmonicAggregationEngine::reset_tier(TierAccumulator &tier,
 	bool discontinuity) noexcept
 {
 	const bool first = discontinuity || tier.first_after_discontinuity;
-	tier = {};
-	tier.first_after_discontinuity = first;
+	clear_tier(tier, first);
 }
 
 void HarmonicAggregationEngine::reset_all(bool discontinuity) noexcept
@@ -112,9 +143,8 @@ void HarmonicAggregationEngine::begin_tier(TierAccumulator &tier,
 	const HarmonicInputView &input) noexcept
 {
 	const bool first_after = tier.first_after_discontinuity;
-	tier = {};
+	clear_tier(tier, first_after);
 	tier.active = true;
-	tier.first_after_discontinuity = first_after;
 	tier.valid.fill(1U);
 	tier.configuration_generation = input.configuration_generation;
 	tier.sample_rate_hz = input.sample_rate_hz;
@@ -277,9 +307,8 @@ void HarmonicAggregationEngine::accumulate_finalized(
 {
 	if (!tier.active) {
 		const bool first_after = tier.first_after_discontinuity;
-		tier = {};
+		clear_tier(tier, first_after);
 		tier.active = true;
-		tier.first_after_discontinuity = first_after;
 		tier.valid.fill(1U);
 		tier.configuration_generation = source.configuration_generation;
 		tier.sample_rate_hz = source.sample_rate_hz;

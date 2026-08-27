@@ -38,6 +38,12 @@ private:
 	};
 
 	struct TierAccumulator final {
+		TierAccumulator() noexcept = default;
+		TierAccumulator(const TierAccumulator &) = delete;
+		TierAccumulator &operator=(const TierAccumulator &) = delete;
+		TierAccumulator(TierAccumulator &&) = delete;
+		TierAccumulator &operator=(TierAccumulator &&) = delete;
+
 		std::array<WideUnsigned, point_count> square_sum{};
 		std::array<std::uint8_t, point_count> valid{};
 		std::uint32_t contributors{};
@@ -58,6 +64,8 @@ private:
 		bool first_after_discontinuity{true};
 	};
 
+	static void clear_tier(TierAccumulator &tier,
+		bool first_after_discontinuity) noexcept;
 	void reset_tier(TierAccumulator &tier, bool discontinuity) noexcept;
 	void reset_all(bool discontinuity) noexcept;
 	void begin_tier(TierAccumulator &tier,

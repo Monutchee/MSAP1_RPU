@@ -367,6 +367,58 @@ void test_harmonic_engine_emits_complete_three_second_family()
 		"aggregate harmonic RMS preserves a full-width 40-bit magnitude");
 }
 
+void test_harmonic_engine_resets_partial_tiers_in_place()
+{
+	CapturingRecordSink sink;
+	aggregation::AggregationHealth health;
+	aggregation::HarmonicFrameDecoder decoder;
+	aggregation::HarmonicAggregationEngine engine(sink, health);
+	expect(engine.initialize(), "harmonic reset test initialization");
+
+	/* Leave dirty state in every active three-second array, then verify that
+	 * reinitialization removes it without contributing an early family. */
+	for (std::uint32_t index = 0U; index < 7U; ++index) {
+		const auto frame = make_harmonic_frame(index + 1U,
+			static_cast<std::uint64_t>(index) * 6400U);
+		aggregation::HarmonicInputView input{};
+		expect(decoder.decode(frame, input) ==
+			aggregation::FrameValidationError::none,
+			"pre-reinitialization harmonic decode");
+		engine.process(input);
+	}
+	expect(engine.initialize(), "harmonic engine reinitialization");
+
+	/* Dirty a second partial tier, then force the normal discontinuity reset.
+	 * Only the fifteen records after that boundary may form the output. */
+	for (std::uint32_t index = 0U; index < 7U; ++index) {
+		const auto frame = make_harmonic_frame(100U + index,
+			static_cast<std::uint64_t>(index) * 6400U);
+		aggregation::HarmonicInputView input{};
+		expect(decoder.decode(frame, input) ==
+			aggregation::FrameValidationError::none,
+			"pre-discontinuity harmonic decode");
+		engine.process(input);
+	}
+	engine.note_transport_discontinuity();
+	for (std::uint32_t index = 0U; index < 15U; ++index) {
+		const auto frame = make_harmonic_frame(200U + index,
+			static_cast<std::uint64_t>(index) * 6400U);
+		aggregation::HarmonicInputView input{};
+		expect(decoder.decode(frame, input) ==
+			aggregation::FrameValidationError::none,
+			"post-discontinuity harmonic decode");
+		engine.process(input);
+	}
+
+	expect(sink.count == aggregation::HarmonicProtocol::records_per_family,
+		"partial harmonic tiers survived an in-place reset");
+	expect(sink.records.front().words[62U] == 200U &&
+		sink.records[sink.count - 1U].words[63U] == 214U,
+		"reset harmonic family retained stale provenance");
+	expect((sink.records.front().words[8U] & (1U << 6U)) != 0U,
+		"post-discontinuity harmonic family lost its boundary marker");
+}
+
 void test_harmonic_engine_emits_clean_ten_minute_and_two_hour_families()
 {
 	CountingHarmonicSink sink;
@@ -816,6 +868,7 @@ int main()
 	test_invalid_frames();
 	test_harmonic_frame_decoder();
 	test_harmonic_engine_emits_complete_three_second_family();
+	test_harmonic_engine_resets_partial_tiers_in_place();
 	test_harmonic_engine_emits_clean_ten_minute_and_two_hour_families();
 	test_ring();
 	test_output_ring();
