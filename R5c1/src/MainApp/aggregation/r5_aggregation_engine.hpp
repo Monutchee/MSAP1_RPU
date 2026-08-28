@@ -4,6 +4,7 @@
 #include "aggregation_health.hpp"
 #include "aggregation_protocol.hpp"
 #include "aggregation_record_sink.hpp"
+#include "energy_demand_engine.hpp"
 
 #include "aggregation_engine.hpp"
 
@@ -33,7 +34,8 @@ enum class AggregationOutputMode : std::uint8_t {
 class R5AggregationEngine final {
 public:
 	R5AggregationEngine(AggregationRecordSink &sink,
-		AggregationHealth &health, AggregationOutputMode mode) noexcept;
+		AggregationHealth &health, AggregationOutputMode mode,
+		std::uint64_t session_id = 1U) noexcept;
 
 	bool initialize() noexcept;
 	void process(const AggregationInputView &input) noexcept;
@@ -70,6 +72,8 @@ private:
 	AggregationRecordSink &sink_;
 	AggregationHealth &health_;
 	AggregationOutputMode mode_;
+	std::uint64_t session_id_;
+	EnergyDemandEngine energy_demand_;
 	hls::stream<single_cycle_word_t> input_{};
 	record_axis_stream_t basic_output_{};
 	record_axis_stream_t aggregate_output_{};

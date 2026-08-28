@@ -12,6 +12,7 @@ Run with Vitis Python from the MSAP1_RPU directory:
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 from pathlib import Path
 
@@ -96,6 +97,13 @@ def main() -> int:
             component_dir = workspace / component_name
             require_path(component_dir, f"{component_name} component")
 
+            # USER_COMPILE_SOURCES is not a dependable CMake regeneration
+            # trigger in Vitis 2025.2.  A clean generated tree guarantees the
+            # requested component is linked from the current source manifest.
+            app_build_dir = component_dir / "build"
+            if app_build_dir.exists():
+                print(f"Removing stale application build tree: {app_build_dir}")
+                shutil.rmtree(app_build_dir)
             print(f"Building {component_name}")
             component = client.get_component(name=component_name)
             status = component.build()

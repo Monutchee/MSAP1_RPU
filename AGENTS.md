@@ -60,6 +60,21 @@
   finalizer. AGG-v3 words 36/37 are the actual last contributing sample, so
   only a bit-3 overlap record may have a physical range shorter than its
   summed sample count.
+- R5C1 owns volatile M17 energy and demand session arithmetic. ENERGY-v1
+  (`0x00030001`) is an atomic two-record family: summary then quadrants, with
+  matching sequence, generation, session, anchors, and family count. Reactive
+  energy uses the shared `EnergyQuadrant` classifier and fundamental Q1: I is
+  `P>=0,Q1>0`, II is `P<0,Q1>0`, III is `P<0,Q1<0`, and IV is
+  `P>=0,Q1<0`; `Q1==0` contributes to no quadrant. DEMAND-v1
+  (`0x00040001`) is active-only and emitted at completed UTC ten-minute
+  boundaries. Linux owns lifetime totals and reset epochs; APPLY and invalid
+  blocks never reset the R5C1 session.
+- Keep the M17 engine and all future large accumulator state in static
+  `.bss`/`.data`, clear it in place, and keep it non-copyable. Processing paths
+  must not allocate dynamically or place whole engines/large arrays on a task
+  stack. Retain fixed-point division remainders, saturate public counters
+  instead of wrapping, and preserve sticky saturation, discontinuity, and
+  incomplete-input provenance.
 - Physical and simulated ADC sources share the raw PL stream boundary. Stop
   capture before switching sources and commit a source change only after
   target-device configuration and PL readback succeed. While simulation is
@@ -107,6 +122,12 @@
   the XSA-generated `xparameters.h` remains authoritative for peripheral
   addresses and interrupt assignments. Do not reintroduce a machine-conf or
   BSP-generated-header dependency into the RPU build.
+- The canonical contract reserves 8 MiB per R5 firmware image. R5C0 is
+  `0x3ED80000..0x3F57FFFF` and R5C1 is
+  `0x3F688000..0x3FE87FFF`; each `psu_r5_ddr_0_memory_0` linker region must
+  match its contract start and size exactly. Move vrings and the 1 MiB RPMsg
+  buffer only through the canonical contract generator, never by hand-editing
+  a generated consumer.
 
 ## Build and verification
 
@@ -127,6 +148,11 @@ vitis -s scripts/create_platform_from_xsa.py -- --force
 ```
 
 - Do not hand-edit generated `platform/`, BSP, export, or workspace metadata.
+- Keep `-fstack-usage` enabled for R5C1. Every M17 frame must remain below
+  1 KiB, the post-link gate must leave at least 1 MiB in each firmware
+  reservation, and named accumulator objects must resolve to `.bss` or
+  `.data`. Target acceptance additionally requires at least 2 KiB measured
+  task-stack high-water headroom.
 - After ADC/RPMsg changes, build R5c0 and execute the target procedure in the
   APU repository. Confirm SPI health, meter DMA progress, matching
   configuration generations, zero overflow, a responsive control endpoint,

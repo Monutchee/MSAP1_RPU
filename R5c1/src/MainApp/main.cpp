@@ -21,6 +21,7 @@
 #include "aggregation/aggregation_record_ring.hpp"
 #include "aggregation/aggregation_runtime.hpp"
 #include "aggregation/r5_aggregation_engine.hpp"
+#include "aggregation/r5_session_id.hpp"
 #include "aggregation/aggregation_shadow_service.hpp"
 #include "aggregation/axi_fifo_aggregation_transport.hpp"
 
@@ -47,7 +48,8 @@ static msap1::aggregation::AggregationOutputService aggregation_output(
 	aggregation_transport, aggregation_output_ring, aggregation_health);
 static msap1::aggregation::R5AggregationEngine aggregation_engine(
 	aggregation_output, aggregation_health,
-	aggregation_output_mode);
+	aggregation_output_mode,
+	msap1::aggregation::generate_r5_session_id());
 static msap1::aggregation::HarmonicAggregationEngine harmonic_engine(
 	aggregation_output, aggregation_health);
 static msap1::aggregation::AggregationShadowService aggregation_shadow(

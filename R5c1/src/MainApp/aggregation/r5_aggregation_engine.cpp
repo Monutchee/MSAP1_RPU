@@ -3,8 +3,11 @@
 namespace msap1::aggregation {
 
 R5AggregationEngine::R5AggregationEngine(AggregationRecordSink &sink,
-	AggregationHealth &health, AggregationOutputMode mode) noexcept
-	: sink_(sink), health_(health), mode_(mode)
+	AggregationHealth &health, AggregationOutputMode mode,
+	std::uint64_t session_id) noexcept
+	: sink_(sink), health_(health), mode_(mode),
+	  session_id_(session_id == 0U ? 1U : session_id),
+	  energy_demand_(session_id_)
 {
 }
 
@@ -15,6 +18,7 @@ bool R5AggregationEngine::initialize() noexcept
 	last_transport_sequence_ = 0U;
 	discontinuity_pending_ = 0U;
 	have_transport_sequence_ = false;
+	energy_demand_.initialize(session_id_);
 	ready_ = true;
 	health_.set_engine_ready(true);
 	// The health contract must describe the compiled runtime mode.  In shadow
@@ -95,10 +99,19 @@ void R5AggregationEngine::complete_record() noexcept
 		fail_engine();
 		return;
 	}
+	if (!energy_demand_.observe(assembling_, sink_,
+			mode_ == AggregationOutputMode::emit)) {
+		// ENERGY is an atomic two-record family.  If either part cannot be
+		// queued, the authoritative stream has lost coherence and must fail
+		// closed just like any other output-ring overflow.
+		fail_engine();
+		return;
+	}
 
 	++pass_records_completed_;
 
-	assembling_ = {};
+	assembling_.sequence = 0U;
+	assembling_.words.fill(0U);
 	assembling_words_ = 0U;
 }
 
