@@ -59,7 +59,7 @@ private:
 	 * measurement of lower-priority scheduling latency without adding a queue
 	 * or taking a lock in the high-priority path.
 	 */
-	std::uint32_t validator_notification_time_us_{};
+	std::uint32_t validator_notification_ticks_{};
 };
 
 } // namespace msap1::aggregation

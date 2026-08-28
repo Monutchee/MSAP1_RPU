@@ -798,6 +798,24 @@ void test_ring_pressure_telemetry()
 		"validator-task activation telemetry");
 }
 
+void test_scheduler_timing_survives_pmu_counter_wrap()
+{
+	constexpr std::uint32_t counter_hz = 8333333U;
+	constexpr std::uint32_t start = 0xFFFFF000U;
+	constexpr std::uint32_t elapsed_ticks = 12500U;
+	constexpr std::uint32_t finish = start + elapsed_ticks;
+
+	expect(aggregation::scheduler_policy::elapsed_counter_ticks(
+		start, finish) == elapsed_ticks,
+		"PMU tick delta across 32-bit wrap");
+	expect(aggregation::scheduler_policy::elapsed_microseconds(
+		start, finish, counter_hz) == 1500U,
+		"PMU tick conversion after 32-bit wrap");
+	expect(aggregation::scheduler_policy::elapsed_microseconds(
+		start, finish, 0U) == 0U,
+		"zero-frequency timing fallback");
+}
+
 void test_bounded_input_handoff_preserves_validator_progress()
 {
 	constexpr std::uint32_t backlog = 256U;
@@ -1033,6 +1051,7 @@ int main()
 	test_output_ring();
 	test_health();
 	test_ring_pressure_telemetry();
+	test_scheduler_timing_survives_pmu_counter_wrap();
 	test_bounded_input_handoff_preserves_validator_progress();
 	test_r5_engine_emits_complete_basic_family();
 	test_r5_engine_fails_closed_when_output_rejects_record();
