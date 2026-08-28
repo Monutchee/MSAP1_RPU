@@ -8,6 +8,8 @@ FrameValidationError AggregationFrameDecoder::decode(
 	const AggregationFrame &frame, AggregationInputView &output) const noexcept
 {
 	const auto &words = frame.words;
+	if (frame.word_count != AggregationProtocol::frame_words)
+		return FrameValidationError::invalid_length;
 	if (words[AggregationProtocol::magic_index] != AggregationProtocol::magic)
 		return FrameValidationError::invalid_magic;
 	if (words[AggregationProtocol::contract_revision_index] !=

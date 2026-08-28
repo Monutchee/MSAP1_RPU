@@ -4,6 +4,8 @@
 #include "aggregation_frame_decoder.hpp"
 #include "aggregation_frame_ring.hpp"
 #include "aggregation_health.hpp"
+#include "harmonic_aggregation_engine.hpp"
+#include "harmonic_frame_decoder.hpp"
 #include "r5_aggregation_engine.hpp"
 #include "aggregation_transport.hpp"
 
@@ -26,7 +28,10 @@ class AggregationShadowService final {
 public:
 	AggregationShadowService(AggregationTransport &transport,
 		AggregationFrameRing &ring, const AggregationFrameDecoder &decoder,
-		R5AggregationEngine &engine, AggregationHealth &health) noexcept;
+		R5AggregationEngine &engine,
+		const HarmonicFrameDecoder &harmonic_decoder,
+		HarmonicAggregationEngine &harmonic_engine,
+		AggregationHealth &health) noexcept;
 
 	bool initialize(TaskHandle_t input_task,
 		TaskHandle_t validator_task) noexcept;
@@ -41,7 +46,12 @@ private:
 	AggregationFrameRing &ring_;
 	const AggregationFrameDecoder &decoder_;
 	R5AggregationEngine &engine_;
+	const HarmonicFrameDecoder &harmonic_decoder_;
+	HarmonicAggregationEngine &harmonic_engine_;
 	AggregationHealth &health_;
+	/* Largest HRM1 packets cannot live on the 8 KiB worker stacks. */
+	AggregationFrame input_frame_{};
+	AggregationFrame validator_frame_{};
 	TaskHandle_t validator_task_{};
 	/*
 	 * The input task records the first outstanding notification time.  The
@@ -49,7 +59,7 @@ private:
 	 * measurement of lower-priority scheduling latency without adding a queue
 	 * or taking a lock in the high-priority path.
 	 */
-	std::uint32_t validator_notification_time_us_{};
+	std::uint32_t validator_notification_ticks_{};
 };
 
 } // namespace msap1::aggregation

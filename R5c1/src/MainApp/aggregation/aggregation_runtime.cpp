@@ -8,7 +8,7 @@ constexpr configSTACK_DEPTH_TYPE worker_stack_depth = 2048U;
 
 /*
  * The hardware receiver is highest so CPU-heavy aggregation can never prevent
- * the AXI FIFO from being drained into the 64-frame software ring.  The output
+ * the AXI FIFO from being drained into the bounded software ring.  The output
  * owner is next: a completed record preempts arithmetic long enough to move it
  * back into the FIFO.  Arithmetic runs while both I/O owners are blocked.
  *
@@ -16,7 +16,7 @@ constexpr configSTACK_DEPTH_TYPE worker_stack_depth = 2048U;
  * priority over RX allowed its synchronous aggregation work to starve the
  * FIFO, which eventually propagated TREADY low into PL and caused real
  * single-cycle sample-range discontinuities.  Giving output the lowest
- * priority can likewise fill the authoritative 64-record output ring.
+ * priority can likewise fill the authoritative output ring.
  * RPMsg remains priority 4 and retains control/health responsiveness.
  */
 constexpr UBaseType_t input_priority = 3U;

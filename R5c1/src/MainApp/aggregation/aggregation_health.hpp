@@ -94,6 +94,8 @@ public:
 	void set_authoritative(bool authoritative) noexcept;
 	void record_received() noexcept;
 	void record_valid(std::uint32_t sequence) noexcept;
+	/** Count a valid non-AGG1 packet without changing AGG1 sequence telemetry. */
+	void record_auxiliary_valid() noexcept;
 	void record_invalid(FrameValidationError error) noexcept;
 	void record_sequence(std::uint32_t sequence) noexcept;
 	void record_ring_overflow() noexcept;

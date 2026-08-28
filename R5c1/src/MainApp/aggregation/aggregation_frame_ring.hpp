@@ -11,12 +11,13 @@ namespace msap1::aggregation {
 
 /**
  * Static single-producer/single-consumer queue between the FIFO task and the
- * validator task.  Sixty-four complete frames consume about 61 KiB and avoid
- * heap use or partial-frame ownership.
+ * validator task. Slots are sized for the largest HRM1 family and copy only
+ * the active words. Sixteen frames cover several hardware-FIFO drain bursts
+ * without heap use or partial-frame ownership.
  */
 class AggregationFrameRing final {
 public:
-	static constexpr std::size_t capacity = 64U;
+	static constexpr std::size_t capacity = 16U;
 
 	[[nodiscard]] bool try_push(const AggregationFrame &frame) noexcept;
 	[[nodiscard]] bool try_pop(AggregationFrame &frame) noexcept;

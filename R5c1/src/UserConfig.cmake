@@ -60,6 +60,8 @@ set(USER_COMPILE_SOURCES
 "MainApp/aggregation/aggregation_frame_decoder.cpp"
 "MainApp/aggregation/aggregation_frame_ring.cpp"
 "MainApp/aggregation/aggregation_health.cpp"
+"MainApp/aggregation/harmonic_aggregation_engine.cpp"
+"MainApp/aggregation/harmonic_frame_decoder.cpp"
 "MainApp/aggregation/aggregation_output_service.cpp"
 "MainApp/aggregation/aggregation_record_ring.cpp"
 "MainApp/aggregation/aggregation_runtime.cpp"
