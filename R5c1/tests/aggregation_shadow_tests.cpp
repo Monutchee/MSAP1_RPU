@@ -285,14 +285,69 @@ void refresh_harmonic_crc(aggregation::AggregationFrame &frame)
 			aggregation::HarmonicProtocol::crc_index);
 }
 
+std::size_t harmonic_entry_word(std::size_t channel, std::size_t order)
+{
+	const auto order_index = order - 1U;
+	const auto chunk = order_index /
+		aggregation::HarmonicProtocol::orders_per_chunk;
+	const auto entry = order_index %
+		aggregation::HarmonicProtocol::orders_per_chunk;
+	const auto record = aggregation::HarmonicProtocol::payload_index +
+		(channel * aggregation::HarmonicProtocol::chunks_per_channel + chunk) *
+			aggregation::HarmonicProtocol::record_words;
+	return record + 16U + entry * 2U;
+}
+
+std::uint64_t harmonic_entry(const aggregation::AggregationFrame &frame,
+	std::size_t channel, std::size_t order)
+{
+	const auto word = harmonic_entry_word(channel, order);
+	return static_cast<std::uint64_t>(frame.words[word]) |
+		(static_cast<std::uint64_t>(frame.words[word + 1U]) << 32U);
+}
+
+void set_harmonic_angle(aggregation::AggregationFrame &frame,
+	std::size_t channel, std::size_t order, std::uint32_t angle_millidegrees,
+	bool valid)
+{
+	constexpr auto angle_field_mask =
+		((std::uint64_t{1} << 20U) - 1U) << 40U;
+	const auto word = harmonic_entry_word(channel, order);
+	auto packed = harmonic_entry(frame, channel, order);
+	packed &= ~(angle_field_mask | (std::uint64_t{1} << 61U));
+	if (valid) {
+		packed |= static_cast<std::uint64_t>(angle_millidegrees) << 40U;
+		packed |= std::uint64_t{1} << 61U;
+	}
+	frame.words[word] = static_cast<std::uint32_t>(packed);
+	frame.words[word + 1U] = static_cast<std::uint32_t>(packed >> 32U);
+	refresh_harmonic_crc(frame);
+}
+
+std::uint64_t aggregate_entry(
+	const aggregation::AggregationMeterRecord &record, std::size_t entry)
+{
+	const auto word = 16U + entry * 2U;
+	return static_cast<std::uint64_t>(record.words[word]) |
+		(static_cast<std::uint64_t>(record.words[word + 1U]) << 32U);
+}
+
+bool angle_near(std::uint32_t actual, std::uint32_t expected,
+	std::uint32_t tolerance)
+{
+	const auto direct = actual > expected ? actual - expected : expected - actual;
+	const auto circular = 360000U - direct;
+	return std::min(direct, circular) <= tolerance;
+}
+
 void set_last_harmonic_magnitude(aggregation::AggregationFrame &frame,
 	std::uint64_t magnitude)
 {
-	const auto last_record = aggregation::HarmonicProtocol::payload_index +
-		(aggregation::HarmonicProtocol::records_per_family - 1U) *
-			aggregation::HarmonicProtocol::record_words;
-	const auto last_entry_word = last_record + 16U + 6U * 2U;
-	const auto packed = magnitude | (std::uint64_t{1} << 60U);
+	constexpr auto magnitude_mask = (std::uint64_t{1} << 40U) - 1U;
+	const auto last_entry_word = harmonic_entry_word(6U, 127U);
+	const auto packed =
+		(harmonic_entry(frame, 6U, 127U) & ~magnitude_mask) |
+		magnitude | (std::uint64_t{1} << 60U);
 	frame.words[last_entry_word] = static_cast<std::uint32_t>(packed);
 	frame.words[last_entry_word + 1U] =
 		static_cast<std::uint32_t>(packed >> 32U);
@@ -366,8 +421,64 @@ void test_harmonic_engine_emits_complete_three_second_family()
 	const auto packed = static_cast<std::uint64_t>(last.words[38U]) |
 		(static_cast<std::uint64_t>(last.words[39U]) << 32U);
 	expect((packed & ((std::uint64_t{1} << 40U) - 1U)) == large_magnitude &&
-		(packed & (std::uint64_t{1} << 60U)) != 0U,
-		"aggregate harmonic RMS preserves a full-width 40-bit magnitude");
+		(packed & (std::uint64_t{1} << 60U)) != 0U &&
+		(packed & (std::uint64_t{1} << 61U)) != 0U &&
+		angle_near(static_cast<std::uint32_t>((packed >> 40U) & 0xFFFFFU),
+			127000U, 2U),
+		"aggregate harmonic preserves full-width magnitude and circular angle");
+}
+
+void test_harmonic_engine_uses_circular_angles_and_propagates_validity()
+{
+	constexpr std::array<std::uint32_t, 3U> wrap_angles{
+		359000U, 1000U, 0U};
+	{
+		CapturingRecordSink sink;
+		aggregation::AggregationHealth health;
+		aggregation::HarmonicFrameDecoder decoder;
+		aggregation::HarmonicAggregationEngine engine(sink, health);
+		expect(engine.initialize(), "circular harmonic test initialization");
+		for (std::uint32_t index = 0U; index < 15U; ++index) {
+			auto frame = make_harmonic_frame(index + 1U,
+				static_cast<std::uint64_t>(index) * 6400U);
+			set_harmonic_angle(frame, 0U, 2U,
+				wrap_angles[index % wrap_angles.size()], true);
+			aggregation::HarmonicInputView input{};
+			expect(decoder.decode(frame, input) ==
+				aggregation::FrameValidationError::none,
+				"circular harmonic source decode");
+			engine.process(input);
+		}
+		const auto packed = aggregate_entry(sink.records.front(), 1U);
+		expect((packed & (std::uint64_t{1} << 61U)) != 0U &&
+			angle_near(static_cast<std::uint32_t>(
+				(packed >> 40U) & 0xFFFFFU), 0U, 2U),
+			"359/1-degree inputs did not aggregate across the circular wrap");
+	}
+
+	{
+		CapturingRecordSink sink;
+		aggregation::AggregationHealth health;
+		aggregation::HarmonicFrameDecoder decoder;
+		aggregation::HarmonicAggregationEngine engine(sink, health);
+		expect(engine.initialize(), "invalid-angle harmonic test initialization");
+		for (std::uint32_t index = 0U; index < 15U; ++index) {
+			auto frame = make_harmonic_frame(index + 1U,
+				static_cast<std::uint64_t>(index) * 6400U);
+			if (index == 7U)
+				set_harmonic_angle(frame, 0U, 2U, 0U, false);
+			aggregation::HarmonicInputView input{};
+			expect(decoder.decode(frame, input) ==
+				aggregation::FrameValidationError::none,
+				"invalid-angle harmonic source decode");
+			engine.process(input);
+		}
+		const auto packed = aggregate_entry(sink.records.front(), 1U);
+		expect((packed & (std::uint64_t{1} << 60U)) != 0U &&
+			(packed & (std::uint64_t{1} << 61U)) == 0U &&
+			((packed >> 40U) & 0xFFFFFU) == 0U,
+			"invalid source angle did not preserve magnitude-only validity");
+	}
 }
 
 void test_harmonic_engine_resets_partial_tiers_in_place()
@@ -502,6 +613,14 @@ void test_harmonic_engine_emits_clean_ten_minute_and_two_hour_families()
 		"2-hour contributor count and aligned target");
 	expect(two_hour.words[62U] == 16U && two_hour.words[63U] == 195U,
 		"2-hour family preserves exact base-family provenance");
+	const auto ten_minute_packed = aggregate_entry(
+		sink.last_record_by_period[2U], 0U);
+	const auto two_hour_packed = aggregate_entry(two_hour, 0U);
+	for (const auto packed : {ten_minute_packed, two_hour_packed})
+		expect((packed & (std::uint64_t{1} << 61U)) != 0U &&
+			angle_near(static_cast<std::uint32_t>(
+				(packed >> 40U) & 0xFFFFFU), 116000U, 2U),
+			"long harmonic interval lost its circular angle");
 }
 
 void test_ring()
@@ -906,6 +1025,7 @@ int main()
 	test_invalid_frames();
 	test_harmonic_frame_decoder();
 	test_harmonic_engine_emits_complete_three_second_family();
+	test_harmonic_engine_uses_circular_angles_and_propagates_validity();
 	test_harmonic_engine_resets_partial_tiers_in_place();
 	test_harmonic_engine_accepts_one_sample_endpoint_quantization();
 	test_harmonic_engine_emits_clean_ten_minute_and_two_hour_families();

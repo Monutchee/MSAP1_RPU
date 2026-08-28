@@ -1,5 +1,7 @@
 #include "harmonic_aggregation_engine.hpp"
 
+#include "metrology_trig.hpp"
+
 #include <algorithm>
 #include <limits>
 
@@ -16,6 +18,8 @@ constexpr std::uint32_t status_magnitude_valid = 1U << 4U;
 constexpr std::uint32_t status_full_range = 1U << 5U;
 constexpr std::uint32_t status_first_after_discontinuity = 1U << 6U;
 constexpr std::uint32_t status_rate_limited = 1U << 7U;
+constexpr std::uint64_t magnitude_mask = (std::uint64_t{1} << 40U) - 1U;
+constexpr std::uint64_t angle_mask = (std::uint64_t{1} << 20U) - 1U;
 
 std::uint32_t low(std::uint64_t value) noexcept
 {
@@ -52,6 +56,8 @@ bool HarmonicAggregationEngine::initialize() noexcept
 	clear_tier(two_hour_, true);
 	finalized_magnitude_.fill(0U);
 	finalized_valid_.fill(0U);
+	finalized_angle_.fill(0U);
+	finalized_angle_valid_.fill(0U);
 	output_sequence_.fill(0U);
 	ten_minute_target_sample_ = 0U;
 	ten_minute_target_toggle_ = 0U;
@@ -78,6 +84,11 @@ void HarmonicAggregationEngine::clear_tier(TierAccumulator &tier,
 		sum.low = 0U;
 	}
 	tier.valid.fill(0U);
+	for (auto &sum : tier.phase_real)
+		sum = 0;
+	for (auto &sum : tier.phase_imag)
+		sum = 0;
+	tier.angle_valid.fill(0U);
 	tier.contributors = 0U;
 	tier.configuration_generation = 0U;
 	tier.sample_rate_hz = 0U;
@@ -146,6 +157,7 @@ void HarmonicAggregationEngine::begin_tier(TierAccumulator &tier,
 	clear_tier(tier, first_after);
 	tier.active = true;
 	tier.valid.fill(1U);
+	tier.angle_valid.fill(1U);
 	tier.configuration_generation = input.configuration_generation;
 	tier.sample_rate_hz = input.sample_rate_hz;
 	tier.valid_mask = input.valid_mask;
@@ -159,9 +171,10 @@ void HarmonicAggregationEngine::begin_tier(TierAccumulator &tier,
 	tier.filter_profile_id = input.filter_profile_id;
 }
 
-std::uint64_t HarmonicAggregationEngine::base_magnitude(
+HarmonicAggregationEngine::HarmonicPoint
+HarmonicAggregationEngine::base_point(
 	const HarmonicInputView &input, std::size_t channel,
-	std::size_t order_index, bool &valid) noexcept
+	std::size_t order_index) noexcept
 {
 	const auto chunk = order_index / HarmonicProtocol::orders_per_chunk;
 	const auto entry = order_index % HarmonicProtocol::orders_per_chunk;
@@ -171,8 +184,68 @@ std::uint64_t HarmonicAggregationEngine::base_magnitude(
 	const auto word = 16U + entry * 2U;
 	const auto packed = static_cast<std::uint64_t>(record[word]) |
 		(static_cast<std::uint64_t>(record[word + 1U]) << 32U);
-	valid = (packed & (std::uint64_t{1} << 60U)) != 0U;
-	return packed & ((std::uint64_t{1} << 40U) - 1U);
+	return {
+		packed & magnitude_mask,
+		static_cast<std::uint32_t>((packed >> 40U) & angle_mask),
+		(packed & (std::uint64_t{1} << 60U)) != 0U,
+		(packed & (std::uint64_t{1} << 61U)) != 0U,
+	};
+}
+
+void HarmonicAggregationEngine::accumulate_phase(TierAccumulator &tier,
+	std::size_t point, std::uint64_t magnitude,
+	std::uint32_t angle_millidegrees) noexcept
+{
+	/* Base angles are relative angles on a circle. Preserve their sufficient
+	 * statistics as a magnitude-weighted vector instead of averaging degree
+	 * numbers, which would turn 359 and 1 degrees into 180 degrees. The input
+	 * magnitude is 40 bits and Q1.37 trig is 39 bits; even UINT32_MAX base
+	 * contributors remain safely inside the signed 128-bit accumulator. */
+	const auto turns = ap_uint<32>((
+		static_cast<std::uint64_t>(angle_millidegrees) << 32U) / 360000U);
+	const auto weight = ap_int<41>(ap_uint<40>(magnitude));
+	const ap_int<80> real = weight * met_cos_q32(turns);
+	const ap_int<80> imag = weight * met_sin_q32(turns);
+	tier.phase_real[point] += PhaseSum(real);
+	tier.phase_imag[point] += PhaseSum(imag);
+}
+
+bool HarmonicAggregationEngine::finalize_phase(const PhaseSum &real,
+	const PhaseSum &imag, std::uint32_t &angle_millidegrees) noexcept
+{
+	const auto absolute = [](const PhaseSum &value) noexcept {
+		return value < 0 ? ap_uint<128>(-value) : ap_uint<128>(value);
+	};
+	const auto real_abs = absolute(real);
+	const auto imag_abs = absolute(imag);
+	const auto dominant = real_abs > imag_abs ? real_abs : imag_abs;
+	if (dominant == 0) {
+		angle_millidegrees = 0U;
+		return false;
+	}
+
+	/* met_atan2_turns accepts signed 64-bit operands. Shift both components
+	 * by one common power of two so their ratio and quadrant are unchanged
+	 * while the dominant magnitude fits below the sign bit. */
+	unsigned most_significant_bit = 0U;
+	for (int bit = 127; bit >= 0; --bit) {
+		if (dominant[bit]) {
+			most_significant_bit = static_cast<unsigned>(bit);
+			break;
+		}
+	}
+	const auto shift = most_significant_bit > 61U ?
+		most_significant_bit - 61U : 0U;
+	const ap_int<64> scaled_real = ap_int<64>(real >> shift);
+	const ap_int<64> scaled_imag = ap_int<64>(imag >> shift);
+	if (scaled_real == 0 && scaled_imag == 0) {
+		angle_millidegrees = 0U;
+		return false;
+	}
+	angle_millidegrees = static_cast<std::uint32_t>(
+		met_turns_to_millidegrees(
+			met_atan2_turns(scaled_imag, scaled_real)));
+	return true;
 }
 
 void HarmonicAggregationEngine::accumulate_base(TierAccumulator &tier,
@@ -194,18 +267,21 @@ void HarmonicAggregationEngine::accumulate_base(TierAccumulator &tier,
 		for (std::size_t order = 0U;
 			order < HarmonicProtocol::maximum_order; ++order) {
 			const auto point = channel * HarmonicProtocol::maximum_order + order;
-			bool valid = false;
-			const auto magnitude = base_magnitude(input, channel, order, valid);
-			tier.valid[point] &= valid ? 1U : 0U;
-			if (!valid)
+			const auto source = base_point(input, channel, order);
+			tier.valid[point] &= source.magnitude_valid ? 1U : 0U;
+			tier.angle_valid[point] &= source.angle_valid ? 1U : 0U;
+			if (!source.magnitude_valid)
 				continue;
-			const auto square = multiply_u64(magnitude, magnitude);
+			const auto square = multiply_u64(source.magnitude, source.magnitude);
 			if (!add_checked(tier.square_sum[point], square)) {
 				tier.square_sum[point] = {
 					std::numeric_limits<std::uint64_t>::max(),
 					std::numeric_limits<std::uint64_t>::max()};
 				tier.arithmetic_error = true;
 			}
+			if (source.angle_valid)
+				accumulate_phase(tier, point, source.magnitude,
+					source.angle_millidegrees);
 		}
 	}
 }
@@ -299,6 +375,11 @@ void HarmonicAggregationEngine::finalize_values(
 		finalized_magnitude_[point] = finalized_valid_[point]
 			? integer_sqrt(divide_u32(tier.square_sum[point], tier.contributors))
 			: 0U;
+		finalized_angle_[point] = 0U;
+		finalized_angle_valid_[point] = finalized_valid_[point] != 0U &&
+			tier.angle_valid[point] != 0U &&
+			finalize_phase(tier.phase_real[point], tier.phase_imag[point],
+				finalized_angle_[point]);
 	}
 }
 
@@ -310,6 +391,7 @@ void HarmonicAggregationEngine::accumulate_finalized(
 		clear_tier(tier, first_after);
 		tier.active = true;
 		tier.valid.fill(1U);
+		tier.angle_valid.fill(1U);
 		tier.configuration_generation = source.configuration_generation;
 		tier.sample_rate_hz = source.sample_rate_hz;
 		tier.valid_mask = source.valid_mask;
@@ -320,6 +402,7 @@ void HarmonicAggregationEngine::accumulate_finalized(
 		tier.cycle_count = source.cycle_count;
 		tier.filter_profile_id = source.filter_profile_id;
 	}
+	tier.arithmetic_error = tier.arithmetic_error || source.arithmetic_error;
 	tier.valid_mask &= source.valid_mask;
 	tier.last_sample = source.last_sample;
 	tier.last_source_sequence = source.last_source_sequence;
@@ -330,6 +413,10 @@ void HarmonicAggregationEngine::accumulate_finalized(
 	++tier.contributors;
 	for (std::size_t point = 0U; point < point_count; ++point) {
 		tier.valid[point] &= finalized_valid_[point];
+		const bool source_angle_valid = source.active &&
+			source.contributors != 0U && source.angle_valid[point] != 0U &&
+			!source.arithmetic_error;
+		tier.angle_valid[point] &= source_angle_valid ? 1U : 0U;
 		if (finalized_valid_[point] == 0U)
 			continue;
 		const auto magnitude = finalized_magnitude_[point];
@@ -339,6 +426,13 @@ void HarmonicAggregationEngine::accumulate_finalized(
 				std::numeric_limits<std::uint64_t>::max(),
 				std::numeric_limits<std::uint64_t>::max()};
 			tier.arithmetic_error = true;
+		}
+		/* The source's raw vector sum is the sufficient statistic. Cascading
+		 * it directly makes the 2-hour angle exactly the circular aggregate of
+		 * all base families, without quantizing through each 10-minute angle. */
+		if (source_angle_valid && tier.angle_valid[point] != 0U) {
+			tier.phase_real[point] += source.phase_real[point];
+			tier.phase_imag[point] += source.phase_imag[point];
 		}
 	}
 }
@@ -422,6 +516,11 @@ bool HarmonicAggregationEngine::emit_family(const TierAccumulator &tier,
 				if (!contaminated && finalized_valid_[point] != 0U) {
 					packed = finalized_magnitude_[point] |
 						(std::uint64_t{1} << 60U);
+					if (finalized_angle_valid_[point] != 0U) {
+						packed |= static_cast<std::uint64_t>(
+							finalized_angle_[point]) << 40U;
+						packed |= std::uint64_t{1} << 61U;
+					}
 				}
 				words[16U + entry * 2U] = low(packed);
 				words[17U + entry * 2U] = high(packed);

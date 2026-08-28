@@ -43,7 +43,8 @@
   These are exact co-release interfaces, not negotiated protocol versions;
   no legacy decoder is maintained. R5C1 owns Basic, 150/180-cycle,
   10-minute, and 2-hour aggregation for ordinary measurements, plus
-  magnitude-only 150/180-cycle, UTC 10-minute, and 2-hour harmonic aggregation.
+  RMS-magnitude plus magnitude-weighted circular-phase 150/180-cycle, UTC
+  10-minute, and 2-hour harmonic aggregation.
   It writes complete 256-byte records into the same FIFO's TX side. Aggregate
   measurement data never travels over RPMsg; the FIFO return stream joins the
   existing meter AXIS switch and Linux DMA path. The PL direct harmonic output

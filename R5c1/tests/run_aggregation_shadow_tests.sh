@@ -42,7 +42,6 @@ for source in \
 	"$source_dir/aggregation_health.cpp" \
 	"$source_dir/aggregation_record_ring.cpp" \
 	"$source_dir/crc32c.cpp" \
-	"$source_dir/harmonic_aggregation_engine.cpp" \
 	"$source_dir/harmonic_frame_decoder.cpp" \
 	"$source_dir/r5_aggregation_engine.cpp"
 do
@@ -51,12 +50,22 @@ do
 	"$cxx" $common_flags -c "$source" -o "$object"
 done
 
-# shellcheck disable=SC2086
-"$cxx" $common_flags \
-	-Wno-error=extra \
-	-Wno-error=sign-compare \
-	-c "$source_dir/aggregation_engine.cpp" \
-	-o "$build_dir/aggregation_engine.o"
+# Both arithmetic engines instantiate AMD ap_int operations. Current host GCC
+# diagnoses implementation details in those vendor templates; keep the narrow
+# exceptions local to the two translation units that actually instantiate
+# them rather than weakening warning enforcement for RPU-owned code.
+for source in \
+	"$source_dir/aggregation_engine.cpp" \
+	"$source_dir/harmonic_aggregation_engine.cpp"
+do
+	object="$build_dir/$(basename "$source" .cpp).o"
+	# shellcheck disable=SC2086
+	"$cxx" $common_flags \
+		-Wno-error=extra \
+		-Wno-error=sign-compare \
+		-c "$source" \
+		-o "$object"
+done
 
 gmp_library=$($cxx -print-file-name=libgmp.so)
 if [ "$gmp_library" = "libgmp.so" ]; then
