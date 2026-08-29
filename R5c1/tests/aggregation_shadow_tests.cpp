@@ -6,6 +6,8 @@
 #include "crc32c.hpp"
 #include "harmonic_aggregation_engine.hpp"
 #include "harmonic_frame_decoder.hpp"
+#include "pq_event_frame_decoder.hpp"
+#include "pq_event_lifecycle_engine.hpp"
 #include "r5_aggregation_engine.hpp"
 #include "r5_session_id.hpp"
 
@@ -1682,6 +1684,229 @@ void test_r5_shadow_mode_is_non_authoritative()
 		"shadow engine is ready but non-authoritative");
 }
 
+void write_u64(std::array<std::uint32_t,
+	aggregation::maximum_transport_frame_words> &words,
+	std::size_t index, std::uint64_t value)
+{
+	words[index] = static_cast<std::uint32_t>(value);
+	words[index + 1U] = static_cast<std::uint32_t>(value >> 32U);
+}
+
+aggregation::AggregationFrame make_pqe_frame(std::uint32_t sequence = 1U)
+{
+	aggregation::AggregationFrame frame{};
+	frame.word_count = aggregation::PqEventProtocol::frame_words;
+	auto &words = frame.words;
+	words[0U] = aggregation::PqEventProtocol::magic;
+	words[1U] = aggregation::PqEventProtocol::contract_revision;
+	words[2U] = aggregation::PqEventProtocol::payload_words;
+	words[3U] = sequence;
+	const auto payload = aggregation::PqEventProtocol::payload_index;
+	words[payload + 0U] = sequence;
+	words[payload + 1U] = 7U;
+	words[payload + 2U] = 32000U;
+	words[payload + 3U] = 0x1U;
+	words[payload + 4U] = 0x707U;
+	words[payload + 5U] = 640U;
+	write_u64(words, payload + 6U, 1000U);
+	write_u64(words, payload + 8U, 1639U);
+	write_u64(words, payload + 10U, 0x0123456789abcdefULL);
+	for (std::size_t phase = 0U; phase < 3U; ++phase) {
+		write_u64(words, payload + 12U + phase * 2U,
+			std::uint64_t{120000000U + static_cast<std::uint32_t>(phase)} << 16U);
+		write_u64(words, payload + 18U + phase * 2U,
+			std::uint64_t{5000000U + static_cast<std::uint32_t>(phase)} << 16U);
+	}
+	words[payload + 24U] = 120000000U;
+	words[payload + 25U] = 9000U;
+	words[payload + 26U] = 11000U;
+	words[payload + 27U] = 1000U;
+	words[payload + 28U] = 200U;
+	words[payload + 29U] = 1U;
+	words[aggregation::PqEventProtocol::crc_index] =
+		aggregation::crc32c_words(words.data(),
+			aggregation::PqEventProtocol::crc_index);
+	return frame;
+}
+
+void test_pq_event_frame_decoder()
+{
+	aggregation::PqEventFrameDecoder decoder;
+	aggregation::PqEventInputView input{};
+	auto frame = make_pqe_frame(9U);
+	expect(decoder.decode(frame, input) ==
+		aggregation::FrameValidationError::none,
+		"valid PQE1 frame decodes");
+	expect(input.sequence == 9U && input.configuration_generation == 7U &&
+		input.first_sample == 1000U && input.last_sample == 1639U,
+		"PQE1 provenance decodes exactly");
+	expect(input.voltage_valid_mask == 0x7U &&
+		input.current_valid_mask == 0x7U,
+		"PQE1 phase validity is split by quantity");
+	expect((input.urms_q16[2U] >> 16U) == 120000002U &&
+		(input.irms_q16[1U] >> 16U) == 5000001U,
+		"PQE1 Q16 RMS values decode without loss");
+
+	auto corrupted = frame;
+	corrupted.words[aggregation::PqEventProtocol::payload_index + 30U] = 1U;
+	corrupted.words[aggregation::PqEventProtocol::crc_index] =
+		aggregation::crc32c_words(corrupted.words.data(),
+			aggregation::PqEventProtocol::crc_index);
+	expect(decoder.decode(corrupted, input) ==
+		aggregation::FrameValidationError::reserved_bits_nonzero,
+		"PQE1 rejects nonzero reserved words after CRC validation");
+	corrupted = frame;
+	corrupted.words[aggregation::PqEventProtocol::crc_index] ^= 1U;
+	expect(decoder.decode(corrupted, input) ==
+		aggregation::FrameValidationError::crc_mismatch,
+		"PQE1 rejects CRC corruption");
+}
+
+msap1_m18_config_payload make_event_configuration(std::uint32_t generation)
+{
+	msap1_m18_config_payload configuration{};
+	configuration.generation = generation;
+	configuration.event_profile_count = MSAP1_M18_EVENT_TYPE_COUNT;
+	configuration.reference_voltage_microvolts = 120000000U;
+	configuration.reference_current_microamperes = 5000000U;
+	for (std::size_t type = 0U; type < MSAP1_M18_EVENT_TYPE_COUNT; ++type) {
+		auto &profile = configuration.event[type];
+		profile.flags = (type <= MSAP1_M18_EVENT_RAPID_VOLTAGE_CHANGE ||
+			type == MSAP1_M18_EVENT_TRANSIENT_VOLTAGE)
+			? static_cast<std::uint32_t>(
+				MSAP1_M18_EVENT_IEC_CLASSIFICATION) : 0U;
+		profile.threshold_e4 = 1000U;
+		profile.hysteresis_e4 = 100U;
+		profile.phase_mask = 0x7U;
+		profile.waveform_decimation = 1U;
+	}
+	configuration.event[MSAP1_M18_EVENT_VOLTAGE_SAG].flags |=
+		MSAP1_M18_EVENT_ENABLED | MSAP1_M18_EVENT_PER_PHASE |
+		MSAP1_M18_EVENT_WAVEFORM_ENABLED;
+	configuration.event[MSAP1_M18_EVENT_VOLTAGE_SAG].threshold_e4 = 9000U;
+	configuration.event[MSAP1_M18_EVENT_VOLTAGE_SAG].hysteresis_e4 = 200U;
+	configuration.event[MSAP1_M18_EVENT_VOLTAGE_SAG].waveform_pretrigger_ms =
+		3000U;
+	configuration.event[MSAP1_M18_EVENT_VOLTAGE_SAG].waveform_posttrigger_ms =
+		4000U;
+	configuration.event[MSAP1_M18_EVENT_VOLTAGE_SWELL].flags |=
+		MSAP1_M18_EVENT_ENABLED | MSAP1_M18_EVENT_PER_PHASE;
+	configuration.event[MSAP1_M18_EVENT_VOLTAGE_SWELL].threshold_e4 = 11000U;
+	configuration.event[MSAP1_M18_EVENT_VOLTAGE_SWELL].hysteresis_e4 = 200U;
+	configuration.flicker_phase_mask = 0x7U;
+	configuration.flicker_lamp_voltage = 120U;
+	configuration.flicker_live_cadence_ms = 1000U;
+	configuration.flicker_pst_interval_seconds = 600U;
+	configuration.flicker_plt_pst_count = 12U;
+	configuration.mains_carrier_millihz = 1000000U;
+	configuration.mains_bandwidth_millihz = 20000U;
+	configuration.mains_observation_ms = 200U;
+	configuration.mains_phase_mask = 0x7U;
+	return configuration;
+}
+
+aggregation::PqEventInputView make_pq_input(std::uint32_t sequence,
+	std::uint32_t generation, std::uint64_t last_sample,
+	std::array<std::uint32_t, 3U> voltage)
+{
+	aggregation::PqEventInputView input{};
+	input.sequence = sequence;
+	input.configuration_generation = generation;
+	input.sample_rate_hz = 32000U;
+	input.voltage_valid_mask = 0x7U;
+	input.current_valid_mask = 0x7U;
+	input.window_samples = 640U;
+	input.first_sample = last_sample - 639U;
+	input.last_sample = last_sample;
+	for (std::size_t phase = 0U; phase < 3U; ++phase) {
+		input.urms_q16[phase] = std::uint64_t{voltage[phase]} << 16U;
+		input.irms_q16[phase] = std::uint64_t{5000000U} << 16U;
+	}
+	return input;
+}
+
+void test_pq_event_lifecycle_engine()
+{
+	constexpr std::uint32_t start_lifecycle = 0U;
+	constexpr std::uint32_t update_lifecycle = 1U;
+	constexpr std::uint32_t end_lifecycle = 2U;
+	constexpr std::uint32_t abort_lifecycle = 3U;
+	CapturingRecordSink sink;
+	aggregation::AggregationHealth health;
+	aggregation::PqEventLifecycleEngine engine(sink, health);
+	expect(engine.configure_session_id(0x1122334455667788ULL),
+		"PQ event session ID configures before initialization");
+	expect(engine.initialize(), "PQ lifecycle engine initializes");
+	auto configuration = make_event_configuration(7U);
+	expect(engine.configure(configuration), "valid M18 event profile stages");
+
+	auto input = make_pq_input(1U, 7U, 1639U,
+		{120000000U, 120000000U, 120000000U});
+	input.status = 1U << 2U;
+	engine.process(input);
+	expect(sink.count == 0U, "nominal first half-cycle opens no event");
+
+	input = make_pq_input(2U, 7U, 1959U,
+		{80000000U, 120000000U, 120000000U});
+	engine.process(input);
+	expect(sink.count == 1U, "phase-A sag emits START");
+	const auto start = sink.records[0U];
+	expect((start.words[13U] & 0x3U) == start_lifecycle &&
+		((start.words[13U] >> 4U) & 0xfU) ==
+			MSAP1_M18_EVENT_VOLTAGE_SAG &&
+		((start.words[13U] >> 8U) & 0x7U) == 0x1U,
+		"START identifies sag and exact affected phase");
+	expect(start.words[20U] == 7U && start.words[21U] == 9000U &&
+		start.words[22U] == 200U && start.words[26U] == 120000000U,
+		"START snapshots the evaluated generation, thresholds, and reference");
+	expect(start.words[24U] == 3000U && start.words[25U] == 4000U &&
+		(start.words[23U] & 1U) != 0U,
+		"START snapshots its waveform policy");
+	expect((start.words[8U] & (1U << 2U)) != 0U &&
+		(start.words[8U] & (1U << 3U)) != 0U && start.words[45U] == 0U,
+		"first lifecycle record exposes discontinuity and unresolved time");
+	expect(start.words[48U] != 0U && start.words[51U] != 0U,
+		"settings fingerprint is populated");
+
+	input = make_pq_input(3U, 7U, 33959U,
+		{80000000U, 120000000U, 120000000U});
+	engine.process(input);
+	expect(sink.count == 2U &&
+		(sink.records[1U].words[13U] & 0x3U) == update_lifecycle,
+		"active sag emits bounded one-second UPDATE");
+	input = make_pq_input(4U, 7U, 34279U,
+		{120000000U, 120000000U, 120000000U});
+	engine.process(input);
+	expect(sink.count == 3U &&
+		(sink.records[2U].words[13U] & 0x3U) == end_lifecycle,
+		"recovery past hysteresis emits END");
+	for (std::size_t word = 16U; word <= 19U; ++word)
+		expect(sink.records[0U].words[word] == sink.records[1U].words[word] &&
+			sink.records[1U].words[word] == sink.records[2U].words[word],
+			"START/UPDATE/END retain one stable event ID");
+
+	input = make_pq_input(5U, 7U, 34599U,
+		{80000000U, 140000000U, 120000000U});
+	engine.process(input);
+	expect(sink.count == 5U,
+		"independent sag and swell phase states overlap");
+	expect(sink.records[3U].words[18U] != sink.records[4U].words[18U],
+		"overlapping events receive distinct stable IDs");
+
+	configuration = make_event_configuration(8U);
+	expect(engine.configure(configuration), "replacement event profile stages");
+	input = make_pq_input(6U, 8U, 34919U,
+		{120000000U, 120000000U, 120000000U});
+	engine.process(input);
+	expect(sink.count == 7U &&
+		(sink.records[5U].words[13U] & 0x3U) == abort_lifecycle &&
+		(sink.records[6U].words[13U] & 0x3U) == abort_lifecycle,
+		"configuration APPLY aborts every overlapping old-profile event");
+	expect(sink.records[5U].words[20U] == 7U &&
+		sink.records[6U].words[20U] == 7U,
+		"ABORT retains the exact historical profile generation");
+}
+
 } // namespace
 
 int main()
@@ -1711,6 +1936,8 @@ int main()
 	test_r5_engine_fails_closed_when_output_rejects_record();
 	test_r5_engine_drains_deferred_aggregate_family();
 	test_r5_shadow_mode_is_non_authoritative();
+	test_pq_event_frame_decoder();
+	test_pq_event_lifecycle_engine();
 	std::cout << "aggregation shadow tests passed\n";
 	return EXIT_SUCCESS;
 }

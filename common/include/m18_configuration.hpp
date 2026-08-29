@@ -41,7 +41,6 @@ inline bool valid_configuration(const msap1_m18_config_payload &value,
 {
 	if (value.generation == 0u ||
 	    value.event_profile_count != MSAP1_M18_EVENT_TYPE_COUNT ||
-	    value.reserved0 != 0u ||
 	    (value.flicker_flags & ~MSAP1_M18_ENGINE_ENABLED) != 0u ||
 	    (value.mains_flags & ~MSAP1_M18_ENGINE_ENABLED) != 0u ||
 	    value.flicker_phase_mask == 0u ||

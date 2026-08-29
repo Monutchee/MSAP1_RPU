@@ -3,6 +3,7 @@ set -eu
 
 test_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 source_dir="$test_dir/../src/MainApp/aggregation"
+common_dir="$test_dir/../../common/include"
 pl_hls_dir="$test_dir/../../../MSAP1_PL/SourceData/HLS_DesignFile"
 vitis_root="${XILINX_VITIS:-/opt/Xilinx/2025.2/Vitis}"
 build_dir="${TMPDIR:-/tmp}/msap1-r5c1-aggregation-tests.$$"
@@ -26,6 +27,7 @@ common_flags="-std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror \
 	-Wno-error=pedantic \
 	-Wno-error=unused-label \
 	-I$source_dir \
+	-I$common_dir \
 	-I$source_dir/hls_compat \
 	-I$pl_hls_dir/common/include \
 	-I$vitis_root/include"
@@ -43,6 +45,8 @@ for source in \
 	"$source_dir/aggregation_record_ring.cpp" \
 	"$source_dir/crc32c.cpp" \
 	"$source_dir/harmonic_frame_decoder.cpp" \
+	"$source_dir/pq_event_frame_decoder.cpp" \
+	"$source_dir/pq_event_lifecycle_engine.cpp" \
 	"$source_dir/r5_aggregation_engine.cpp"
 do
 	object="$build_dir/$(basename "$source" .cpp).o"

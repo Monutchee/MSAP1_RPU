@@ -36,9 +36,12 @@ AggregationShadowService::AggregationShadowService(
 	const AggregationFrameDecoder &decoder, R5AggregationEngine &engine,
 	const HarmonicFrameDecoder &harmonic_decoder,
 	HarmonicAggregationEngine &harmonic_engine,
+	const PqEventFrameDecoder &pq_event_decoder,
+	PqEventLifecycleEngine &pq_event_engine,
 	AggregationHealth &health) noexcept
 	: transport_(transport), ring_(ring), decoder_(decoder), engine_(engine),
 	  harmonic_decoder_(harmonic_decoder), harmonic_engine_(harmonic_engine),
+	  pq_event_decoder_(pq_event_decoder), pq_event_engine_(pq_event_engine),
 	  health_(health)
 {
 }
@@ -59,7 +62,8 @@ bool AggregationShadowService::initialize(TaskHandle_t input_task,
 	health_.observe_software_ring(static_cast<std::uint32_t>(ring_.size()),
 		static_cast<std::uint32_t>(AggregationFrameRing::capacity));
 	health_.observe_hardware_fifo(transport_.input_occupancy_words());
-	return engine_.initialize() && harmonic_engine_.initialize();
+	return engine_.initialize() && harmonic_engine_.initialize() &&
+		pq_event_engine_.initialize();
 }
 
 void AggregationShadowService::record_transport_errors() noexcept
@@ -69,6 +73,7 @@ void AggregationShadowService::record_transport_errors() noexcept
 		health_.record_fifo_error(errors);
 		engine_.note_transport_discontinuity();
 		harmonic_engine_.note_transport_discontinuity();
+		pq_event_engine_.note_transport_discontinuity();
 	}
 	const auto full_events = transport_.take_input_full_events();
 	if (full_events != 0U)
@@ -128,6 +133,7 @@ void AggregationShadowService::notify_validator() noexcept
 					health_.record_ring_overflow();
 					engine_.note_transport_discontinuity();
 					harmonic_engine_.note_transport_discontinuity();
+					pq_event_engine_.note_transport_discontinuity();
 					break;
 				}
 				++queued;
@@ -137,6 +143,7 @@ void AggregationShadowService::notify_validator() noexcept
 					transport_.last_frame_length());
 				engine_.note_transport_discontinuity();
 				harmonic_engine_.note_transport_discontinuity();
+				pq_event_engine_.note_transport_discontinuity();
 				break;
 			case TransportReadResult::hardware_error:
 				{
@@ -147,6 +154,7 @@ void AggregationShadowService::notify_validator() noexcept
 						status == 0U ? 0x80000000U : status);
 					engine_.note_transport_discontinuity();
 					harmonic_engine_.note_transport_discontinuity();
+					pq_event_engine_.note_transport_discontinuity();
 				}
 				break;
 			case TransportReadResult::no_frame:
@@ -180,6 +188,7 @@ void AggregationShadowService::notify_validator() noexcept
 {
 	AggregationInputView input{};
 	HarmonicInputView harmonic_input{};
+	PqEventInputView pq_event_input{};
 	for (;;) {
 		(void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 		const auto activation_start = monotonic_counter_ticks();
@@ -219,9 +228,21 @@ void AggregationShadowService::notify_validator() noexcept
 				continue;
 			}
 
+			if (validator_frame_.word_count != 0U &&
+				validator_frame_.words[0U] == PqEventProtocol::magic) {
+				const auto error = pq_event_decoder_.decode(
+					validator_frame_, pq_event_input);
+				if (error != FrameValidationError::none) {
+					health_.record_invalid(error);
+					pq_event_engine_.note_transport_discontinuity();
+					continue;
+				}
+				health_.record_auxiliary_valid();
+				pq_event_engine_.process(pq_event_input);
+				continue;
+			}
+
 			health_.record_invalid(FrameValidationError::invalid_magic);
-			engine_.note_transport_discontinuity();
-			harmonic_engine_.note_transport_discontinuity();
 		}
 		health_.observe_software_ring(
 			static_cast<std::uint32_t>(ring_.size()),
