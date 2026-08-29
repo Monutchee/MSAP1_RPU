@@ -2,11 +2,17 @@
 
 static_assert(sizeof(msap1_aggregation_health_payload) == 200U,
 	"R5C1 aggregation-health wire payload changed unexpectedly");
+static_assert(sizeof(msap1_demand_config_payload) == 12U,
+	"R5C1 demand-configuration wire payload changed unexpectedly");
+static_assert(sizeof(msap1_demand_config_ack_payload) == 16U,
+	"R5C1 demand-configuration ACK changed unexpectedly");
 
 R5c1Service::R5c1Service(const msap1::CoreConfig &config,
 	msap1::aggregation::AggregationHealth &health,
-	msap1::aggregation::AggregationRuntime &runtime) noexcept
-	: msap1::ControlService(config), health_(health), runtime_(runtime)
+	msap1::aggregation::AggregationRuntime &runtime,
+	msap1::aggregation::R5AggregationEngine &engine) noexcept
+	: msap1::ControlService(config), health_(health), runtime_(runtime),
+	  engine_(engine)
 {
 }
 
@@ -19,7 +25,33 @@ void R5c1Service::on_endpoint_ready()
 bool R5c1Service::handle_custom(const msap1_rpu_msg_header &request,
 	const void *payload, std::uint16_t payload_len, std::uint32_t src)
 {
-	(void)payload;
+	if (request.type == MSAP1_RPU_MSG_DEMAND_CONFIG_SET) {
+		if (payload_len != sizeof(msap1_demand_config_payload)) {
+			(void)send_response(&request, src, MSAP1_RPU_MSG_ERROR,
+				MSAP1_RPU_STATUS_BAD_PAYLOAD, nullptr, 0U);
+			return true;
+		}
+		const auto &configuration =
+			*static_cast<const msap1_demand_config_payload *>(payload);
+		const auto method = configuration.method ==
+			MSAP1_DEMAND_METHOD_FIXED_BLOCK
+			? msap1::aggregation::DemandMethod::fixed_block
+			: msap1::aggregation::DemandMethod::sliding;
+		std::uint32_t generation = 0U;
+		if (configuration.method > MSAP1_DEMAND_METHOD_SLIDING ||
+			!engine_.configure_demand(method, configuration.window_seconds,
+				configuration.update_seconds, generation)) {
+			(void)send_response(&request, src, MSAP1_RPU_MSG_ERROR,
+				MSAP1_RPU_STATUS_BAD_PAYLOAD, nullptr, 0U);
+			return true;
+		}
+		const msap1_demand_config_ack_payload response{
+			configuration.method, configuration.window_seconds,
+			configuration.update_seconds, generation};
+		(void)send_response(&request, src, MSAP1_RPU_MSG_DEMAND_CONFIG,
+			MSAP1_RPU_STATUS_OK, &response, sizeof(response));
+		return true;
+	}
 	if (request.type != MSAP1_RPU_MSG_AGGREGATION_HEALTH_GET)
 		return false;
 	if (payload_len != 0U) {

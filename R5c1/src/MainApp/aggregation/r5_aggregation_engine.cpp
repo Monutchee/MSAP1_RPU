@@ -20,6 +20,67 @@ bool R5AggregationEngine::configure_session_id(
 	return true;
 }
 
+std::uint32_t R5AggregationEngine::pack_demand_configuration(
+	DemandMethod method, std::uint32_t window_seconds,
+	std::uint32_t update_seconds) noexcept
+{
+	return static_cast<std::uint32_t>(method) |
+		(window_seconds << 2U) | (update_seconds << 14U);
+}
+
+bool R5AggregationEngine::configure_demand(DemandMethod method,
+	std::uint32_t window_seconds, std::uint32_t update_seconds,
+	std::uint32_t &profile_generation) noexcept
+{
+	if (!EnergyDemandEngine::valid_demand_configuration(
+			method, window_seconds, update_seconds))
+		return false;
+	const auto requested = pack_demand_configuration(
+		method, window_seconds, update_seconds);
+	const auto current = __atomic_load_n(&demand_profile_word_, __ATOMIC_ACQUIRE);
+	if (current != requested) {
+		auto next = __atomic_load_n(&demand_profile_generation_,
+			__ATOMIC_ACQUIRE) + 1U;
+		if (next == 0U)
+			next = 1U;
+		// A short sequence lock keeps the worker from pairing one profile's
+		// packed values with another profile's generation. The RPMsg service
+		// is the sole writer; the aggregation worker is the sole reader.
+		(void)__atomic_add_fetch(&demand_profile_revision_, 1U,
+			__ATOMIC_ACQ_REL);
+		__atomic_store_n(&demand_profile_word_, requested, __ATOMIC_RELAXED);
+		__atomic_store_n(&demand_profile_generation_, next, __ATOMIC_RELAXED);
+		(void)__atomic_add_fetch(&demand_profile_revision_, 1U,
+			__ATOMIC_RELEASE);
+		profile_generation = next;
+	} else {
+		profile_generation = __atomic_load_n(&demand_profile_generation_,
+			__ATOMIC_ACQUIRE);
+	}
+	return true;
+}
+
+void R5AggregationEngine::apply_demand_configuration() noexcept
+{
+	const auto revision = __atomic_load_n(&demand_profile_revision_,
+		__ATOMIC_ACQUIRE);
+	if ((revision & 1U) != 0U)
+		return;
+	const auto generation = __atomic_load_n(&demand_profile_generation_,
+		__ATOMIC_RELAXED);
+	const auto packed = __atomic_load_n(&demand_profile_word_, __ATOMIC_RELAXED);
+	if (__atomic_load_n(&demand_profile_revision_, __ATOMIC_ACQUIRE) != revision)
+		return;
+	if (generation == applied_demand_profile_generation_)
+		return;
+	const auto method = static_cast<DemandMethod>(packed & 0x3U);
+	const auto window_seconds = (packed >> 2U) & 0xfffU;
+	const auto update_seconds = (packed >> 14U) & 0x3ffU;
+	if (energy_demand_.configure_demand(method, window_seconds,
+			update_seconds, generation))
+		applied_demand_profile_generation_ = generation;
+}
+
 bool R5AggregationEngine::initialize() noexcept
 {
 	assembling_words_ = 0U;
@@ -28,6 +89,7 @@ bool R5AggregationEngine::initialize() noexcept
 	discontinuity_pending_ = 0U;
 	have_transport_sequence_ = false;
 	energy_demand_.initialize(session_id_);
+	apply_demand_configuration();
 	ready_ = true;
 	health_.set_engine_ready(true);
 	// The health contract must describe the compiled runtime mode.  In shadow
@@ -173,6 +235,7 @@ std::size_t R5AggregationEngine::run_one_pass() noexcept
 
 void R5AggregationEngine::process(const AggregationInputView &input) noexcept
 {
+	apply_demand_configuration();
 	if (!ready_ || input.single_cycle_words == nullptr ||
 		input.single_cycle_word_count != AggregationProtocol::single_cycle_words)
 		return;

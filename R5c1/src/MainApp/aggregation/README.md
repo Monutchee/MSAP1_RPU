@@ -124,4 +124,5 @@ bash R5c1/tests/run_aggregation_shadow_tests.sh
 The historical script name remains for compatibility. The test covers the
 known CRC vector, exact header/context decoding, every validation failure,
 ring ordering/capacity, sequence wrap, gaps, repeats, out-of-order health
-accounting, complete-record emission, and FIFO-output retry behavior.
+accounting, complete-record emission, FIFO-output retry behavior, fixed
+ten-minute demand, and sliding-demand warm-up/cadence/clean-refill recovery.

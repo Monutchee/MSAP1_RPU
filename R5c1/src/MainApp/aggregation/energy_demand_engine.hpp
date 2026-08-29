@@ -10,6 +10,11 @@
 
 namespace msap1::aggregation {
 
+enum class DemandMethod : std::uint32_t {
+	fixed_block = 0U,
+	sliding = 1U,
+};
+
 /**
  * R5C1-owned volatile M17 energy and demand state.
  *
@@ -26,6 +31,12 @@ public:
 	EnergyDemandEngine &operator=(EnergyDemandEngine &&) = delete;
 
 	void initialize(std::uint64_t session_id) noexcept;
+	[[nodiscard]] bool configure_demand(DemandMethod method,
+		std::uint32_t window_seconds, std::uint32_t update_seconds,
+		std::uint32_t profile_generation) noexcept;
+	[[nodiscard]] static bool valid_demand_configuration(DemandMethod method,
+		std::uint32_t window_seconds,
+		std::uint32_t update_seconds) noexcept;
 
 	/** Observe one completed R5 aggregation record and append any M17 output. */
 	[[nodiscard]] bool observe(const AggregationMeterRecord &record,
@@ -56,9 +67,23 @@ private:
 		std::uint64_t last_sample{};
 	};
 
+	struct DemandBucket {
+		std::array<std::int64_t, phase_total_count> active_power_picowatts{};
+		std::uint32_t sample_count{};
+		std::uint32_t source_status{};
+		std::uint64_t first_sample{};
+		std::uint64_t last_sample{};
+		std::uint32_t generation{};
+		std::uint32_t sample_rate_hz{};
+	};
+
+	static constexpr std::size_t maximum_demand_buckets = 600U;
+
 	void clear_state() noexcept;
 	void clear_basic_pending() noexcept;
 	void clear_demand_pending() noexcept;
+	void clear_demand_profile_state() noexcept;
+	void clear_demand_window() noexcept;
 	void remember_basic_source() noexcept;
 	[[nodiscard]] bool reject_duplicate_or_stale_basic() noexcept;
 	void note_basic_gap() noexcept;
@@ -72,6 +97,14 @@ private:
 	void accept_demand_phasor(const AggregationMeterRecord &record) noexcept;
 	[[nodiscard]] bool finish_demand(const AggregationMeterRecord &record,
 		AggregationRecordSink &sink, bool emit) noexcept;
+	[[nodiscard]] bool finish_fixed_demand(const AggregationMeterRecord &record,
+		AggregationRecordSink &sink, bool emit) noexcept;
+	[[nodiscard]] bool finish_sliding_demand(
+		const AggregationMeterRecord &record, AggregationRecordSink &sink,
+		bool emit) noexcept;
+	[[nodiscard]] bool append_sliding_bucket() noexcept;
+	void calculate_sliding_demand() noexcept;
+	void update_demand_peaks() noexcept;
 
 	[[nodiscard]] static bool same_family(const AggregationMeterRecord &record,
 		const FamilyIdentity &identity) noexcept;
@@ -130,12 +163,15 @@ private:
 	bool basic_phasor_seen_{};
 
 	FamilyIdentity demand_identity_{};
+	FamilyIdentity demand_output_identity_{};
+	std::array<std::int64_t, phase_total_count>
+		demand_power_picowatts_{};
 	std::array<std::int64_t, phase_total_count> demand_current_{};
 	std::array<std::uint64_t, phase_total_count> demand_import_peak_{};
 	std::array<std::uint64_t, phase_total_count> demand_export_peak_{};
 	std::array<std::uint64_t, phase_total_count> demand_import_anchor_{};
 	std::array<std::uint64_t, phase_total_count> demand_export_anchor_{};
-	std::uint64_t demand_target_sample_{};
+	std::uint64_t demand_interval_anchor_sample_{};
 	std::uint32_t demand_source_interval_count_{};
 	std::uint32_t demand_source_status_{};
 	std::uint8_t demand_valid_{};
@@ -144,6 +180,13 @@ private:
 	bool demand_phasor_seen_{};
 	bool demand_saturated_{};
 	bool demand_incomplete_{};
+	DemandMethod demand_method_{DemandMethod::sliding};
+	std::uint32_t demand_window_seconds_{60U};
+	std::uint32_t demand_update_seconds_{3U};
+	std::uint32_t demand_profile_generation_{1U};
+	std::array<DemandBucket, maximum_demand_buckets> demand_buckets_{};
+	std::size_t demand_bucket_head_{};
+	std::size_t demand_bucket_count_{};
 
 	// Reused output images keep 3 x 260-byte records off the worker stack.
 	AggregationMeterRecord energy_summary_record_{};

@@ -1328,6 +1328,9 @@ void test_demand_engine_peaks_and_contamination()
 	CapturingRecordSink sink;
 	aggregation::EnergyDemandEngine engine(session_id);
 	engine.initialize(session_id);
+	expect(engine.configure_demand(aggregation::DemandMethod::fixed_block,
+		DEMAND_FIXED_INTERVAL_SECONDS, DEMAND_FIXED_INTERVAL_SECONDS, 2U),
+		"fixed ten-minute demand profile is accepted");
 	emit_demand(engine, sink, 1U,
 		{5000000LL, -7000000LL, 3000000LL, -9000000LL}, false);
 	expect(sink.count == 1U, "one Min10 family emits one DEMAND record");
@@ -1358,6 +1361,150 @@ void test_demand_engine_peaks_and_contamination()
 		read_record_u64(invalid,
 			DEMAND_EXPORT_PEAK_BASE_WORD + DEMAND_VALUE_STRIDE) == 7U,
 		"contaminated interval does not update session peaks");
+}
+
+void emit_sliding_demand(aggregation::EnergyDemandEngine &engine,
+	CapturingRecordSink &sink, std::uint32_t sequence,
+	const std::array<std::int64_t, 4U> &active, bool valid = true)
+{
+	constexpr std::uint32_t sample_rate_hz = 1000U;
+	constexpr std::uint32_t sample_count =
+		sample_rate_hz * DEMAND_SLIDING_UPDATE_SECONDS;
+	const std::uint32_t status = valid
+		? 1U << MTR2_STATUS_COMPLETE_BIT
+		: (1U << MTR2_STATUS_COMPLETE_BIT) |
+			(1U << MREC_STATUS_ARITHMETIC_BIT);
+	auto fundamental = make_typed_record(MREC_FORMAT_AGG_V3, sequence,
+		status, sample_rate_hz, sample_count);
+	write_record_u64(fundamental, AGG_LAST_SAMPLE_LOW_WORD,
+		static_cast<std::uint64_t>(sequence) * sample_count - 1U);
+	const std::uint32_t shape = 15U | (50U << MTR2_SHAPE_NOMINAL_LSB);
+	fundamental.words[MTR2_SHAPE_WORD] = shape;
+	auto power = make_typed_record(MREC_FORMAT_AGG_POWER_V1, sequence,
+		status, sample_rate_hz, sample_count);
+	power.words[MTR2_SHAPE_WORD] = shape;
+	for (std::size_t phase = 0U; phase < 3U; ++phase) {
+		const auto base = static_cast<std::size_t>(POWER_PHASE_BASE_WORD) +
+			phase * static_cast<std::size_t>(POWER_PHASE_STRIDE);
+		write_record_s64(power, base + POWER_PHASE_P_LOW, active[phase]);
+	}
+	write_record_s64(power, POWER_TOTAL_P_LOW_WORD, active[3U]);
+	auto phasor = make_typed_record(MREC_FORMAT_AGG_PHASOR_V2,
+		sequence, status, sample_rate_hz, sample_count);
+	phasor.words[MTR2_SHAPE_WORD] = shape;
+	auto unbalance = make_typed_record(MREC_FORMAT_AGG_UNBAL_V2,
+		sequence, status, sample_rate_hz, sample_count);
+	unbalance.words[MTR2_SHAPE_WORD] = shape;
+	expect(engine.observe(fundamental, sink, true),
+		"sliding DEMAND accepts aggregate fundamental");
+	expect(engine.observe(power, sink, true),
+		"sliding DEMAND accepts aggregate POWER");
+	expect(engine.observe(phasor, sink, true),
+		"sliding DEMAND accepts aggregate PHASOR");
+	expect(engine.observe(unbalance, sink, true),
+		"sliding DEMAND accepts aggregate UNBALANCE");
+}
+
+void test_sliding_demand_cadence_recovery_and_profile()
+{
+	constexpr std::int64_t five_micro_watts = 5000000LL;
+	CapturingRecordSink sink;
+	aggregation::EnergyDemandEngine engine(0x445566778899aabbULL);
+	engine.initialize(0x445566778899aabbULL);
+
+	expect(aggregation::EnergyDemandEngine::valid_demand_configuration(
+		aggregation::DemandMethod::sliding, 60U, 3U),
+		"default sliding demand profile is valid");
+	for (const auto window : {300U, 600U, 900U, 1800U})
+		expect(aggregation::EnergyDemandEngine::valid_demand_configuration(
+			aggregation::DemandMethod::sliding, window, 3U),
+			"every selectable sliding demand profile is valid");
+	expect(!aggregation::EnergyDemandEngine::valid_demand_configuration(
+		aggregation::DemandMethod::sliding, 61U, 3U),
+		"unsupported sliding window is rejected");
+	expect(!aggregation::EnergyDemandEngine::valid_demand_configuration(
+		aggregation::DemandMethod::sliding, 60U, 1U),
+		"sliding update cadence remains tied to completed aggregates");
+
+	for (std::uint32_t sequence = 1U; sequence <= 19U; ++sequence)
+		emit_sliding_demand(engine, sink, sequence,
+			{five_micro_watts, -five_micro_watts,
+				five_micro_watts, -five_micro_watts});
+	expect(sink.count == 0U,
+		"sliding demand waits for one complete 60-second window");
+	emit_sliding_demand(engine, sink, 20U,
+		{five_micro_watts, -five_micro_watts,
+			five_micro_watts, -five_micro_watts});
+	expect(sink.count == 1U,
+		"full sliding window emits at the three-second aggregate cadence");
+	const auto &first = sink.records[0U];
+	expect(read_record_s64(first, DEMAND_CURRENT_BASE_WORD) == 5 &&
+		read_record_s64(first,
+			DEMAND_CURRENT_BASE_WORD + DEMAND_VALUE_STRIDE) == -5,
+		"sliding demand publishes the sample-weighted signed average");
+	expect(((first.words[MREC_FORMAT_HEADER_WORD] >>
+		DEMAND_HEADER_METHOD_LSB) & 0x03U) == DEMAND_METHOD_SLIDING &&
+		(first.words[MREC_FORMAT_HEADER_WORD] & 0xffffU) == 60U &&
+		((first.words[MREC_FORMAT_HEADER_WORD] >>
+			DEMAND_HEADER_UPDATE_SECONDS_LSB) & 0x03ffU) == 3U &&
+		first.words[DEMAND_PROFILE_GENERATION_WORD] == 1U,
+		"DEMAND-v1 carries the active method, window, cadence, and profile");
+
+	// Once warm, each new aggregate advances the window and emits a fresh
+	// value. Replacing one 5-uW bucket with a 25-uW bucket yields 6 uW.
+	emit_sliding_demand(engine, sink, 21U,
+		{25000000LL, -25000000LL, 25000000LL, -25000000LL});
+	expect(sink.count == 2U &&
+		read_record_s64(sink.records[1U], DEMAND_CURRENT_BASE_WORD) == 6,
+		"warm sliding demand advances every three seconds");
+
+	// A rejected aggregate publishes invalid current immediately and clears
+	// the window. The quality is current-window state, not a sticky lifetime
+	// latch: twenty subsequent clean buckets recover it automatically.
+	emit_sliding_demand(engine, sink, 22U,
+		{five_micro_watts, -five_micro_watts,
+			five_micro_watts, -five_micro_watts}, false);
+	expect(sink.count == 3U &&
+		((sink.records[2U].words[MREC_FORMAT_HEADER_WORD] >>
+			DEMAND_HEADER_VALID_LSB) & 0x0fU) == 0U &&
+		(sink.records[2U].words[MREC_STATUS_WORD] &
+			(1U << DEMAND_STATUS_INCOMPLETE_INPUT_BIT)) != 0U,
+		"bad aggregate invalidates demand and starts a clean refill");
+	for (std::uint32_t sequence = 23U; sequence <= 42U; ++sequence)
+		emit_sliding_demand(engine, sink, sequence,
+			{five_micro_watts, -five_micro_watts,
+				five_micro_watts, -five_micro_watts});
+	expect(sink.count == 4U &&
+		((sink.records[3U].words[MREC_FORMAT_HEADER_WORD] >>
+			DEMAND_HEADER_VALID_LSB) & 0x0fU) == 0x0fU &&
+		(sink.records[3U].words[MREC_STATUS_WORD] &
+			(1U << DEMAND_STATUS_INCOMPLETE_INPUT_BIT)) == 0U,
+		"clean refill clears incomplete demand quality without a restart");
+
+	// Exercise the maximum static ring, not just its validation branch. It
+	// must warm for all 600 three-second buckets and then publish one coherent
+	// 30-minute result without heap or task-stack storage.
+	CapturingRecordSink maximum_sink;
+	aggregation::EnergyDemandEngine maximum_engine(0xaabbccddU);
+	maximum_engine.initialize(0xaabbccddU);
+	expect(maximum_engine.configure_demand(
+		aggregation::DemandMethod::sliding, 1800U, 3U, 2U),
+		"maximum sliding demand profile is accepted");
+	for (std::uint32_t sequence = 1U; sequence <= 599U; ++sequence)
+		emit_sliding_demand(maximum_engine, maximum_sink, sequence,
+			{five_micro_watts, -five_micro_watts,
+				five_micro_watts, -five_micro_watts});
+	expect(maximum_sink.count == 0U,
+		"30-minute profile waits for the complete static ring");
+	emit_sliding_demand(maximum_engine, maximum_sink, 600U,
+		{five_micro_watts, -five_micro_watts,
+			five_micro_watts, -five_micro_watts});
+	expect(maximum_sink.count == 1U &&
+		maximum_sink.records[0U].words[DEMAND_SOURCE_INTERVAL_COUNT_WORD] ==
+			600U &&
+		read_record_s64(maximum_sink.records[0U],
+			DEMAND_CURRENT_BASE_WORD) == 5,
+		"30-minute profile publishes after exactly 600 clean buckets");
 }
 
 void test_r5_engine_primes_energy_before_emission()
@@ -1559,6 +1706,7 @@ int main()
 	test_energy_engine_four_quadrants_and_axes();
 	test_energy_engine_rates_remainders_invalidity_and_saturation();
 	test_demand_engine_peaks_and_contamination();
+	test_sliding_demand_cadence_recovery_and_profile();
 	test_r5_engine_primes_energy_before_emission();
 	test_r5_engine_fails_closed_when_output_rejects_record();
 	test_r5_engine_drains_deferred_aggregate_family();

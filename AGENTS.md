@@ -66,9 +66,16 @@
   energy uses the shared `EnergyQuadrant` classifier and fundamental Q1: I is
   `P>=0,Q1>0`, II is `P<0,Q1>0`, III is `P<0,Q1<0`, and IV is
   `P>=0,Q1<0`; `Q1==0` contributes to no quadrant. DEMAND-v1
-  (`0x00040001`) is active-only and emitted at completed UTC ten-minute
-  boundaries. That demand cadence is an M17 product policy aligned with the
-  existing PQ clock, not an IEC 61000-4-30 requirement for active demand.
+  (`0x00040001`) is active-only and carries its method, window, update cadence,
+  and profile generation. The default is a 60-second sliding average emitted
+  on each completed 150/180-cycle aggregate (nominally every 3 seconds);
+  supported sliding windows are 60, 300, 600, 900, and 1800 seconds. Fixed
+  mode remains one aligned UTC 600-second block emitted at its boundary. These
+  profiles are M17 product policy, not an IEC 61000-4-30 active-demand
+  requirement. A rejected sliding bucket clears the window; its incomplete
+  quality clears after one full clean refill rather than latching for the
+  session. Apply profile changes only at aggregation record boundaries and
+  reset demand-window/session-peak state without touching energy state.
   Linux owns lifetime totals and reset epochs; APPLY and invalid blocks never
   reset the R5C1 session. Generate the nonzero boot session ID
   only after BSP/runtime constructors complete, mixing the SoC-wide system

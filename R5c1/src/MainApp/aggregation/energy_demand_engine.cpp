@@ -22,6 +22,8 @@ constexpr std::uint32_t energy_tick_rate_hz = 128000U;
 constexpr std::uint64_t pico_tick_per_micro_hour =
 	static_cast<std::uint64_t>(energy_tick_rate_hz) * 3600000000ULL;
 constexpr std::uint64_t pico_units_per_micro_unit = 1000000ULL;
+constexpr std::uint32_t demand_bucket_seconds =
+	DEMAND_SLIDING_UPDATE_SECONDS;
 
 constexpr std::uint8_t phase_current_lanes[3] = {
 	MET_LANE_IA, MET_LANE_IB, MET_LANE_IC};
@@ -57,6 +59,39 @@ EnergyDemandEngine::EnergyDemandEngine(std::uint64_t session_id) noexcept
 {
 }
 
+bool EnergyDemandEngine::valid_demand_configuration(DemandMethod method,
+	std::uint32_t window_seconds, std::uint32_t update_seconds) noexcept
+{
+	if (method == DemandMethod::fixed_block)
+		return window_seconds == DEMAND_FIXED_INTERVAL_SECONDS &&
+			update_seconds == DEMAND_FIXED_INTERVAL_SECONDS;
+	if (method != DemandMethod::sliding ||
+		update_seconds != DEMAND_SLIDING_UPDATE_SECONDS)
+		return false;
+	return window_seconds == 60U || window_seconds == 300U ||
+		window_seconds == 600U || window_seconds == 900U ||
+		window_seconds == DEMAND_MAX_WINDOW_SECONDS;
+}
+
+bool EnergyDemandEngine::configure_demand(DemandMethod method,
+	std::uint32_t window_seconds, std::uint32_t update_seconds,
+	std::uint32_t profile_generation) noexcept
+{
+	if (!valid_demand_configuration(method, window_seconds, update_seconds) ||
+		profile_generation == 0U)
+		return false;
+	if (method == demand_method_ && window_seconds == demand_window_seconds_ &&
+		update_seconds == demand_update_seconds_ &&
+		profile_generation == demand_profile_generation_)
+		return true;
+	demand_method_ = method;
+	demand_window_seconds_ = window_seconds;
+	demand_update_seconds_ = update_seconds;
+	demand_profile_generation_ = profile_generation;
+	clear_demand_profile_state();
+	return true;
+}
+
 void EnergyDemandEngine::initialize(std::uint64_t session_id) noexcept
 {
 	session_id_ = session_id == 0U ? 1U : session_id;
@@ -84,7 +119,23 @@ void EnergyDemandEngine::clear_state() noexcept
 	energy_started_ = false;
 	last_basic_identity_ = {};
 	have_last_basic_identity_ = false;
+	clear_demand_profile_state();
+	clear_basic_pending();
+	energy_summary_record_.words.fill(0U);
+	energy_quadrant_record_.words.fill(0U);
+	demand_record_.words.fill(0U);
+}
+
+void EnergyDemandEngine::clear_demand_window() noexcept
+{
+	demand_bucket_head_ = 0U;
+	demand_bucket_count_ = 0U;
+}
+
+void EnergyDemandEngine::clear_demand_profile_state() noexcept
+{
 	for (std::size_t index = 0U; index < phase_total_count; ++index) {
+		demand_power_picowatts_[index] = 0;
 		demand_current_[index] = 0;
 		demand_import_peak_[index] = 0U;
 		demand_export_peak_[index] = 0U;
@@ -93,11 +144,8 @@ void EnergyDemandEngine::clear_state() noexcept
 	}
 	demand_saturated_ = false;
 	demand_incomplete_ = false;
-	clear_basic_pending();
+	clear_demand_window();
 	clear_demand_pending();
-	energy_summary_record_.words.fill(0U);
-	energy_quadrant_record_.words.fill(0U);
-	demand_record_.words.fill(0U);
 }
 
 void EnergyDemandEngine::remember_basic_source() noexcept
@@ -174,13 +222,15 @@ void EnergyDemandEngine::clear_demand_pending() noexcept
 	demand_identity_.status = 0U;
 	demand_identity_.first_sample = 0U;
 	demand_identity_.last_sample = 0U;
-	demand_target_sample_ = 0U;
+	demand_interval_anchor_sample_ = 0U;
 	demand_source_interval_count_ = 0U;
 	demand_source_status_ = 0U;
 	demand_valid_ = 0U;
 	demand_seen_ = false;
 	demand_power_seen_ = false;
 	demand_phasor_seen_ = false;
+	for (std::size_t index = 0U; index < phase_total_count; ++index)
+		demand_power_picowatts_[index] = 0;
 }
 
 std::uint64_t EnergyDemandEngine::read_unsigned64(
@@ -537,8 +587,11 @@ bool EnergyDemandEngine::finish_basic(const AggregationMeterRecord &record,
 void EnergyDemandEngine::begin_demand(
 	const AggregationMeterRecord &record) noexcept
 {
-	if (demand_seen_)
+	if (demand_seen_) {
 		demand_incomplete_ = true;
+		if (demand_method_ == DemandMethod::sliding)
+			clear_demand_window();
+	}
 	clear_demand_pending();
 	demand_identity_.sequence = record.words[MREC_SEQUENCE_WORD];
 	demand_identity_.generation = record.words[MREC_GENERATION_WORD];
@@ -551,10 +604,11 @@ void EnergyDemandEngine::begin_demand(
 		read_unsigned64(record, MREC_FIRST_SAMPLE_LOW_WORD);
 	demand_identity_.last_sample =
 		read_unsigned64(record, AGG_LAST_SAMPLE_LOW_WORD);
-	demand_target_sample_ =
-		read_unsigned64(record, TEN_MINUTE_TARGET_SAMPLE_LOW_WORD);
-	demand_source_interval_count_ =
-		record.words[MTR2_SHAPE_WORD] & 0xffffU;
+	demand_interval_anchor_sample_ = demand_method_ == DemandMethod::fixed_block
+		? read_unsigned64(record, TEN_MINUTE_TARGET_SAMPLE_LOW_WORD)
+		: demand_identity_.first_sample;
+	demand_source_interval_count_ = demand_method_ == DemandMethod::fixed_block
+		? record.words[MTR2_SHAPE_WORD] & 0xffffU : 1U;
 	demand_source_status_ = record.words[MREC_STATUS_WORD];
 	demand_seen_ = true;
 }
@@ -569,13 +623,11 @@ void EnergyDemandEngine::accept_demand_power(
 	for (std::size_t phase = 0U; phase < 3U; ++phase) {
 		const auto base = static_cast<std::size_t>(POWER_PHASE_BASE_WORD) +
 			phase * static_cast<std::size_t>(POWER_PHASE_STRIDE);
-		demand_current_[phase] =
-			read_signed64(record, base + POWER_PHASE_P_LOW) /
-			static_cast<std::int64_t>(pico_units_per_micro_unit);
+		demand_power_picowatts_[phase] =
+			read_signed64(record, base + POWER_PHASE_P_LOW);
 	}
-	demand_current_[3U] =
-		read_signed64(record, POWER_TOTAL_P_LOW_WORD) /
-		static_cast<std::int64_t>(pico_units_per_micro_unit);
+	demand_power_picowatts_[3U] =
+		read_signed64(record, POWER_TOTAL_P_LOW_WORD);
 	demand_power_seen_ = true;
 }
 
@@ -593,13 +645,21 @@ bool EnergyDemandEngine::emit_demand(AggregationRecordSink &sink,
 	bool emit) noexcept
 {
 	const std::uint32_t source = demand_identity_.status;
+	const bool fixed = demand_method_ == DemandMethod::fixed_block;
+	const bool time_aligned = fixed &&
+		(source & (1U << TEN_MINUTE_STATUS_TIME_ALIGNED_BIT)) != 0U;
+	const bool source_contaminated = fixed &&
+		(source & (1U << TEN_MINUTE_STATUS_CONTAMINATED_BIT)) != 0U;
+	const bool boundary_valid = fixed
+		? (source & (1U << TEN_MINUTE_STATUS_BOUNDARY_VALID_BIT)) != 0U
+		: demand_valid_ == 0x0fU;
 	const std::uint32_t status =
 		(1U << DEMAND_STATUS_COMPLETE_BIT) |
-		(((source >> TEN_MINUTE_STATUS_TIME_ALIGNED_BIT) & 1U)
+		(static_cast<std::uint32_t>(time_aligned)
 			<< DEMAND_STATUS_TIME_ALIGNED_BIT) |
-		(((source >> TEN_MINUTE_STATUS_CONTAMINATED_BIT) & 1U)
+		(static_cast<std::uint32_t>(source_contaminated || demand_incomplete_)
 			<< DEMAND_STATUS_CONTAMINATED_BIT) |
-		(((source >> TEN_MINUTE_STATUS_BOUNDARY_VALID_BIT) & 1U)
+		(static_cast<std::uint32_t>(boundary_valid)
 			<< DEMAND_STATUS_BOUNDARY_VALID_BIT) |
 		(static_cast<std::uint32_t>(demand_saturated_)
 			<< DEMAND_STATUS_SATURATED_BIT) |
@@ -607,15 +667,18 @@ bool EnergyDemandEngine::emit_demand(AggregationRecordSink &sink,
 			<< DEMAND_STATUS_INCOMPLETE_INPUT_BIT) |
 		(static_cast<std::uint32_t>(demand_saturated_)
 			<< MREC_STATUS_ARITHMETIC_BIT);
-	write_common(demand_record_, demand_identity_, MREC_FORMAT_DEMAND_V1,
+	write_common(demand_record_, demand_output_identity_, MREC_FORMAT_DEMAND_V1,
 		status);
 	demand_record_.words[MREC_FORMAT_HEADER_WORD] =
-		(static_cast<std::uint32_t>(DEMAND_INTERVAL_SECONDS)
+		(demand_window_seconds_
 			<< DEMAND_HEADER_INTERVAL_SECONDS_LSB) |
 		(static_cast<std::uint32_t>(demand_valid_)
-			<< DEMAND_HEADER_VALID_LSB);
+			<< DEMAND_HEADER_VALID_LSB) |
+		(static_cast<std::uint32_t>(demand_method_)
+			<< DEMAND_HEADER_METHOD_LSB) |
+		(demand_update_seconds_ << DEMAND_HEADER_UPDATE_SECONDS_LSB);
 	write_counter(demand_record_, DEMAND_LAST_SAMPLE_LOW_WORD,
-		demand_identity_.last_sample);
+		demand_output_identity_.last_sample);
 	for (std::size_t index = 0U; index < phase_total_count; ++index) {
 		write_counter(demand_record_,
 			DEMAND_CURRENT_BASE_WORD + index * DEMAND_VALUE_STRIDE,
@@ -634,15 +697,43 @@ bool EnergyDemandEngine::emit_demand(AggregationRecordSink &sink,
 			demand_export_anchor_[index]);
 	}
 	write_counter(demand_record_, DEMAND_SESSION_ID_LOW_WORD, session_id_);
-	write_counter(demand_record_, DEMAND_TARGET_SAMPLE_LOW_WORD,
-		demand_target_sample_);
+	write_counter(demand_record_, DEMAND_INTERVAL_ANCHOR_SAMPLE_LOW_WORD,
+		demand_interval_anchor_sample_);
 	demand_record_.words[DEMAND_SOURCE_INTERVAL_COUNT_WORD] =
 		demand_source_interval_count_;
 	demand_record_.words[DEMAND_SOURCE_STATUS_WORD] = demand_source_status_;
+	demand_record_.words[DEMAND_PROFILE_GENERATION_WORD] =
+		demand_profile_generation_;
 	return !emit || sink.publish(demand_record_);
 }
 
-bool EnergyDemandEngine::finish_demand(const AggregationMeterRecord &record,
+void EnergyDemandEngine::update_demand_peaks() noexcept
+{
+	for (std::size_t index = 0U; index < phase_total_count; ++index) {
+		const auto bit = static_cast<std::uint8_t>(1U << index);
+		if ((demand_valid_ & bit) == 0U)
+			continue;
+		const auto current = demand_current_[index];
+		if (current > 0) {
+			const auto value = static_cast<std::uint64_t>(current);
+			if (value > demand_import_peak_[index]) {
+				demand_import_peak_[index] = value;
+				demand_import_anchor_[index] =
+					demand_output_identity_.last_sample;
+			}
+		} else if (current < 0) {
+			const auto value = magnitude(current);
+			if (value > demand_export_peak_[index]) {
+				demand_export_peak_[index] = value;
+				demand_export_anchor_[index] =
+					demand_output_identity_.last_sample;
+			}
+		}
+	}
+}
+
+bool EnergyDemandEngine::finish_fixed_demand(
+	const AggregationMeterRecord &record,
 	AggregationRecordSink &sink, bool emit) noexcept
 {
 	if (!demand_seen_ || !same_family(record, demand_identity_) ||
@@ -662,8 +753,8 @@ bool EnergyDemandEngine::finish_demand(const AggregationMeterRecord &record,
 		record.words[MREC_RESULT_DROPS_WORD] == 0U;
 	demand_valid_ = valid_interval ?
 		phase_total_valid_mask(demand_identity_.valid_mask) : 0U;
-	if (!valid_interval || demand_valid_ != 0x0fU)
-		demand_incomplete_ = true;
+	demand_incomplete_ = !valid_interval || demand_valid_ != 0x0fU;
+	demand_output_identity_ = demand_identity_;
 
 	for (std::size_t index = 0U; index < phase_total_count; ++index) {
 		const auto bit = static_cast<std::uint8_t>(1U << index);
@@ -671,25 +762,166 @@ bool EnergyDemandEngine::finish_demand(const AggregationMeterRecord &record,
 			demand_current_[index] = 0;
 			continue;
 		}
-		const auto current = demand_current_[index];
-		if (current > 0) {
-			const auto value = static_cast<std::uint64_t>(current);
-			if (value > demand_import_peak_[index]) {
-				demand_import_peak_[index] = value;
-				demand_import_anchor_[index] = demand_identity_.last_sample;
-			}
-		} else if (current < 0) {
-			const auto value = magnitude(current);
-			if (value > demand_export_peak_[index]) {
-				demand_export_peak_[index] = value;
-				demand_export_anchor_[index] = demand_identity_.last_sample;
-			}
-		}
+		demand_current_[index] = demand_power_picowatts_[index] /
+			static_cast<std::int64_t>(pico_units_per_micro_unit);
 	}
+	update_demand_peaks();
 
 	const bool published = emit_demand(sink, emit);
 	clear_demand_pending();
 	return published;
+}
+
+bool EnergyDemandEngine::append_sliding_bucket() noexcept
+{
+	const auto target = static_cast<std::size_t>(
+		demand_window_seconds_ / demand_bucket_seconds);
+	if (target == 0U || target > maximum_demand_buckets)
+		return false;
+
+	if (demand_bucket_count_ != 0U) {
+		const auto newest_index =
+			(demand_bucket_head_ + demand_bucket_count_ - 1U) % target;
+		const auto &newest = demand_buckets_[newest_index];
+		const bool contiguous = newest.last_sample != UINT64_MAX &&
+			demand_identity_.first_sample == newest.last_sample + 1U;
+		if (!contiguous || newest.generation != demand_identity_.generation ||
+			newest.sample_rate_hz != demand_identity_.sample_rate_hz)
+			clear_demand_window();
+	}
+
+	std::size_t index = 0U;
+	if (demand_bucket_count_ < target) {
+		index = (demand_bucket_head_ + demand_bucket_count_) % target;
+		++demand_bucket_count_;
+	} else {
+		index = demand_bucket_head_;
+		demand_bucket_head_ = (demand_bucket_head_ + 1U) % target;
+	}
+	auto &bucket = demand_buckets_[index];
+	for (std::size_t phase = 0U; phase < phase_total_count; ++phase)
+		bucket.active_power_picowatts[phase] =
+			demand_power_picowatts_[phase];
+	bucket.sample_count = demand_identity_.sample_count;
+	bucket.source_status = demand_identity_.status;
+	bucket.first_sample = demand_identity_.first_sample;
+	bucket.last_sample = demand_identity_.last_sample;
+	bucket.generation = demand_identity_.generation;
+	bucket.sample_rate_hz = demand_identity_.sample_rate_hz;
+	return demand_bucket_count_ == target;
+}
+
+void EnergyDemandEngine::calculate_sliding_demand() noexcept
+{
+	const auto target = static_cast<std::size_t>(
+		demand_window_seconds_ / demand_bucket_seconds);
+	const auto newest_index =
+		(demand_bucket_head_ + demand_bucket_count_ - 1U) % target;
+	const auto &oldest = demand_buckets_[demand_bucket_head_];
+	const auto &newest = demand_buckets_[newest_index];
+
+	std::uint64_t total_samples = 0U;
+	std::uint32_t source_status = 0U;
+	for (std::size_t offset = 0U; offset < demand_bucket_count_; ++offset) {
+		const auto &bucket = demand_buckets_[
+			(demand_bucket_head_ + offset) % target];
+		total_samples += bucket.sample_count;
+		source_status |= bucket.source_status;
+	}
+
+	for (std::size_t phase = 0U; phase < phase_total_count; ++phase) {
+		ap_int<128> numerator = 0;
+		for (std::size_t offset = 0U; offset < demand_bucket_count_; ++offset) {
+			const auto &bucket = demand_buckets_[
+				(demand_bucket_head_ + offset) % target];
+			numerator += ap_int<128>(bucket.active_power_picowatts[phase]) *
+				bucket.sample_count;
+		}
+		if (total_samples == 0U) {
+			demand_current_[phase] = 0;
+			continue;
+		}
+		const ap_int<128> micro_watts =
+			(numerator / total_samples) / pico_units_per_micro_unit;
+		if (micro_watts > INT64_MAX) {
+			demand_current_[phase] = INT64_MAX;
+			demand_saturated_ = true;
+		} else if (micro_watts < INT64_MIN) {
+			demand_current_[phase] = INT64_MIN;
+			demand_saturated_ = true;
+		} else {
+			demand_current_[phase] = micro_watts.to_int64();
+		}
+	}
+
+	demand_output_identity_.sequence = demand_identity_.sequence;
+	demand_output_identity_.generation = newest.generation;
+	demand_output_identity_.sample_rate_hz = newest.sample_rate_hz;
+	demand_output_identity_.sample_count = total_samples > UINT32_MAX
+		? UINT32_MAX : static_cast<std::uint32_t>(total_samples);
+	demand_output_identity_.valid_mask = demand_identity_.valid_mask;
+	demand_output_identity_.status = source_status;
+	demand_output_identity_.first_sample = oldest.first_sample;
+	demand_output_identity_.last_sample = newest.last_sample;
+	demand_interval_anchor_sample_ = oldest.first_sample;
+	demand_source_interval_count_ =
+		static_cast<std::uint32_t>(demand_bucket_count_);
+	demand_source_status_ = source_status;
+}
+
+bool EnergyDemandEngine::finish_sliding_demand(
+	const AggregationMeterRecord &record, AggregationRecordSink &sink,
+	bool emit) noexcept
+{
+	const bool family_complete = demand_seen_ &&
+		same_family(record, demand_identity_) && demand_power_seen_ &&
+		demand_phasor_seen_;
+	const auto shape = demand_seen_ ? record.words[MTR2_SHAPE_WORD] : 0U;
+	const auto nominal = (shape >> MTR2_SHAPE_NOMINAL_LSB) & 0xffU;
+	const bool valid_interval = family_complete &&
+		demand_identity_.sample_count != 0U &&
+		(shape & 0xffU) == 15U && (nominal == 50U || nominal == 60U) &&
+		(demand_identity_.status & (1U << MTR2_STATUS_COMPLETE_BIT)) != 0U &&
+		(demand_identity_.status & (1U << MREC_STATUS_ARITHMETIC_BIT)) == 0U &&
+		record.words[MREC_EMIT_DROPS_WORD] == 0U &&
+		record.words[MREC_RESULT_DROPS_WORD] == 0U &&
+		phase_total_valid_mask(demand_identity_.valid_mask) == 0x0fU;
+
+	if (!valid_interval) {
+		clear_demand_window();
+		demand_incomplete_ = true;
+		demand_valid_ = 0U;
+		demand_output_identity_ = demand_identity_;
+		demand_interval_anchor_sample_ = demand_identity_.first_sample;
+		demand_source_interval_count_ = 0U;
+		for (auto &current : demand_current_)
+			current = 0;
+		const bool published = demand_seen_ ? emit_demand(sink, emit) : true;
+		clear_demand_pending();
+		return published;
+	}
+
+	const bool window_complete = append_sliding_bucket();
+	if (!window_complete) {
+		demand_incomplete_ = false;
+		clear_demand_pending();
+		return true;
+	}
+	calculate_sliding_demand();
+	demand_valid_ = 0x0fU;
+	demand_incomplete_ = false;
+	update_demand_peaks();
+	const bool published = emit_demand(sink, emit);
+	clear_demand_pending();
+	return published;
+}
+
+bool EnergyDemandEngine::finish_demand(const AggregationMeterRecord &record,
+	AggregationRecordSink &sink, bool emit) noexcept
+{
+	return demand_method_ == DemandMethod::fixed_block
+		? finish_fixed_demand(record, sink, emit)
+		: finish_sliding_demand(record, sink, emit);
 }
 
 bool EnergyDemandEngine::observe(const AggregationMeterRecord &record,
@@ -707,17 +939,38 @@ bool EnergyDemandEngine::observe(const AggregationMeterRecord &record,
 		return true;
 	case MREC_FORMAT_UNBAL_V2:
 		return finish_basic(record, sink, emit);
+	case MREC_FORMAT_AGG_V3:
+		if (demand_method_ != DemandMethod::sliding)
+			return true;
+		begin_demand(record);
+		return true;
+	case MREC_FORMAT_AGG_POWER_V1:
+		if (demand_method_ == DemandMethod::sliding)
+			accept_demand_power(record);
+		return true;
+	case MREC_FORMAT_AGG_PHASOR_V2:
+		if (demand_method_ == DemandMethod::sliding)
+			accept_demand_phasor(record);
+		return true;
+	case MREC_FORMAT_AGG_UNBAL_V2:
+		return demand_method_ == DemandMethod::sliding
+			? finish_demand(record, sink, emit) : true;
 	case MREC_FORMAT_TEN_MINUTE_V1:
+		if (demand_method_ != DemandMethod::fixed_block)
+			return true;
 		begin_demand(record);
 		return true;
 	case MREC_FORMAT_TEN_MINUTE_POWER_V1:
-		accept_demand_power(record);
+		if (demand_method_ == DemandMethod::fixed_block)
+			accept_demand_power(record);
 		return true;
 	case MREC_FORMAT_TEN_MINUTE_PHASOR_V2:
-		accept_demand_phasor(record);
+		if (demand_method_ == DemandMethod::fixed_block)
+			accept_demand_phasor(record);
 		return true;
 	case MREC_FORMAT_TEN_MINUTE_UNBAL_V2:
-		return finish_demand(record, sink, emit);
+		return demand_method_ == DemandMethod::fixed_block
+			? finish_demand(record, sink, emit) : true;
 	default:
 		return true;
 	}

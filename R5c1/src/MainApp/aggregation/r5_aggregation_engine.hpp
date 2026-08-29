@@ -40,6 +40,11 @@ public:
 	/** Install the boot nonce before the worker initializes the engine. */
 	[[nodiscard]] bool configure_session_id(
 		std::uint64_t session_id) noexcept;
+	/** Stage a Demand-v1 profile; the aggregation worker applies it at the
+	 * next record boundary so RPMsg never races the large static state. */
+	[[nodiscard]] bool configure_demand(DemandMethod method,
+		std::uint32_t window_seconds, std::uint32_t update_seconds,
+		std::uint32_t &profile_generation) noexcept;
 	bool initialize() noexcept;
 	void process(const AggregationInputView &input) noexcept;
 	/**
@@ -71,6 +76,10 @@ private:
 	void fail_engine() noexcept;
 	[[nodiscard]] bool accept_transport_sequence(std::uint32_t sequence,
 		bool &discontinuity) noexcept;
+	void apply_demand_configuration() noexcept;
+	[[nodiscard]] static std::uint32_t pack_demand_configuration(
+		DemandMethod method, std::uint32_t window_seconds,
+		std::uint32_t update_seconds) noexcept;
 
 	AggregationRecordSink &sink_;
 	AggregationHealth &health_;
@@ -85,6 +94,12 @@ private:
 	std::size_t pass_records_completed_{};
 	std::uint32_t last_transport_sequence_{};
 	std::uint32_t discontinuity_pending_{};
+	std::uint32_t demand_profile_word_{
+		static_cast<std::uint32_t>(DemandMethod::sliding) |
+		(60U << 2U) | (3U << 14U)};
+	std::uint32_t demand_profile_generation_{1U};
+	std::uint32_t demand_profile_revision_{};
+	std::uint32_t applied_demand_profile_generation_{};
 	bool have_transport_sequence_{};
 	bool ready_{};
 };

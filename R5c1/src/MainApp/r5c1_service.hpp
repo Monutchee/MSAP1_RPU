@@ -13,13 +13,15 @@
 
 #include "control_service.hpp"
 #include "aggregation/aggregation_health.hpp"
+#include "aggregation/r5_aggregation_engine.hpp"
 #include "aggregation/aggregation_runtime.hpp"
 
 class R5c1Service : public msap1::ControlService {
 public:
 	R5c1Service(const msap1::CoreConfig &config,
 		msap1::aggregation::AggregationHealth &health,
-		msap1::aggregation::AggregationRuntime &runtime) noexcept;
+		msap1::aggregation::AggregationRuntime &runtime,
+		msap1::aggregation::R5AggregationEngine &engine) noexcept;
 
 protected:
 	bool handle_custom(const msap1_rpu_msg_header &request,
@@ -30,6 +32,7 @@ protected:
 private:
 	msap1::aggregation::AggregationHealth &health_;
 	msap1::aggregation::AggregationRuntime &runtime_;
+	msap1::aggregation::R5AggregationEngine &engine_;
 };
 
 #endif /* MSAP1_R5C1_SERVICE_HPP */

@@ -57,7 +57,7 @@ static msap1::aggregation::AggregationShadowService aggregation_shadow(
 static msap1::aggregation::AggregationRuntime aggregation_runtime(
 	aggregation_shadow, aggregation_output, aggregation_health);
 static R5c1Service service(msap1::CoreConfig::current(), aggregation_health,
-	aggregation_runtime);
+	aggregation_runtime, aggregation_engine);
 
 static TaskHandle_t comm_task_handle;
 
