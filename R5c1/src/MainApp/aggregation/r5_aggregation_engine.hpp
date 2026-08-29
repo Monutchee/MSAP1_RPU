@@ -37,6 +37,9 @@ public:
 		AggregationHealth &health, AggregationOutputMode mode,
 		std::uint64_t session_id = 1U) noexcept;
 
+	/** Install the boot nonce before the worker initializes the engine. */
+	[[nodiscard]] bool configure_session_id(
+		std::uint64_t session_id) noexcept;
 	bool initialize() noexcept;
 	void process(const AggregationInputView &input) noexcept;
 	/**

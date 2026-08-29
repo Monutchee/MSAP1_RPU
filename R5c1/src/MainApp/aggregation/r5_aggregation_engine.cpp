@@ -11,6 +11,15 @@ R5AggregationEngine::R5AggregationEngine(AggregationRecordSink &sink,
 {
 }
 
+bool R5AggregationEngine::configure_session_id(
+	std::uint64_t session_id) noexcept
+{
+	if (ready_ || session_id == 0U)
+		return false;
+	session_id_ = session_id;
+	return true;
+}
+
 bool R5AggregationEngine::initialize() noexcept
 {
 	assembling_words_ = 0U;

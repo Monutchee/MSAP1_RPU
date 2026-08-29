@@ -68,7 +68,10 @@
   `P>=0,Q1<0`; `Q1==0` contributes to no quadrant. DEMAND-v1
   (`0x00040001`) is active-only and emitted at completed UTC ten-minute
   boundaries. Linux owns lifetime totals and reset epochs; APPLY and invalid
-  blocks never reset the R5C1 session.
+  blocks never reset the R5C1 session. Generate the nonzero boot session ID
+  only after BSP/runtime constructors complete, mixing the SoC-wide system
+  counter with the R5-local cycle counter; never derive it from deterministic
+  static-constructor timing or addresses.
 - Keep the M17 engine and all future large accumulator state in static
   `.bss`/`.data`, clear it in place, and keep it non-copyable. Processing paths
   must not allocate dynamically or place whole engines/large arrays on a task

@@ -7,6 +7,7 @@
 #include "harmonic_aggregation_engine.hpp"
 #include "harmonic_frame_decoder.hpp"
 #include "r5_aggregation_engine.hpp"
+#include "r5_session_id.hpp"
 
 #include <array>
 #include <bit>
@@ -24,6 +25,28 @@ static_assert(!std::is_move_constructible_v<aggregation::EnergyDemandEngine>);
 static_assert(!std::is_move_assignable_v<aggregation::EnergyDemandEngine>);
 
 namespace {
+
+void expect(bool condition, std::string_view message);
+
+void test_session_id_uses_boot_varying_counter()
+{
+	constexpr aggregation::R5SessionEntropy first{
+		.shared_system_counter = 0x0123456789abcdefULL,
+		.local_cycle_counter_before = 0x1234U,
+		.local_cycle_counter_after = 0x5678U,
+	};
+	constexpr auto second = aggregation::R5SessionEntropy{
+		.shared_system_counter = first.shared_system_counter + 1U,
+		.local_cycle_counter_before = first.local_cycle_counter_before,
+		.local_cycle_counter_after = first.local_cycle_counter_after,
+	};
+	constexpr auto first_id = aggregation::derive_r5_session_id(first);
+	constexpr auto second_id = aggregation::derive_r5_session_id(second);
+	static_assert(first_id != 0U && second_id != 0U);
+	static_assert(first_id != second_id);
+	expect(first_id != second_id,
+		"SoC-wide boot counter must change the R5C1 session ID");
+}
 
 class CapturingRecordSink final : public aggregation::AggregationRecordSink {
 public:
@@ -1446,6 +1469,7 @@ void test_r5_shadow_mode_is_non_authoritative()
 
 int main()
 {
+	test_session_id_uses_boot_varying_counter();
 	test_crc32c();
 	test_valid_frame();
 	test_invalid_frames();

@@ -48,8 +48,7 @@ static msap1::aggregation::AggregationOutputService aggregation_output(
 	aggregation_transport, aggregation_output_ring, aggregation_health);
 static msap1::aggregation::R5AggregationEngine aggregation_engine(
 	aggregation_output, aggregation_health,
-	aggregation_output_mode,
-	msap1::aggregation::generate_r5_session_id());
+	aggregation_output_mode);
 static msap1::aggregation::HarmonicAggregationEngine harmonic_engine(
 	aggregation_output, aggregation_health);
 static msap1::aggregation::AggregationShadowService aggregation_shadow(
@@ -82,6 +81,13 @@ static void aggregation_bootstrap_task(void *)
 
 int main(void)
 {
+	/* All BSP constructors, including timer setup, have completed by main().
+	 * Generating this from another global constructor made its inputs
+	 * deterministic and repeated the session across full device reboots. */
+	if (!aggregation_engine.configure_session_id(
+		msap1::aggregation::generate_r5_session_id()))
+		return -1;
+
 	/* Keep the control plane independent so FIFO failure cannot remove Linux
 	 * diagnostics. */
 	if (xTaskCreate(comm_task, "RPMSG", 2048, NULL, 4,
