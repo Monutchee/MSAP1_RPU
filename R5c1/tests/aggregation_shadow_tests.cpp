@@ -8,6 +8,8 @@
 #include "flicker_frame_decoder.hpp"
 #include "harmonic_aggregation_engine.hpp"
 #include "harmonic_frame_decoder.hpp"
+#include "mains_signal_engine.hpp"
+#include "mains_signal_frame_decoder.hpp"
 #include "pq_event_frame_decoder.hpp"
 #include "pq_event_lifecycle_engine.hpp"
 #include "r5_aggregation_engine.hpp"
@@ -1871,6 +1873,96 @@ void test_flicker_frame_decoder()
 		"FLK1 rejects CRC corruption");
 }
 
+aggregation::AggregationFrame make_mains_signal_frame(std::uint32_t sequence)
+{
+	aggregation::AggregationFrame frame{};
+	frame.word_count = aggregation::MainsSignalProtocol::frame_words;
+	auto &words = frame.words;
+	words[aggregation::MainsSignalProtocol::magic_index] =
+		aggregation::MainsSignalProtocol::magic;
+	words[aggregation::MainsSignalProtocol::contract_revision_index] =
+		aggregation::MainsSignalProtocol::contract_revision;
+	words[aggregation::MainsSignalProtocol::payload_count_index] =
+		aggregation::MainsSignalProtocol::payload_words;
+	words[aggregation::MainsSignalProtocol::transport_sequence_index] =
+		sequence;
+	const auto payload = aggregation::MainsSignalProtocol::payload_index;
+	words[payload + aggregation::MainsSignalProtocol::sequence_word] = sequence;
+	words[payload + aggregation::MainsSignalProtocol::generation_word] = 7U;
+	words[payload + aggregation::MainsSignalProtocol::sample_rate_word] =
+		32000U;
+	words[payload + aggregation::MainsSignalProtocol::status_word] = 0x3U;
+	words[payload + aggregation::MainsSignalProtocol::phases_word] = 0x707U;
+	words[payload + aggregation::MainsSignalProtocol::configured_millihz_word] =
+		1000000U;
+	words[payload + aggregation::MainsSignalProtocol::measured_millihz_word] =
+		1005000U;
+	words[payload + aggregation::MainsSignalProtocol::bandwidth_millihz_word] =
+		20000U;
+	words[payload + aggregation::MainsSignalProtocol::observation_ms_word] =
+		200U;
+	write_u64(words,
+		payload + aggregation::MainsSignalProtocol::first_sample_word, 1000U);
+	write_u64(words,
+		payload + aggregation::MainsSignalProtocol::last_sample_word, 7399U);
+	for (std::size_t phase = 0U;
+		phase < aggregation::MainsSignalProtocol::phases; ++phase) {
+		words[payload +
+			aggregation::MainsSignalProtocol::magnitude_microvolts_word + phase] =
+			1200000U + static_cast<std::uint32_t>(phase);
+		words[payload +
+			aggregation::MainsSignalProtocol::background_microvolts_word + phase] =
+			1000U + static_cast<std::uint32_t>(phase);
+	}
+	words[payload + aggregation::MainsSignalProtocol::threshold_e4_word] = 50U;
+	words[aggregation::MainsSignalProtocol::crc_index] =
+		aggregation::crc32c_words(words.data(),
+			aggregation::MainsSignalProtocol::crc_index);
+	return frame;
+}
+
+void refresh_mains_signal_crc(aggregation::AggregationFrame &frame)
+{
+	frame.words[aggregation::MainsSignalProtocol::crc_index] =
+		aggregation::crc32c_words(frame.words.data(),
+			aggregation::MainsSignalProtocol::crc_index);
+}
+
+void test_mains_signal_frame_decoder()
+{
+	aggregation::MainsSignalFrameDecoder decoder;
+	aggregation::MainsSignalInputView input{};
+	auto frame = make_mains_signal_frame(21U);
+	expect(decoder.decode(frame, input) ==
+		aggregation::FrameValidationError::none,
+		"valid MCS1 frame decodes");
+	expect(input.sequence == 21U && input.configuration_generation == 7U &&
+		input.valid_phase_mask == 0x7U && input.detected_phase_mask == 0x7U &&
+		input.configured_millihz == 1000000U &&
+		input.measured_millihz == 1005000U && input.first_sample == 1000U &&
+		input.last_sample == 7399U,
+		"MCS1 carrier and observation provenance decode exactly");
+
+	const auto payload = aggregation::MainsSignalProtocol::payload_index;
+	frame.words[payload + aggregation::MainsSignalProtocol::phases_word] =
+		0x701U;
+	refresh_mains_signal_crc(frame);
+	expect(decoder.decode(frame, input) ==
+		aggregation::FrameValidationError::reserved_bits_nonzero,
+		"MCS1 rejects detections outside the valid-phase mask");
+	frame = make_mains_signal_frame(22U);
+	frame.words[payload + aggregation::MainsSignalProtocol::last_sample_word]--;
+	refresh_mains_signal_crc(frame);
+	expect(decoder.decode(frame, input) ==
+		aggregation::FrameValidationError::invalid_record_geometry,
+		"MCS1 rejects a shortened 200 ms observation");
+	frame = make_mains_signal_frame(23U);
+	frame.words[aggregation::MainsSignalProtocol::crc_index] ^= 1U;
+	expect(decoder.decode(frame, input) ==
+		aggregation::FrameValidationError::crc_mismatch,
+		"MCS1 rejects CRC corruption");
+}
+
 msap1_m18_config_payload make_event_configuration(std::uint32_t generation)
 {
 	msap1_m18_config_payload configuration{};
@@ -1995,6 +2087,64 @@ void test_flicker_engine_pst_and_plt()
 				aggregation::FlickerProtocol::histogram_bins)));
 	expect(sink.count == before_gap,
 		"a sequence gap invalidates the whole in-flight classifier family");
+}
+
+void test_mains_signal_engine()
+{
+	CapturingRecordSink sink;
+	aggregation::AggregationHealth health;
+	aggregation::MainsSignalEngine engine(sink, health);
+	expect(engine.initialize(), "mains-signalling engine initializes");
+	auto configuration = make_event_configuration(7U);
+	configuration.mains_flags = MSAP1_M18_ENGINE_ENABLED;
+	configuration.mains_threshold_e4 = 50U;
+	expect(engine.configure(configuration),
+		"valid mains-signalling profile stages");
+
+	aggregation::MainsSignalFrameDecoder decoder;
+	aggregation::MainsSignalInputView input{};
+	auto frame = make_mains_signal_frame(1U);
+	expect(decoder.decode(frame, input) ==
+		aggregation::FrameValidationError::none,
+		"engine test MCS1 packet decodes");
+	engine.process(input);
+	expect(sink.count == 1U,
+		"one MCS1 observation emits one public record");
+	const auto &record = sink.records[0U];
+	expect(record.words[0U] == 0x3152544DU &&
+		record.words[1U] == 0x000F0001U && record.words[2U] == 256U &&
+		record.words[3U] == 1U && record.words[4U] == 7U &&
+		record.words[5U] == 32000U && record.words[6U] == 6400U,
+		"MAINS-SIGNAL-v1 header and cadence are exact");
+	expect(record.words[7U] == 0x70U && record.words[13U] == 0x707U &&
+		record.words[14U] == 7399U && record.words[16U] == 1000000U &&
+		record.words[17U] == 1005000U,
+		"MAINS-SIGNAL-v1 validity, anchors, and frequencies are exact");
+	expect(record.words[18U] == 1200000U && record.words[20U] == 1200002U &&
+		record.words[21U] == 1000U && record.words[23U] == 1002U &&
+		record.words[24U] == 20000U && record.words[25U] == 200U &&
+		record.words[26U] == 7U && record.words[27U] == 0x3U &&
+		record.words[28U] == 50U && record.words[29U] == 120000000U,
+		"MAINS-SIGNAL-v1 magnitudes and capture-time profile are exact");
+	expect((record.words[8U] & (1U << 2U)) != 0U,
+		"first mains-signalling record carries discontinuity provenance");
+	for (std::size_t word = 30U; word < record.words.size(); ++word)
+		expect(record.words[word] == 0U,
+			"MAINS-SIGNAL-v1 reserved words remain zero");
+
+	engine.process(input);
+	expect(sink.count == 1U, "duplicate MCS1 sequence is idempotent");
+	input.sequence = 3U;
+	input.first_sample = 13800U;
+	input.last_sample = 20199U;
+	engine.process(input);
+	expect(sink.count == 2U &&
+		(sink.records[1U].words[8U] & (1U << 2U)) != 0U,
+		"MCS1 sequence gap is retained on the next public record");
+	input.configuration_generation = 8U;
+	engine.process(input);
+	expect(sink.count == 2U,
+		"unstaged mains-signalling generation cannot emit a record");
 }
 
 aggregation::PqEventInputView make_pq_input(std::uint32_t sequence,
@@ -2132,6 +2282,8 @@ int main()
 	test_pq_event_lifecycle_engine();
 	test_flicker_frame_decoder();
 	test_flicker_engine_pst_and_plt();
+	test_mains_signal_frame_decoder();
+	test_mains_signal_engine();
 	std::cout << "aggregation shadow tests passed\n";
 	return EXIT_SUCCESS;
 }

@@ -3,9 +3,9 @@
 
 #include "aggregation_health.hpp"
 #include "aggregation_record_sink.hpp"
-#include "m18_protocol.hpp"
+#include "power_quality_protocol.hpp"
 
-#include "m18_configuration.hpp"
+#include "power_quality_configuration.hpp"
 
 #include <array>
 #include <cstddef>

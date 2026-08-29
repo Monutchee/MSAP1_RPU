@@ -1,6 +1,6 @@
 #include "metering.hpp"
 
-#include "m18_configuration.hpp"
+#include "power_quality_configuration.hpp"
 
 #include "sleep.h"
 #include "xil_io.h"
@@ -180,17 +180,17 @@ const char *to_string(Error error)
 
 MeteringPipeline::MeteringPipeline(Hardware hardware) : hardware_(hardware) {}
 
-Error MeteringPipeline::stage_m18_configuration(
+Error MeteringPipeline::stage_power_quality_configuration(
 	const msap1_m18_config_payload &configuration)
 {
-	if (!msap1::m18::valid_configuration(configuration))
+	if (!msap1::power_quality::valid_configuration(configuration))
 		return Error::InvalidConfiguration;
 	/*
 	 * R5C0 owns the validated pending image. The PL register write is completed
 	 * by the M18 register-bank integration and committed by the existing meter
 	 * APPLY toggle, so the engines can never observe a partial profile array.
 	 */
-	m18_configuration_ = configuration;
+	power_quality_configuration_ = configuration;
 	m18_staged_ = true;
 	return Error::None;
 }
@@ -230,9 +230,9 @@ Error MeteringPipeline::configure(const Configuration &configuration)
 	if (!valid_configuration(configuration))
 		return Error::InvalidConfiguration;
 	if (m18_staged_ &&
-	    (m18_configuration_.generation != configuration.generation ||
-	     !msap1::m18::valid_configuration(
-		m18_configuration_, configuration.sample_rate_hz)))
+	    (power_quality_configuration_.generation != configuration.generation ||
+	     !msap1::power_quality::valid_configuration(
+		power_quality_configuration_, configuration.sample_rate_hz)))
 		return Error::InvalidConfiguration;
 	if (!cores_present())
 		return Error::CoreNotFound;
@@ -277,8 +277,8 @@ Error MeteringPipeline::configure(const Configuration &configuration)
 
 	std::array<std::uint32_t, m18_config_words> expected_m18{};
 	if (m18_staged_) {
-		std::memcpy(expected_m18.data(), &m18_configuration_,
-			sizeof(m18_configuration_));
+		std::memcpy(expected_m18.data(), &power_quality_configuration_,
+			sizeof(power_quality_configuration_));
 		if ((processing_read(processing_m18_config_status) >> 16u) !=
 			m18_config_words)
 			return Error::ReadbackMismatch;

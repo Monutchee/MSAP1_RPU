@@ -95,7 +95,7 @@ public:
 	explicit MeteringPipeline(Hardware hardware);
 
 	Error configure(const Configuration &configuration);
-	Error stage_m18_configuration(
+	Error stage_power_quality_configuration(
 		const msap1_m18_config_payload &configuration);
 	Status status() const;
 
@@ -115,7 +115,7 @@ private:
 	Hardware hardware_;
 	Configuration configuration_{};
 	bool configured_ = false;
-	msap1_m18_config_payload m18_configuration_{};
+	msap1_m18_config_payload power_quality_configuration_{};
 	bool m18_staged_ = false;
 };
 

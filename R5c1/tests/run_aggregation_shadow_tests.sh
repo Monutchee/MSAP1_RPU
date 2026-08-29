@@ -46,6 +46,8 @@ for source in \
 	"$source_dir/crc32c.cpp" \
 	"$source_dir/flicker_engine.cpp" \
 	"$source_dir/flicker_frame_decoder.cpp" \
+	"$source_dir/mains_signal_engine.cpp" \
+	"$source_dir/mains_signal_frame_decoder.cpp" \
 	"$source_dir/harmonic_frame_decoder.cpp" \
 	"$source_dir/pq_event_frame_decoder.cpp" \
 	"$source_dir/pq_event_lifecycle_engine.cpp" \

@@ -1,12 +1,12 @@
-#ifndef MSAP1_M18_CONFIGURATION_HPP
-#define MSAP1_M18_CONFIGURATION_HPP
+#ifndef MSAP1_POWER_QUALITY_CONFIGURATION_HPP
+#define MSAP1_POWER_QUALITY_CONFIGURATION_HPP
 
 #include "rpu_control_protocol.h"
 
 #include <cstddef>
 #include <cstdint>
 
-namespace msap1::m18 {
+namespace msap1::power_quality {
 
 inline bool valid_event_profile(const msap1_m18_event_profile &profile,
 	std::size_t index) noexcept
@@ -51,7 +51,8 @@ inline bool valid_configuration(const msap1_m18_config_payload &value,
 	    value.flicker_pst_interval_seconds != 600u ||
 	    value.flicker_plt_pst_count != 12u ||
 	    value.mains_carrier_millihz == 0u ||
-	    value.mains_carrier_millihz >= 12500000u ||
+	    static_cast<std::uint64_t>(value.mains_carrier_millihz) +
+		value.mains_bandwidth_millihz >= 12500000u ||
 	    value.mains_bandwidth_millihz == 0u ||
 	    value.mains_bandwidth_millihz >= value.mains_carrier_millihz ||
 	    value.mains_observation_ms != 200u ||
@@ -59,15 +60,21 @@ inline bool valid_configuration(const msap1_m18_config_payload &value,
 	    (value.mains_phase_mask & ~0x7u) != 0u ||
 	    value.mains_threshold_e4 > 0xffffu)
 		return false;
-	if ((value.mains_flags & MSAP1_M18_ENGINE_ENABLED) != 0u &&
-	    sample_rate_hz != 0u &&
-	    static_cast<std::uint64_t>(value.mains_carrier_millihz) * 2u >=
-		static_cast<std::uint64_t>(sample_rate_hz) * 1000u)
-		return false;
+	if ((value.mains_flags & MSAP1_M18_ENGINE_ENABLED) != 0u) {
+		if (value.reference_voltage_microvolts == 0u)
+			return false;
+		if (sample_rate_hz != 0u &&
+		    (static_cast<std::uint64_t>(value.mains_carrier_millihz) +
+			value.mains_bandwidth_millihz) * 2u >=
+			static_cast<std::uint64_t>(sample_rate_hz) * 1000u)
+			return false;
+	}
+	/* Zero Udin deliberately disarms the HLS flicker observer without making
+	 * the coordinated settings snapshot uncommittable. This preserves the
+	 * factory/migration missing-reference state. */
 	if ((value.flicker_flags & MSAP1_M18_ENGINE_ENABLED) != 0u &&
-	    (value.reference_voltage_microvolts == 0u ||
-	     (sample_rate_hz != 0u &&
-	      (sample_rate_hz < 2000u || sample_rate_hz % 2000u != 0u))))
+	    sample_rate_hz != 0u &&
+	    (sample_rate_hz < 2000u || sample_rate_hz % 2000u != 0u))
 		return false;
 	for (std::size_t index = 0; index < MSAP1_M18_EVENT_TYPE_COUNT; ++index)
 		if (!valid_event_profile(value.event[index], index))
@@ -80,6 +87,6 @@ inline bool valid_configuration(const msap1_m18_config_payload &value,
 	return true;
 }
 
-} // namespace msap1::m18
+} // namespace msap1::power_quality
 
-#endif // MSAP1_M18_CONFIGURATION_HPP
+#endif // MSAP1_POWER_QUALITY_CONFIGURATION_HPP

@@ -79,7 +79,7 @@ FlickerEngine::FlickerEngine(AggregationRecordSink &sink,
 bool FlickerEngine::configure(
 	const msap1_m18_config_payload &configuration) noexcept
 {
-	if (!msap1::m18::valid_configuration(configuration))
+	if (!msap1::power_quality::valid_configuration(configuration))
 		return false;
 	(void)__atomic_add_fetch(&staged_revision_, 1U, __ATOMIC_ACQ_REL);
 	for (std::size_t word = 0U; word < configuration_words; ++word) {

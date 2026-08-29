@@ -1,7 +1,7 @@
 #ifndef MSAP1_R5C1_PQ_EVENT_FRAME_DECODER_HPP
 #define MSAP1_R5C1_PQ_EVENT_FRAME_DECODER_HPP
 
-#include "m18_protocol.hpp"
+#include "power_quality_protocol.hpp"
 
 namespace msap1::aggregation {
 

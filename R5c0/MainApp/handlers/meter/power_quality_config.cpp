@@ -1,13 +1,13 @@
-#include "m18_config.hpp"
+#include "power_quality_config.hpp"
 
 namespace msap1::r5c0 {
 
-std::uint32_t stage_m18_config(
+std::uint32_t stage_power_quality_config(
 	msap1::meter::MeteringPipeline &metering,
 	const msap1_m18_config_payload &wire,
 	msap1_m18_config_ack_payload &acknowledgement)
 {
-	const auto error = metering.stage_m18_configuration(wire);
+	const auto error = metering.stage_power_quality_configuration(wire);
 	if (error != msap1::meter::Error::None)
 		return MSAP1_RPU_STATUS_BAD_PAYLOAD;
 	acknowledgement = {};

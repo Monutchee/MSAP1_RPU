@@ -13,7 +13,7 @@
 #include "handlers/adc/adc_health.hpp"
 #include "handlers/adc/simulator_event.hpp"
 #include "handlers/meter/meter_config.hpp"
-#include "handlers/meter/m18_config.hpp"
+#include "handlers/meter/power_quality_config.hpp"
 
 /* The wire ABI must stay byte-identical with the APU copy. */
 static_assert(sizeof(msap1_adc_health_payload) == 238,
@@ -152,7 +152,7 @@ bool R5c0Service::handle_m18_config(const msap1_rpu_msg_header &request,
 	msap1_m18_config_payload wire{};
 	std::memcpy(&wire, payload, sizeof(wire));
 	msap1_m18_config_ack_payload acknowledgement{};
-	const auto status = msap1::r5c0::stage_m18_config(
+	const auto status = msap1::r5c0::stage_power_quality_config(
 		metering_, wire, acknowledgement);
 	if (status != MSAP1_RPU_STATUS_OK) {
 		send_error(request, src, status);

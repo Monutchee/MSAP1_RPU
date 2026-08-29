@@ -8,6 +8,8 @@
 #include "flicker_frame_decoder.hpp"
 #include "harmonic_aggregation_engine.hpp"
 #include "harmonic_frame_decoder.hpp"
+#include "mains_signal_engine.hpp"
+#include "mains_signal_frame_decoder.hpp"
 #include "pq_event_frame_decoder.hpp"
 #include "pq_event_lifecycle_engine.hpp"
 #include "r5_aggregation_engine.hpp"
@@ -39,6 +41,8 @@ public:
 		PqEventLifecycleEngine &pq_event_engine,
 		const FlickerFrameDecoder &flicker_decoder,
 		FlickerEngine &flicker_engine,
+		const MainsSignalFrameDecoder &mains_signal_decoder,
+		MainsSignalEngine &mains_signal_engine,
 		AggregationHealth &health) noexcept;
 
 	bool initialize(TaskHandle_t input_task,
@@ -60,6 +64,8 @@ private:
 	PqEventLifecycleEngine &pq_event_engine_;
 	const FlickerFrameDecoder &flicker_decoder_;
 	FlickerEngine &flicker_engine_;
+	const MainsSignalFrameDecoder &mains_signal_decoder_;
+	MainsSignalEngine &mains_signal_engine_;
 	AggregationHealth &health_;
 	/* Largest HRM1 packets cannot live on the 8 KiB worker stacks. */
 	AggregationFrame input_frame_{};

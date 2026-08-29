@@ -1,5 +1,5 @@
-#ifndef MSAP1_R5C1_M18_PROTOCOL_HPP
-#define MSAP1_R5C1_M18_PROTOCOL_HPP
+#ifndef MSAP1_R5C1_POWER_QUALITY_PROTOCOL_HPP
+#define MSAP1_R5C1_POWER_QUALITY_PROTOCOL_HPP
 
 #include "aggregation_protocol.hpp"
 
@@ -9,7 +9,7 @@
 
 namespace msap1::aggregation {
 
-struct M18PacketHeader {
+struct PowerQualityPacketHeader {
 	static constexpr std::size_t header_words = 4U;
 	static constexpr std::size_t crc_words = 1U;
 	static constexpr std::uint32_t contract_revision = 1U;
@@ -20,7 +20,7 @@ struct M18PacketHeader {
 	static constexpr std::size_t payload_index = 4U;
 };
 
-struct PqEventProtocol final : M18PacketHeader {
+struct PqEventProtocol final : PowerQualityPacketHeader {
 	static constexpr std::uint32_t magic = 0x31455150U; // "PQE1"
 	static constexpr std::size_t payload_words = 64U;
 	static constexpr std::size_t frame_words =
@@ -69,7 +69,7 @@ struct PqEventInputView final {
 	std::uint32_t apply_toggle{};
 };
 
-struct FlickerProtocol final : M18PacketHeader {
+struct FlickerProtocol final : PowerQualityPacketHeader {
 	static constexpr std::uint32_t magic = 0x314B4C46U; // "FLK1"
 	static constexpr std::size_t payload_words = 64U;
 	static constexpr std::size_t frame_words =
@@ -119,12 +119,49 @@ struct FlickerInputView final {
 		FlickerProtocol::phases> histogram{};
 };
 
-struct MainsSignalProtocol final : M18PacketHeader {
+struct MainsSignalProtocol final : PowerQualityPacketHeader {
 	static constexpr std::uint32_t magic = 0x3153434DU; // "MCS1"
 	static constexpr std::size_t payload_words = 20U;
 	static constexpr std::size_t frame_words =
 		header_words + payload_words + crc_words;
 	static constexpr std::size_t crc_index = frame_words - 1U;
+	static constexpr std::size_t sequence_word = 0U;
+	static constexpr std::size_t generation_word = 1U;
+	static constexpr std::size_t sample_rate_word = 2U;
+	static constexpr std::size_t status_word = 3U;
+	static constexpr std::size_t phases_word = 4U;
+	static constexpr std::size_t configured_millihz_word = 5U;
+	static constexpr std::size_t measured_millihz_word = 6U;
+	static constexpr std::size_t bandwidth_millihz_word = 7U;
+	static constexpr std::size_t observation_ms_word = 8U;
+	static constexpr std::size_t first_sample_word = 9U;
+	static constexpr std::size_t last_sample_word = 11U;
+	static constexpr std::size_t magnitude_microvolts_word = 13U;
+	static constexpr std::size_t background_microvolts_word = 16U;
+	static constexpr std::size_t threshold_e4_word = 19U;
+	static constexpr std::size_t phases = 3U;
+	static constexpr std::uint32_t status_mask = 0x3fU;
+	static constexpr std::uint32_t phases_mask = 0x00000707U;
+};
+
+struct MainsSignalInputView final {
+	std::uint32_t sequence{};
+	std::uint32_t configuration_generation{};
+	std::uint32_t sample_rate_hz{};
+	std::uint32_t status{};
+	std::uint8_t valid_phase_mask{};
+	std::uint8_t detected_phase_mask{};
+	std::uint32_t configured_millihz{};
+	std::uint32_t measured_millihz{};
+	std::uint32_t bandwidth_millihz{};
+	std::uint32_t observation_ms{};
+	std::uint64_t first_sample{};
+	std::uint64_t last_sample{};
+	std::array<std::uint32_t, MainsSignalProtocol::phases>
+		magnitude_microvolts{};
+	std::array<std::uint32_t, MainsSignalProtocol::phases>
+		background_microvolts{};
+	std::uint32_t threshold_e4{};
 };
 
 static_assert(PqEventProtocol::frame_words <= maximum_transport_frame_words);
@@ -134,4 +171,4 @@ static_assert(MainsSignalProtocol::frame_words <=
 
 } // namespace msap1::aggregation
 
-#endif
+#endif // MSAP1_R5C1_POWER_QUALITY_PROTOCOL_HPP

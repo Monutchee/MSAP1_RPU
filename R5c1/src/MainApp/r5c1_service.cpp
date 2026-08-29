@@ -1,6 +1,6 @@
 #include "r5c1_service.hpp"
 
-#include "m18_configuration.hpp"
+#include "power_quality_configuration.hpp"
 
 #include <cstring>
 
@@ -18,10 +18,11 @@ R5c1Service::R5c1Service(const msap1::CoreConfig &config,
 	msap1::aggregation::AggregationRuntime &runtime,
 	msap1::aggregation::R5AggregationEngine &engine,
 	msap1::aggregation::PqEventLifecycleEngine &pq_event_engine,
-	msap1::aggregation::FlickerEngine &flicker_engine) noexcept
+	msap1::aggregation::FlickerEngine &flicker_engine,
+	msap1::aggregation::MainsSignalEngine &mains_signal_engine) noexcept
 	: msap1::ControlService(config), health_(health), runtime_(runtime),
 	  engine_(engine), pq_event_engine_(pq_event_engine),
-	  flicker_engine_(flicker_engine)
+	  flicker_engine_(flicker_engine), mains_signal_engine_(mains_signal_engine)
 {
 }
 
@@ -42,13 +43,14 @@ bool R5c1Service::handle_custom(const msap1_rpu_msg_header &request,
 		}
 		msap1_m18_config_payload configuration{};
 		std::memcpy(&configuration, payload, sizeof(configuration));
-		if (!msap1::m18::valid_configuration(configuration)) {
+		if (!msap1::power_quality::valid_configuration(configuration)) {
 			(void)send_response(&request, src, MSAP1_RPU_MSG_ERROR,
 				MSAP1_RPU_STATUS_BAD_PAYLOAD, nullptr, 0U);
 			return true;
 		}
 		if (!pq_event_engine_.configure(configuration) ||
-			!flicker_engine_.configure(configuration)) {
+			!flicker_engine_.configure(configuration) ||
+			!mains_signal_engine_.configure(configuration)) {
 			(void)send_response(&request, src, MSAP1_RPU_MSG_ERROR,
 				MSAP1_RPU_STATUS_BAD_PAYLOAD, nullptr, 0U);
 			return true;
