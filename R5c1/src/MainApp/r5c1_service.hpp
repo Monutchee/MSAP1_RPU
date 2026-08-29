@@ -33,6 +33,7 @@ private:
 	msap1::aggregation::AggregationHealth &health_;
 	msap1::aggregation::AggregationRuntime &runtime_;
 	msap1::aggregation::R5AggregationEngine &engine_;
+	msap1_m18_config_payload m18_configuration_{};
 };
 
 #endif /* MSAP1_R5C1_SERVICE_HPP */

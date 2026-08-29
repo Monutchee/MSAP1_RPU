@@ -1,11 +1,17 @@
 #include "r5c1_service.hpp"
 
+#include "m18_configuration.hpp"
+
+#include <cstring>
+
 static_assert(sizeof(msap1_aggregation_health_payload) == 200U,
 	"R5C1 aggregation-health wire payload changed unexpectedly");
 static_assert(sizeof(msap1_demand_config_payload) == 12U,
 	"R5C1 demand-configuration wire payload changed unexpectedly");
 static_assert(sizeof(msap1_demand_config_ack_payload) == 16U,
 	"R5C1 demand-configuration ACK changed unexpectedly");
+static_assert(sizeof(msap1_m18_config_payload) == 316U,
+	"R5C1 M18-configuration wire payload changed unexpectedly");
 
 R5c1Service::R5c1Service(const msap1::CoreConfig &config,
 	msap1::aggregation::AggregationHealth &health,
@@ -25,6 +31,26 @@ void R5c1Service::on_endpoint_ready()
 bool R5c1Service::handle_custom(const msap1_rpu_msg_header &request,
 	const void *payload, std::uint16_t payload_len, std::uint32_t src)
 {
+	if (request.type == MSAP1_RPU_MSG_M18_CONFIG_SET) {
+		if (payload_len != sizeof(msap1_m18_config_payload)) {
+			(void)send_response(&request, src, MSAP1_RPU_MSG_ERROR,
+				MSAP1_RPU_STATUS_BAD_PAYLOAD, nullptr, 0U);
+			return true;
+		}
+		msap1_m18_config_payload configuration{};
+		std::memcpy(&configuration, payload, sizeof(configuration));
+		if (!msap1::m18::valid_configuration(configuration)) {
+			(void)send_response(&request, src, MSAP1_RPU_MSG_ERROR,
+				MSAP1_RPU_STATUS_BAD_PAYLOAD, nullptr, 0U);
+			return true;
+		}
+		m18_configuration_ = configuration;
+		const msap1_m18_config_ack_payload response{
+			configuration.generation, 0U};
+		(void)send_response(&request, src, MSAP1_RPU_MSG_M18_CONFIG,
+			MSAP1_RPU_STATUS_OK, &response, sizeof(response));
+		return true;
+	}
 	if (request.type == MSAP1_RPU_MSG_DEMAND_CONFIG_SET) {
 		if (payload_len != sizeof(msap1_demand_config_payload)) {
 			(void)send_response(&request, src, MSAP1_RPU_MSG_ERROR,

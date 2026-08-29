@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "rpu_control_protocol.h"
+
 namespace msap1::meter {
 
 inline constexpr std::size_t channel_count = 8;
@@ -93,6 +95,8 @@ public:
 	explicit MeteringPipeline(Hardware hardware);
 
 	Error configure(const Configuration &configuration);
+	Error stage_m18_configuration(
+		const msap1_m18_config_payload &configuration);
 	Status status() const;
 
 	const Configuration &configuration() const { return configuration_; }
@@ -111,6 +115,8 @@ private:
 	Hardware hardware_;
 	Configuration configuration_{};
 	bool configured_ = false;
+	msap1_m18_config_payload m18_configuration_{};
+	bool m18_staged_ = false;
 };
 
 } // namespace msap1::meter

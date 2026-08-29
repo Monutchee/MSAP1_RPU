@@ -117,9 +117,12 @@
 - Runtime sample-rate changes arrive in `METER_CONFIG_SET` while capture is
   stopped. Apply ADC PGA/SRC and PL window configuration as one coordinated
   operating-point transaction; the packaged boot default is 128 kSPS.
-  The 276-byte version-4 config payload ends with `nominal_frequency_hz`
-  (50 or 60 only), which drives the grid-timing registers above; keep the
-  wire header byte-identical with the APU copy when it changes.
+  The RPMsg-v9 meter payload is 352 bytes and includes simulator-v1.5 AM and
+  carrier controls; the separate fixed M18 policy payload is 316 bytes. Both
+  remain below the 384-byte control-frame bound and share one coordinated,
+  nonzero configuration generation. `nominal_frequency_hz` remains 50 or 60
+  only and drives the grid-timing registers above; keep the wire header
+  byte-identical with the APU copy when it changes.
 - Linux and the RPU share a physical UART. Leave `RSPMSG_DEBUG` disabled and do
   not add routine or per-packet UART output. Prefer RPMsg health/status queries.
 

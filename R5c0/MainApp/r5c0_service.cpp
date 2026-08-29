@@ -13,12 +13,15 @@
 #include "handlers/adc/adc_health.hpp"
 #include "handlers/adc/simulator_event.hpp"
 #include "handlers/meter/meter_config.hpp"
+#include "handlers/meter/m18_config.hpp"
 
 /* The wire ABI must stay byte-identical with the APU copy. */
 static_assert(sizeof(msap1_adc_health_payload) == 238,
 	      "ADC health wire layout must match the APU");
-static_assert(sizeof(msap1_meter_config_payload) == 312,
+static_assert(sizeof(msap1_meter_config_payload) == 352,
 	      "meter configuration wire layout must match the APU");
+static_assert(sizeof(msap1_m18_config_payload) == 316,
+	      "M18 configuration wire layout must match the APU");
 static_assert(sizeof(msap1_simulator_event_payload) == 24,
 	      "simulator event wire layout must match the APU");
 static_assert(sizeof(msap1_simulator_event_ack_payload) == 20,
@@ -71,6 +74,8 @@ bool R5c0Service::handle_custom(const msap1_rpu_msg_header &request,
 		return handle_adc_health(request, payload_len, src);
 	case MSAP1_RPU_MSG_METER_CONFIG_SET:
 		return handle_meter_config(request, payload, payload_len, src);
+	case MSAP1_RPU_MSG_M18_CONFIG_SET:
+		return handle_m18_config(request, payload, payload_len, src);
 	case MSAP1_RPU_MSG_ADC_DIAGNOSTIC_RUN:
 		return handle_adc_diagnostic(request, payload, payload_len,
 					     src);
@@ -134,6 +139,28 @@ bool R5c0Service::handle_meter_config(const msap1_rpu_msg_header &request,
 	}
 	send_response(&request, src, MSAP1_RPU_MSG_ACK, MSAP1_RPU_STATUS_OK,
 		      &acknowledgement, sizeof(acknowledgement));
+	return true;
+}
+
+bool R5c0Service::handle_m18_config(const msap1_rpu_msg_header &request,
+	const void *payload, std::uint16_t payload_len, std::uint32_t src)
+{
+	if (payload_len != sizeof(msap1_m18_config_payload)) {
+		send_error(request, src, MSAP1_RPU_STATUS_BAD_PAYLOAD);
+		return true;
+	}
+	msap1_m18_config_payload wire{};
+	std::memcpy(&wire, payload, sizeof(wire));
+	msap1_m18_config_ack_payload acknowledgement{};
+	const auto status = msap1::r5c0::stage_m18_config(
+		metering_, wire, acknowledgement);
+	if (status != MSAP1_RPU_STATUS_OK) {
+		send_error(request, src, status);
+		return true;
+	}
+	send_response(&request, src, MSAP1_RPU_MSG_M18_CONFIG,
+		MSAP1_RPU_STATUS_OK, &acknowledgement,
+		sizeof(acknowledgement));
 	return true;
 }
 

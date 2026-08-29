@@ -34,6 +34,8 @@ constexpr std::uint32_t reg_shadow_noise_base = 0xd0;
 constexpr std::uint32_t reg_active_noise_base = 0x100;
 constexpr std::uint32_t reg_shadow_harmonic_base = 0x200;
 constexpr std::uint32_t reg_active_harmonic_base = 0x240;
+constexpr std::uint32_t reg_shadow_m18_base = 0x280;
+constexpr std::uint32_t reg_active_m18_base = 0x2c0;
 constexpr std::uint32_t reg_shadow_event_control = 0x300;
 constexpr std::uint32_t reg_shadow_event_scale = 0x304;
 constexpr std::uint32_t reg_shadow_event_timing = 0x308;
@@ -47,8 +49,9 @@ constexpr std::uint32_t reg_active_event_timing = 0x320;
 constexpr std::uint32_t simulator_id = 0x53494d31u; // SIM1
 constexpr std::uint32_t supported_major_version = 1u;
 /* 1.1: DC offset, noise, preserve-phase, counter clears. 1.2: the four
- * global harmonic slots. 1.3: event sequencer. 1.4: Q16.16 slot ratios. */
-constexpr std::uint32_t required_minor_version = 4u;
+ * global harmonic slots. 1.3: event sequencer. 1.4: Q16.16 slot ratios.
+ * 1.5: deterministic AM and absolute carrier/adjacent tones. */
+constexpr std::uint32_t required_minor_version = 5u;
 constexpr std::uint32_t control_source_simulator = 1u << 0;
 constexpr std::uint32_t control_enable = 1u << 1;
 constexpr std::uint32_t control_preserve_phase = 1u << 2;
@@ -65,6 +68,19 @@ constexpr std::uint32_t event_trigger_clear = 1u << 2;
  * request instead of a silently different scenario. */
 constexpr std::uint32_t event_scale_max = 0x40000u;
 constexpr unsigned int readback_attempts = 1000;
+
+std::uint32_t phase_step_q32(std::uint32_t frequency_millihz,
+			     std::uint32_t sample_rate)
+{
+	if (frequency_millihz == 0u || sample_rate == 0u)
+		return 0u;
+	const std::uint64_t denominator =
+		static_cast<std::uint64_t>(sample_rate) * 1000u;
+	const std::uint64_t numerator =
+		static_cast<std::uint64_t>(frequency_millihz) << 32;
+	return static_cast<std::uint32_t>(
+		(numerator + denominator / 2u) / denominator);
+}
 
 bool valid(const Configuration &configuration,
 	   const SimulatorConfiguration &simulator)
@@ -107,6 +123,49 @@ bool valid(const Configuration &configuration,
 			 simulator.frequency_millihz) >> 16;
 		if (tone_millihz * 2u >= static_cast<std::uint64_t>(rate) * 1000u)
 			return false;
+	}
+	if ((simulator.am_channel_mask & ~0x7fu) != 0u ||
+	    simulator.am_depth_q16 > 0x10000u)
+		return false;
+	if (simulator.am_frequency_millihz == 0u) {
+		if (simulator.am_depth_q16 != 0u || simulator.am_channel_mask != 0u)
+			return false;
+	} else if (simulator.am_depth_q16 == 0u ||
+		   simulator.am_channel_mask == 0u ||
+		   simulator.am_frequency_millihz >= 1000000u ||
+		   static_cast<std::uint64_t>(simulator.am_frequency_millihz) * 2u >=
+			static_cast<std::uint64_t>(rate) * 1000u) {
+		return false;
+	}
+	if ((simulator.carrier_phase_mask & ~0x70u) != 0u ||
+	    simulator.carrier_fraction_q16 >= 0x10000u ||
+	    simulator.adjacent_fraction_q16 >= 0x10000u)
+		return false;
+	if (simulator.carrier_frequency_millihz == 0u) {
+		if (simulator.carrier_fraction_q16 != 0u ||
+		    simulator.carrier_phase_mask != 0u ||
+		    simulator.carrier_phase_q32 != 0u ||
+		    simulator.adjacent_frequency_millihz != 0u ||
+		    simulator.adjacent_fraction_q16 != 0u ||
+		    simulator.adjacent_phase_q32 != 0u)
+			return false;
+	} else {
+		if (simulator.carrier_fraction_q16 == 0u ||
+		    simulator.carrier_phase_mask == 0u ||
+		    static_cast<std::uint64_t>(
+			    simulator.carrier_frequency_millihz) * 2u >=
+			    static_cast<std::uint64_t>(rate) * 1000u)
+			return false;
+		if (simulator.adjacent_frequency_millihz == 0u) {
+			if (simulator.adjacent_fraction_q16 != 0u ||
+			    simulator.adjacent_phase_q32 != 0u)
+				return false;
+		} else if (simulator.adjacent_fraction_q16 == 0u ||
+			   static_cast<std::uint64_t>(
+				   simulator.adjacent_frequency_millihz) * 2u >=
+				   static_cast<std::uint64_t>(rate) * 1000u) {
+			return false;
+		}
 	}
 	return true;
 }
@@ -195,6 +254,23 @@ Error AdcSimulator::configure(const Configuration &configuration,
 	for (std::size_t word = 0; word < simulator.harmonic_words.size(); ++word)
 		write(reg_shadow_harmonic_base + word * 4u,
 		      simulator.harmonic_words[word]);
+	const std::array<std::uint32_t, 10> m18_words{
+		phase_step_q32(simulator.am_frequency_millihz,
+			       sample_rate_hz(configuration.sample_rate)),
+		simulator.am_depth_q16,
+		simulator.am_channel_mask,
+		phase_step_q32(simulator.carrier_frequency_millihz,
+			       sample_rate_hz(configuration.sample_rate)),
+		simulator.carrier_fraction_q16,
+		simulator.carrier_phase_mask,
+		simulator.carrier_phase_q32,
+		phase_step_q32(simulator.adjacent_frequency_millihz,
+			       sample_rate_hz(configuration.sample_rate)),
+		simulator.adjacent_fraction_q16,
+		simulator.adjacent_phase_q32,
+	};
+	for (std::size_t word = 0; word < m18_words.size(); ++word)
+		write(reg_shadow_m18_base + word * 4u, m18_words[word]);
 	write(reg_shadow_phase_step, simulator.phase_step_q32);
 
 	/* apply() folds the preserve-phase level into CONTROL. */
@@ -222,6 +298,8 @@ Error AdcSimulator::configure(const Configuration &configuration,
 	     ++word)
 		matches = read(reg_active_harmonic_base + word * 4u) ==
 			simulator.harmonic_words[word];
+	for (std::size_t word = 0; matches && word < m18_words.size(); ++word)
+		matches = read(reg_active_m18_base + word * 4u) == m18_words[word];
 	if (!matches)
 		return Error::AdcRegisterMismatch;
 
