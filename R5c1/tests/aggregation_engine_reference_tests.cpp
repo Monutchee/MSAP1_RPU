@@ -60,6 +60,21 @@
 #define MNC_REQUIRE_M15_INVALIDATION_MATRIX 0
 #endif
 
+// M18 reserves 0x000E/0x000F for finalized flicker/mains records, so the
+// pre-production M15 previews must remain on their migrated identities in the
+// exact R5C1 build contract consumed from the PL common header.
+static_assert(MREC_FORMAT_OPEN_TEN_MINUTE_V1 == 0x00200001u &&
+                  MREC_FORMAT_OPEN_TEN_MINUTE_POWER_V1 == 0x00210001u &&
+                  MREC_FORMAT_OPEN_TEN_MINUTE_PHASOR_V2 == 0x00220002u &&
+                  MREC_FORMAT_OPEN_TEN_MINUTE_UNBAL_V2 == 0x00230002u);
+static_assert(MREC_FORMAT_OPEN_TWO_HOUR_V1 == 0x00240001u &&
+                  MREC_FORMAT_OPEN_TWO_HOUR_POWER_V1 == 0x00250001u &&
+                  MREC_FORMAT_OPEN_TWO_HOUR_PHASOR_V2 == 0x00260002u &&
+                  MREC_FORMAT_OPEN_TWO_HOUR_UNBAL_V2 == 0x00270002u);
+static_assert(MREC_FORMAT_PQ_EVENT_V1 == 0x00060001u &&
+                  MREC_FORMAT_FLICKER_V1 == 0x000E0001u &&
+                  MREC_FORMAT_MAINS_SIGNAL_V1 == 0x000F0001u);
+
 static int failures = 0;
 static std::FILE *completed_trace = nullptr;
 static unsigned long long completed_digest = 1469598103934665603ull;
