@@ -81,6 +81,7 @@ void EnergyDemandEngine::clear_state() noexcept
 	energy_saturated_ = false;
 	energy_incomplete_ = false;
 	energy_discontinuity_ = false;
+	energy_started_ = false;
 	last_basic_identity_ = {};
 	have_last_basic_identity_ = false;
 	for (std::size_t index = 0U; index < phase_total_count; ++index) {
@@ -244,7 +245,7 @@ bool EnergyDemandEngine::same_family(const AggregationMeterRecord &record,
 
 void EnergyDemandEngine::begin_basic(const AggregationMeterRecord &record) noexcept
 {
-	if (basic_seen_) {
+	if (basic_seen_ && energy_started_) {
 		add_saturating(skipped_samples_, basic_identity_.sample_count);
 		increment_saturating(skipped_blocks_);
 		energy_incomplete_ = true;
@@ -270,7 +271,8 @@ void EnergyDemandEngine::accept_basic_power(
 	const AggregationMeterRecord &record) noexcept
 {
 	if (!basic_seen_ || !same_family(record, basic_identity_)) {
-		energy_incomplete_ = true;
+		if (energy_started_)
+			energy_incomplete_ = true;
 		return;
 	}
 	for (std::size_t phase = 0U; phase < 3U; ++phase) {
@@ -293,7 +295,8 @@ void EnergyDemandEngine::accept_basic_phasor(
 	const AggregationMeterRecord &record) noexcept
 {
 	if (!basic_seen_ || !same_family(record, basic_identity_)) {
-		energy_incomplete_ = true;
+		if (energy_started_)
+			energy_incomplete_ = true;
 		return;
 	}
 	for (std::size_t phase = 0U; phase < 3U; ++phase)
@@ -439,23 +442,18 @@ bool EnergyDemandEngine::finish_basic(const AggregationMeterRecord &record,
 {
 	if (!basic_seen_ || !same_family(record, basic_identity_) ||
 		!basic_power_seen_ || !basic_phasor_seen_) {
-		energy_incomplete_ = true;
-		energy_discontinuity_ = true;
-		if (basic_seen_) {
-			add_saturating(skipped_samples_, basic_identity_.sample_count);
-			increment_saturating(skipped_blocks_);
-			remember_basic_source();
+		if (energy_started_) {
+			energy_incomplete_ = true;
+			energy_discontinuity_ = true;
+			if (basic_seen_) {
+				add_saturating(skipped_samples_, basic_identity_.sample_count);
+				increment_saturating(skipped_blocks_);
+				remember_basic_source();
+			}
 		}
 		clear_basic_pending();
 		return true;
 	}
-	if (reject_duplicate_or_stale_basic()) {
-		clear_basic_pending();
-		return true;
-	}
-	note_basic_gap();
-	if ((basic_identity_.status & (1U << 2U)) != 0U)
-		energy_discontinuity_ = true;
 
 	const bool common_eligible = basic_identity_.sample_count != 0U &&
 		supported_sample_rate(basic_identity_.sample_rate_hz) &&
@@ -464,6 +462,29 @@ bool EnergyDemandEngine::finish_basic(const AggregationMeterRecord &record,
 		basic_power_status_ == basic_identity_.status &&
 		record.words[MREC_EMIT_DROPS_WORD] == 0U &&
 		record.words[MREC_RESULT_DROPS_WORD] == 0U;
+	const bool fully_valid = basic_summary_valid_ == 0x0fU &&
+		basic_quadrant_valid_ == 0x0fU;
+
+	// A boot, PL reset, or initial APPLY can finish one Basic family before the
+	// complete typed pipeline has a trustworthy session baseline. Keep all such
+	// input outside the energy session: publish nothing, count no skipped time,
+	// and begin only on the first coherent family which could be integrated in
+	// full. After this point every rejection remains sticky and observable.
+	if (!energy_started_) {
+		if (!common_eligible || !fully_valid) {
+			clear_basic_pending();
+			return true;
+		}
+		energy_started_ = true;
+	}
+
+	if (reject_duplicate_or_stale_basic()) {
+		clear_basic_pending();
+		return true;
+	}
+	note_basic_gap();
+	if ((basic_identity_.status & (1U << 2U)) != 0U)
+		energy_discontinuity_ = true;
 
 	if (!common_eligible) {
 		add_saturating(skipped_samples_, basic_identity_.sample_count);

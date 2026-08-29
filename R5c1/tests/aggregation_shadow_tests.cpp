@@ -1020,6 +1020,63 @@ void emit_basic_energy(aggregation::EnergyDemandEngine &engine,
 	expect(engine.observe(unbalance, sink, true), "ENERGY accepts UNBALANCE");
 }
 
+void test_energy_engine_discards_startup_priming()
+{
+	constexpr std::int64_t one_micro_hour_per_second = 3600000000LL;
+	CapturingRecordSink sink;
+	aggregation::EnergyDemandEngine engine(0x4d313700U);
+	engine.initialize(0x4d313700U);
+
+	// A complete but ineligible startup family is outside the energy session.
+	emit_basic_energy(engine, sink, 1U,
+		{one_micro_hour_per_second, 0, 0, one_micro_hour_per_second},
+		{one_micro_hour_per_second, 0, 0, one_micro_hour_per_second},
+		1U << MREC_STATUS_ARITHMETIC_BIT);
+	expect(sink.count == 0U,
+		"ineligible startup family emits no authoritative ENERGY pair");
+
+	// Nor does a typed family which is incomplete while the pipeline starts.
+	auto basic = make_typed_record(MREC_FORMAT_BASIC_V4, 2U);
+	write_record_u64(basic, BASIC_LAST_SAMPLE_LOW_WORD, 1999U);
+	auto power = make_typed_record(MREC_FORMAT_POWER_V1, 2U);
+	const auto unbalance = make_typed_record(MREC_FORMAT_UNBAL_V2, 2U);
+	expect(engine.observe(basic, sink, true), "startup priming accepts BASIC");
+	expect(engine.observe(power, sink, true), "startup priming accepts POWER");
+	expect(engine.observe(unbalance, sink, true),
+		"startup priming discards a family missing PHASOR");
+	expect(sink.count == 0U,
+		"incomplete startup family remains outside session provenance");
+
+	// The first fully valid family defines the session baseline and begins at a
+	// clean zero-skipped provenance point.
+	emit_basic_energy(engine, sink, 3U,
+		{one_micro_hour_per_second, 0, 0, one_micro_hour_per_second},
+		{one_micro_hour_per_second, 0, 0, one_micro_hour_per_second});
+	expect(sink.count == 2U, "first eligible family emits one ENERGY pair");
+	const auto &first = sink.records[0U];
+	expect(read_record_u64(first, ENERGY_SUMMARY_IMPORT_BASE_WORD) == 1U &&
+		first.words[ENERGY_ACCEPTED_BLOCKS_WORD] == 1U &&
+		first.words[ENERGY_SKIPPED_BLOCKS_WORD] == 0U &&
+		read_record_u64(first, ENERGY_SKIPPED_SAMPLES_LOW_WORD) == 0U &&
+		(first.words[MREC_STATUS_WORD] &
+			((1U << ENERGY_STATUS_INCOMPLETE_INPUT_BIT) |
+			 (1U << ENERGY_STATUS_DISCONTINUITY_BIT))) == 0U,
+		"first ENERGY checkpoint is complete with no startup skip provenance");
+
+	// Once the session has started, the same invalidity remains sticky and is
+	// never hidden as startup behavior.
+	emit_basic_energy(engine, sink, 4U,
+		{one_micro_hour_per_second, 0, 0, one_micro_hour_per_second},
+		{one_micro_hour_per_second, 0, 0, one_micro_hour_per_second},
+		1U << MREC_STATUS_ARITHMETIC_BIT);
+	expect(sink.count == 4U &&
+		sink.records[2U].words[ENERGY_SKIPPED_BLOCKS_WORD] == 1U &&
+		read_record_u64(sink.records[2U], ENERGY_SKIPPED_SAMPLES_LOW_WORD) == 1000U &&
+		(sink.records[2U].words[MREC_STATUS_WORD] &
+			(1U << ENERGY_STATUS_INCOMPLETE_INPUT_BIT)) != 0U,
+		"post-baseline invalid family remains sticky and observable");
+}
+
 void test_energy_engine_four_quadrants_and_axes()
 {
 	static_assert(met_energy_quadrant(1, 1) == EnergyQuadrant::quadrant_i);
@@ -1303,7 +1360,7 @@ void test_demand_engine_peaks_and_contamination()
 		"contaminated interval does not update session peaks");
 }
 
-void test_r5_engine_emits_complete_basic_family()
+void test_r5_engine_primes_energy_before_emission()
 {
 	constexpr std::uint32_t generation = 0x12345678U;
 	constexpr std::uint32_t samples_per_cycle = 533U;
@@ -1314,7 +1371,7 @@ void test_r5_engine_emits_complete_basic_family()
 	expect(engine.initialize(), "R5 aggregation engine initialization");
 
 	std::uint64_t first_sample = 0U;
-	for (std::uint32_t cycle = 1U; cycle <= 12U; ++cycle) {
+	for (std::uint32_t cycle = 1U; cycle <= 24U; ++cycle) {
 		auto words = make_zero_cycle(cycle, generation, first_sample,
 			samples_per_cycle);
 		aggregation::AggregationInputView input{};
@@ -1332,9 +1389,13 @@ void test_r5_engine_emits_complete_basic_family()
 		first_sample += samples_per_cycle;
 	}
 
-	expect(sink.count == 6U,
-		"12 cycles must emit one four-record Basic family and two ENERGY parts");
-	constexpr std::array<std::uint32_t, 6U> expected_formats = {
+	expect(sink.count == 10U,
+		"startup Basic primes energy; the next Basic emits the first ENERGY pair");
+	constexpr std::array<std::uint32_t, 10U> expected_formats = {
+		MREC_FORMAT_BASIC_V4,
+		MREC_FORMAT_POWER_V1,
+		MREC_FORMAT_PHASOR_V2,
+		MREC_FORMAT_UNBAL_V2,
 		MREC_FORMAT_BASIC_V4,
 		MREC_FORMAT_POWER_V1,
 		MREC_FORMAT_PHASOR_V2,
@@ -1351,26 +1412,35 @@ void test_r5_engine_emits_complete_basic_family()
 			"R5 record byte count");
 		expect(record.words[MREC_FORMAT_WORD] == expected_formats[index],
 			"R5 Basic-family record order and format");
-		expect(record.words[MREC_SEQUENCE_WORD] == 1U,
+		const auto expected_sequence = index < 4U ? 1U : 2U;
+		expect(record.words[MREC_SEQUENCE_WORD] == expected_sequence,
 			"R5 Basic-family sequence");
 	}
-	expect((sink.records[4U].words[MREC_FORMAT_HEADER_WORD] & 0x3U) ==
+	expect((sink.records[8U].words[MREC_FORMAT_HEADER_WORD] & 0x3U) ==
 		ENERGY_PART_SUMMARY &&
-		(sink.records[5U].words[MREC_FORMAT_HEADER_WORD] & 0x3U) ==
+		(sink.records[9U].words[MREC_FORMAT_HEADER_WORD] & 0x3U) ==
 			ENERGY_PART_QUADRANTS,
 		"ENERGY summary and quadrant part ordering");
-	expect(((sink.records[4U].words[MREC_FORMAT_HEADER_WORD] >>
+	expect(((sink.records[8U].words[MREC_FORMAT_HEADER_WORD] >>
 		ENERGY_HEADER_PART_COUNT_LSB) & 0x3U) == ENERGY_PART_COUNT &&
-		((sink.records[5U].words[MREC_FORMAT_HEADER_WORD] >>
+		((sink.records[9U].words[MREC_FORMAT_HEADER_WORD] >>
 		ENERGY_HEADER_PART_COUNT_LSB) & 0x3U) == ENERGY_PART_COUNT,
 		"ENERGY atomic family part count");
+	expect(sink.records[8U].words[ENERGY_ACCEPTED_BLOCKS_WORD] == 1U &&
+		sink.records[8U].words[ENERGY_SKIPPED_BLOCKS_WORD] == 0U &&
+		read_record_u64(sink.records[8U], ENERGY_SKIPPED_SAMPLES_LOW_WORD) == 0U,
+		"startup priming is outside accepted/skipped session provenance");
+	expect((sink.records[8U].words[MREC_STATUS_WORD] &
+		((1U << ENERGY_STATUS_INCOMPLETE_INPUT_BIT) |
+		 (1U << ENERGY_STATUS_DISCONTINUITY_BIT))) == 0U,
+		"first authoritative ENERGY family starts complete and continuous");
 
 	const auto status = health.snapshot();
 	expect(status.engine_ready, "R5 aggregation engine remains ready");
 	expect(status.authoritative,
 		"emit-mode R5 aggregation engine reports authoritative");
-	expect(status.basic_completed == 1U,
-		"R5 health counts the completed Basic measurement record");
+	expect(status.basic_completed == 2U,
+		"R5 health counts both completed Basic measurement records");
 }
 
 void test_r5_engine_fails_closed_when_output_rejects_record()
@@ -1485,10 +1555,11 @@ int main()
 	test_ring_pressure_telemetry();
 	test_scheduler_timing_survives_pmu_counter_wrap();
 	test_bounded_input_handoff_preserves_validator_progress();
+	test_energy_engine_discards_startup_priming();
 	test_energy_engine_four_quadrants_and_axes();
 	test_energy_engine_rates_remainders_invalidity_and_saturation();
 	test_demand_engine_peaks_and_contamination();
-	test_r5_engine_emits_complete_basic_family();
+	test_r5_engine_primes_energy_before_emission();
 	test_r5_engine_fails_closed_when_output_rejects_record();
 	test_r5_engine_drains_deferred_aggregate_family();
 	test_r5_shadow_mode_is_non_authoritative();

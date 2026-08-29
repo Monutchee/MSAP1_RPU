@@ -67,17 +67,22 @@
   `P>=0,Q1>0`, II is `P<0,Q1>0`, III is `P<0,Q1<0`, and IV is
   `P>=0,Q1<0`; `Q1==0` contributes to no quadrant. DEMAND-v1
   (`0x00040001`) is active-only and emitted at completed UTC ten-minute
-  boundaries. Linux owns lifetime totals and reset epochs; APPLY and invalid
-  blocks never reset the R5C1 session. Generate the nonzero boot session ID
+  boundaries. That demand cadence is an M17 product policy aligned with the
+  existing PQ clock, not an IEC 61000-4-30 requirement for active demand.
+  Linux owns lifetime totals and reset epochs; APPLY and invalid blocks never
+  reset the R5C1 session. Generate the nonzero boot session ID
   only after BSP/runtime constructors complete, mixing the SoC-wide system
   counter with the R5-local cycle counter; never derive it from deterministic
   static-constructor timing or addresses.
 - Keep the M17 engine and all future large accumulator state in static
   `.bss`/`.data`, clear it in place, and keep it non-copyable. Processing paths
   must not allocate dynamically or place whole engines/large arrays on a task
-  stack. Retain fixed-point division remainders, saturate public counters
-  instead of wrapping, and preserve sticky saturation, discontinuity, and
-  incomplete-input provenance.
+  stack. Retain fixed-point division remainders and saturate public counters
+  instead of wrapping. Before the first fully valid coherent Basic family,
+  treat input as startup priming: do not integrate it, emit ENERGY, or count it
+  as skipped session time. After that baseline is established, preserve sticky
+  saturation, discontinuity, and incomplete-input provenance for every real
+  runtime rejection.
 - Physical and simulated ADC sources share the raw PL stream boundary. Stop
   capture before switching sources and commit a source change only after
   target-device configuration and PL readback succeed. While simulation is

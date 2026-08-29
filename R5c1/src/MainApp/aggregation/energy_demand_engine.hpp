@@ -111,6 +111,9 @@ private:
 	bool energy_saturated_{};
 	bool energy_incomplete_{};
 	bool energy_discontinuity_{};
+	// Startup input is priming until one complete, fully valid Basic family
+	// establishes the session's first authoritative integration window.
+	bool energy_started_{};
 	FamilyIdentity last_basic_identity_{};
 	bool have_last_basic_identity_{};
 
