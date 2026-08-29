@@ -308,6 +308,14 @@ def main() -> int:
 
         if not args.skip_app_build:
             for component_name in ("R5c0", "R5c1"):
+                # Vitis does not reliably rerun CMake when UserConfig.cmake's
+                # USER_COMPILE_SOURCES changes.  Recreate the generated app
+                # build tree so a newly added engine cannot be omitted while
+                # component.build() still reports success.
+                app_build_dir = workspace / component_name / "build"
+                if app_build_dir.exists():
+                    print(f"Removing stale application build tree: {app_build_dir}")
+                    shutil.rmtree(app_build_dir)
                 print(f"Building {component_name}")
                 component = client.get_component(name=component_name)
                 status = component.build()

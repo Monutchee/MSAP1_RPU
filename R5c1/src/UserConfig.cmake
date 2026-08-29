@@ -68,7 +68,9 @@ set(USER_COMPILE_SOURCES
 "MainApp/aggregation/aggregation_shadow_service.cpp"
 "MainApp/aggregation/axi_fifo_aggregation_transport.cpp"
 "MainApp/aggregation/crc32c.cpp"
+"MainApp/aggregation/energy_demand_engine.cpp"
 "MainApp/aggregation/r5_aggregation_engine.cpp"
+"MainApp/aggregation/r5_session_id.cpp"
 "MainApp/aggregation/aggregation_engine.cpp"
 # Generic OpenAMP helper library (git submodule: libs/openamp-helper)
 "../../libs/openamp-helper/src/openamp_platform.cpp"
@@ -136,7 +138,7 @@ set(USER_COMPILE_RELAXATION "-Wl,--no-relax")
 set(USER_COMPILE_GARBAGE "")
 # Add any compiler options that are not covered by the above variables, they will be added as extra compiler options
 # To enable profiling -pg [ for gprof ]  or -p [ for prof information ]
-set(USER_COMPILE_OTHER_FLAGS "-Wno-unknown-pragmas")
+set(USER_COMPILE_OTHER_FLAGS "-Wno-unknown-pragmas -fstack-usage")
 
 # -----------------------------------------
 

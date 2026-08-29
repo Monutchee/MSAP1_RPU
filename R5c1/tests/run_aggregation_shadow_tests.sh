@@ -56,6 +56,7 @@ done
 # them rather than weakening warning enforcement for RPU-owned code.
 for source in \
 	"$source_dir/aggregation_engine.cpp" \
+	"$source_dir/energy_demand_engine.cpp" \
 	"$source_dir/harmonic_aggregation_engine.cpp"
 do
 	object="$build_dir/$(basename "$source" .cpp).o"

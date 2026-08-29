@@ -7,16 +7,46 @@
 #include "harmonic_aggregation_engine.hpp"
 #include "harmonic_frame_decoder.hpp"
 #include "r5_aggregation_engine.hpp"
+#include "r5_session_id.hpp"
 
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <string_view>
+#include <type_traits>
 
 namespace aggregation = msap1::aggregation;
 
+static_assert(!std::is_copy_constructible_v<aggregation::EnergyDemandEngine>);
+static_assert(!std::is_copy_assignable_v<aggregation::EnergyDemandEngine>);
+static_assert(!std::is_move_constructible_v<aggregation::EnergyDemandEngine>);
+static_assert(!std::is_move_assignable_v<aggregation::EnergyDemandEngine>);
+
 namespace {
+
+void expect(bool condition, std::string_view message);
+
+void test_session_id_uses_boot_varying_counter()
+{
+	constexpr aggregation::R5SessionEntropy first{
+		.shared_system_counter = 0x0123456789abcdefULL,
+		.local_cycle_counter_before = 0x1234U,
+		.local_cycle_counter_after = 0x5678U,
+	};
+	constexpr auto second = aggregation::R5SessionEntropy{
+		.shared_system_counter = first.shared_system_counter + 1U,
+		.local_cycle_counter_before = first.local_cycle_counter_before,
+		.local_cycle_counter_after = first.local_cycle_counter_after,
+	};
+	constexpr auto first_id = aggregation::derive_r5_session_id(first);
+	constexpr auto second_id = aggregation::derive_r5_session_id(second);
+	static_assert(first_id != 0U && second_id != 0U);
+	static_assert(first_id != second_id);
+	expect(first_id != second_id,
+		"SoC-wide boot counter must change the R5C1 session ID");
+}
 
 class CapturingRecordSink final : public aggregation::AggregationRecordSink {
 public:
@@ -29,8 +59,8 @@ public:
 		return true;
 	}
 
-	// Thirty-one Basic families plus two deferred 150/180-cycle families need
-	// 132 records. Keep enough headroom for additional low-cadence interval
+	// Thirty-one six-record Basic/Energy families plus two deferred
+	// 150/180-cycle families fit below 256 records. Keep enough headroom for
 	// assertions so a test of the engine scheduler cannot fail merely because
 	// this capture-only sink filled first.
 	std::array<aggregation::AggregationMeterRecord, 256U> records{};
@@ -47,6 +77,27 @@ public:
 	}
 
 	std::size_t attempts{};
+};
+
+class LatestEnergyRecordSink final : public aggregation::AggregationRecordSink {
+public:
+	[[nodiscard]] bool publish(
+		const aggregation::AggregationMeterRecord &record) noexcept override
+	{
+		if (record.words[MREC_FORMAT_WORD] != MREC_FORMAT_ENERGY_V1)
+			return false;
+		if ((record.words[MREC_FORMAT_HEADER_WORD] & 0x3U) ==
+		    ENERGY_PART_SUMMARY)
+			summary = record;
+		else
+			quadrants = record;
+		++count;
+		return true;
+	}
+
+	aggregation::AggregationMeterRecord summary{};
+	aggregation::AggregationMeterRecord quadrants{};
+	std::size_t count{};
 };
 
 class CountingHarmonicSink final : public aggregation::AggregationRecordSink {
@@ -884,7 +935,579 @@ make_zero_cycle(std::uint32_t sequence, std::uint32_t generation,
 	return words;
 }
 
-void test_r5_engine_emits_complete_basic_family()
+void write_record_u64(aggregation::AggregationMeterRecord &record,
+	std::size_t low_word, std::uint64_t value)
+{
+	record.words[low_word] = static_cast<std::uint32_t>(value);
+	record.words[low_word + 1U] = static_cast<std::uint32_t>(value >> 32U);
+}
+
+void write_record_s64(aggregation::AggregationMeterRecord &record,
+	std::size_t low_word, std::int64_t value)
+{
+	write_record_u64(record, low_word, std::bit_cast<std::uint64_t>(value));
+}
+
+std::uint64_t read_record_u64(
+	const aggregation::AggregationMeterRecord &record, std::size_t low_word)
+{
+	return static_cast<std::uint64_t>(record.words[low_word]) |
+		(static_cast<std::uint64_t>(record.words[low_word + 1U]) << 32U);
+}
+
+std::int64_t read_record_s64(
+	const aggregation::AggregationMeterRecord &record, std::size_t low_word)
+{
+	return std::bit_cast<std::int64_t>(read_record_u64(record, low_word));
+}
+
+aggregation::AggregationMeterRecord make_typed_record(std::uint32_t format,
+	std::uint32_t sequence, std::uint32_t status = 0U,
+	std::uint32_t sample_rate_hz = 1000U,
+	std::uint32_t sample_count = 1000U)
+{
+	aggregation::AggregationMeterRecord record{};
+	record.sequence = sequence;
+	record.words[MREC_MAGIC_WORD] = MREC_MAGIC;
+	record.words[MREC_FORMAT_WORD] = format;
+	record.words[MREC_SIZE_WORD] =
+		aggregation::AggregationMeterRecord::byte_count;
+	record.words[MREC_SEQUENCE_WORD] = sequence;
+	record.words[MREC_GENERATION_WORD] = 0x4d313700U;
+	record.words[MREC_SAMPLE_RATE_WORD] = sample_rate_hz;
+	record.words[MREC_SAMPLE_COUNT_WORD] = sample_count;
+	record.words[MREC_VALID_MASK_WORD] = 0x7fU;
+	record.words[MREC_STATUS_WORD] = status;
+	write_record_u64(record, MREC_FIRST_SAMPLE_LOW_WORD,
+		static_cast<std::uint64_t>(sequence - 1U) * sample_count);
+	return record;
+}
+
+void emit_basic_energy(aggregation::EnergyDemandEngine &engine,
+	aggregation::AggregationRecordSink &sink, std::uint32_t sequence,
+	const std::array<std::int64_t, 4U> &active,
+	const std::array<std::int64_t, 4U> &reactive,
+	std::uint32_t status = 0U, std::uint32_t sample_rate_hz = 1000U,
+	std::uint32_t sample_count = 1000U)
+{
+	auto basic = make_typed_record(MREC_FORMAT_BASIC_V4, sequence, status,
+		sample_rate_hz, sample_count);
+	write_record_u64(basic, BASIC_LAST_SAMPLE_LOW_WORD,
+		static_cast<std::uint64_t>(sequence) * sample_count - 1U);
+	auto power = make_typed_record(MREC_FORMAT_POWER_V1, sequence, status,
+		sample_rate_hz, sample_count);
+	for (std::size_t phase = 0U; phase < 3U; ++phase) {
+		const auto base = static_cast<std::size_t>(POWER_PHASE_BASE_WORD) +
+			phase * static_cast<std::size_t>(POWER_PHASE_STRIDE);
+		write_record_s64(power, base + POWER_PHASE_P_LOW, active[phase]);
+		write_record_u64(power, base + POWER_PHASE_S_LOW, 3600000000ULL);
+	}
+	write_record_s64(power, POWER_TOTAL_P_LOW_WORD, active[3U]);
+	write_record_u64(power, POWER_TOTAL_S_LOW_WORD, 3600000000ULL);
+	auto phasor = make_typed_record(MREC_FORMAT_PHASOR_V2, sequence, status,
+		sample_rate_hz, sample_count);
+	for (std::size_t phase = 0U; phase < 3U; ++phase)
+		write_record_s64(phasor,
+			static_cast<std::size_t>(PHASOR_Q1_BASE_WORD) + phase * 2U,
+			reactive[phase]);
+	write_record_s64(phasor, PHASOR_Q1_TOTAL_LOW_WORD, reactive[3U]);
+	const auto unbalance = make_typed_record(MREC_FORMAT_UNBAL_V2, sequence,
+		status, sample_rate_hz, sample_count);
+
+	expect(engine.observe(basic, sink, true), "ENERGY accepts BASIC");
+	expect(engine.observe(power, sink, true), "ENERGY accepts POWER");
+	expect(engine.observe(phasor, sink, true), "ENERGY accepts PHASOR");
+	expect(engine.observe(unbalance, sink, true), "ENERGY accepts UNBALANCE");
+}
+
+void test_energy_engine_discards_startup_priming()
+{
+	constexpr std::int64_t one_micro_hour_per_second = 3600000000LL;
+	CapturingRecordSink sink;
+	aggregation::EnergyDemandEngine engine(0x4d313700U);
+	engine.initialize(0x4d313700U);
+
+	// A complete but ineligible startup family is outside the energy session.
+	emit_basic_energy(engine, sink, 1U,
+		{one_micro_hour_per_second, 0, 0, one_micro_hour_per_second},
+		{one_micro_hour_per_second, 0, 0, one_micro_hour_per_second},
+		1U << MREC_STATUS_ARITHMETIC_BIT);
+	expect(sink.count == 0U,
+		"ineligible startup family emits no authoritative ENERGY pair");
+
+	// Nor does a typed family which is incomplete while the pipeline starts.
+	auto basic = make_typed_record(MREC_FORMAT_BASIC_V4, 2U);
+	write_record_u64(basic, BASIC_LAST_SAMPLE_LOW_WORD, 1999U);
+	auto power = make_typed_record(MREC_FORMAT_POWER_V1, 2U);
+	const auto unbalance = make_typed_record(MREC_FORMAT_UNBAL_V2, 2U);
+	expect(engine.observe(basic, sink, true), "startup priming accepts BASIC");
+	expect(engine.observe(power, sink, true), "startup priming accepts POWER");
+	expect(engine.observe(unbalance, sink, true),
+		"startup priming discards a family missing PHASOR");
+	expect(sink.count == 0U,
+		"incomplete startup family remains outside session provenance");
+
+	// The first fully valid family defines the session baseline and begins at a
+	// clean zero-skipped provenance point.
+	emit_basic_energy(engine, sink, 3U,
+		{one_micro_hour_per_second, 0, 0, one_micro_hour_per_second},
+		{one_micro_hour_per_second, 0, 0, one_micro_hour_per_second});
+	expect(sink.count == 2U, "first eligible family emits one ENERGY pair");
+	const auto &first = sink.records[0U];
+	expect(read_record_u64(first, ENERGY_SUMMARY_IMPORT_BASE_WORD) == 1U &&
+		first.words[ENERGY_ACCEPTED_BLOCKS_WORD] == 1U &&
+		first.words[ENERGY_SKIPPED_BLOCKS_WORD] == 0U &&
+		read_record_u64(first, ENERGY_SKIPPED_SAMPLES_LOW_WORD) == 0U &&
+		(first.words[MREC_STATUS_WORD] &
+			((1U << ENERGY_STATUS_INCOMPLETE_INPUT_BIT) |
+			 (1U << ENERGY_STATUS_DISCONTINUITY_BIT))) == 0U,
+		"first ENERGY checkpoint is complete with no startup skip provenance");
+
+	// Once the session has started, the same invalidity remains sticky and is
+	// never hidden as startup behavior.
+	emit_basic_energy(engine, sink, 4U,
+		{one_micro_hour_per_second, 0, 0, one_micro_hour_per_second},
+		{one_micro_hour_per_second, 0, 0, one_micro_hour_per_second},
+		1U << MREC_STATUS_ARITHMETIC_BIT);
+	expect(sink.count == 4U &&
+		sink.records[2U].words[ENERGY_SKIPPED_BLOCKS_WORD] == 1U &&
+		read_record_u64(sink.records[2U], ENERGY_SKIPPED_SAMPLES_LOW_WORD) == 1000U &&
+		(sink.records[2U].words[MREC_STATUS_WORD] &
+			(1U << ENERGY_STATUS_INCOMPLETE_INPUT_BIT)) != 0U,
+		"post-baseline invalid family remains sticky and observable");
+}
+
+void test_energy_engine_four_quadrants_and_axes()
+{
+	static_assert(met_energy_quadrant(1, 1) == EnergyQuadrant::quadrant_i);
+	static_assert(met_energy_quadrant(-1, 1) == EnergyQuadrant::quadrant_ii);
+	static_assert(met_energy_quadrant(-1, -1) == EnergyQuadrant::quadrant_iii);
+	static_assert(met_energy_quadrant(1, -1) == EnergyQuadrant::quadrant_iv);
+	static_assert(met_energy_quadrant(0, 1) == EnergyQuadrant::quadrant_i);
+	static_assert(met_energy_quadrant(0, -1) == EnergyQuadrant::quadrant_iv);
+	static_assert(met_energy_quadrant(1, 0) == EnergyQuadrant::none);
+
+	constexpr std::uint64_t session_id = 0xfedcba9876543210ULL;
+	constexpr std::int64_t one_micro_hour_per_second = 3600000000LL;
+	CapturingRecordSink sink;
+	aggregation::EnergyDemandEngine engine(session_id);
+	engine.initialize(session_id);
+	emit_basic_energy(engine, sink, 1U,
+		{one_micro_hour_per_second, -one_micro_hour_per_second,
+			-one_micro_hour_per_second, one_micro_hour_per_second},
+		{one_micro_hour_per_second, one_micro_hour_per_second,
+			-one_micro_hour_per_second, -one_micro_hour_per_second});
+	expect(sink.count == 2U, "one Basic family emits two ENERGY parts");
+	const auto &summary = sink.records[0U];
+	const auto &quadrants = sink.records[1U];
+	expect(read_record_u64(summary, ENERGY_SUMMARY_IMPORT_BASE_WORD) == 1U &&
+		read_record_u64(summary,
+			ENERGY_SUMMARY_IMPORT_BASE_WORD + 3U * ENERGY_VALUE_STRIDE) == 1U,
+		"positive active power integrates import for phase and algebraic total");
+	expect(read_record_u64(summary,
+		ENERGY_SUMMARY_EXPORT_BASE_WORD + ENERGY_VALUE_STRIDE) == 1U &&
+		read_record_u64(summary,
+			ENERGY_SUMMARY_EXPORT_BASE_WORD + 2U * ENERGY_VALUE_STRIDE) == 1U,
+		"negative active power integrates export by magnitude");
+	for (std::size_t index = 0U; index < 4U; ++index)
+		expect(read_record_u64(summary,
+			ENERGY_SUMMARY_APPARENT_BASE_WORD + index * ENERGY_VALUE_STRIDE) == 1U,
+			"apparent energy integrates phase/total values");
+	constexpr std::array<std::size_t, 4U> quadrant_bases = {
+		ENERGY_QUADRANT_I_BASE_WORD, ENERGY_QUADRANT_II_BASE_WORD,
+		ENERGY_QUADRANT_III_BASE_WORD, ENERGY_QUADRANT_IV_BASE_WORD};
+	for (std::size_t index = 0U; index < 4U; ++index)
+		expect(read_record_u64(quadrants,
+			quadrant_bases[index] + index * ENERGY_VALUE_STRIDE) == 1U,
+			"each P/Q sign pair selects its quadrant independently");
+	expect(read_record_u64(quadrants, ENERGY_SESSION_ID_LOW_WORD) == session_id,
+		"ENERGY preserves the 64-bit R5C1 session identity");
+
+	// P == 0 remains on the import side; Q == 0 accumulates no quadrant.
+	emit_basic_energy(engine, sink, 2U, {0, 0, 0, 0},
+		{one_micro_hour_per_second, -one_micro_hour_per_second, 0, 0});
+	expect(sink.count == 4U, "second Basic family emits a cumulative ENERGY pair");
+	const auto &axis_quadrants = sink.records[3U];
+	expect(read_record_u64(axis_quadrants, ENERGY_QUADRANT_I_BASE_WORD) == 2U,
+		"P-axis positive reactive energy selects quadrant I");
+	expect(read_record_u64(axis_quadrants,
+		ENERGY_QUADRANT_IV_BASE_WORD + ENERGY_VALUE_STRIDE) == 1U,
+		"P-axis negative reactive energy selects quadrant IV");
+	expect(read_record_u64(axis_quadrants,
+		ENERGY_QUADRANT_III_BASE_WORD + 2U * ENERGY_VALUE_STRIDE) == 1U,
+		"Q-axis zero adds no reactive energy");
+
+	// A transport/source discontinuity skips the affected block and remains
+	// visible for the lifetime of the volatile R5C1 session.
+	emit_basic_energy(engine, sink, 3U, {0, 0, 0, 0}, {0, 0, 0, 0},
+		1U << 2U);
+	expect((sink.records[4U].words[MREC_STATUS_WORD] &
+		(1U << ENERGY_STATUS_DISCONTINUITY_BIT)) != 0U,
+		"ENERGY exposes the sticky source discontinuity flag");
+	emit_basic_energy(engine, sink, 4U, {0, 0, 0, 0}, {0, 0, 0, 0});
+	expect((sink.records[6U].words[MREC_STATUS_WORD] &
+		(1U << ENERGY_STATUS_DISCONTINUITY_BIT)) != 0U,
+		"ENERGY discontinuity flag remains sticky within the session");
+}
+
+void test_energy_engine_rates_remainders_invalidity_and_saturation()
+{
+	constexpr std::array<std::uint32_t, 8U> supported_rates{
+		1000U, 2000U, 4000U, 8000U, 16000U, 32000U, 64000U,
+		128000U};
+	constexpr std::int64_t one_micro_hour_per_second = 3600000000LL;
+	for (const auto rate : supported_rates) {
+		CapturingRecordSink sink;
+		aggregation::EnergyDemandEngine engine(0x1000U + rate);
+		engine.initialize(0x1000U + rate);
+		emit_basic_energy(engine, sink, 1U,
+			{one_micro_hour_per_second, one_micro_hour_per_second,
+				one_micro_hour_per_second, one_micro_hour_per_second},
+			{one_micro_hour_per_second, one_micro_hour_per_second,
+				one_micro_hour_per_second, one_micro_hour_per_second},
+			0U, rate, rate);
+		expect(read_record_u64(sink.records[0U],
+			ENERGY_SUMMARY_IMPORT_BASE_WORD) == 1U,
+			"every supported sample rate integrates the same elapsed second");
+	}
+
+	CapturingRecordSink sink;
+	aggregation::EnergyDemandEngine engine(0x55aaU);
+	engine.initialize(0x55aaU);
+	constexpr std::int64_t half_micro_hour_per_second = 1800000000LL;
+	emit_basic_energy(engine, sink, 1U,
+		{half_micro_hour_per_second, 0, 0, half_micro_hour_per_second},
+		{half_micro_hour_per_second, 0, 0, half_micro_hour_per_second});
+	expect(read_record_u64(sink.records[0U],
+		ENERGY_SUMMARY_IMPORT_BASE_WORD) == 0U,
+		"fractional energy is retained rather than rounded per block");
+	emit_basic_energy(engine, sink, 2U,
+		{half_micro_hour_per_second, 0, 0, half_micro_hour_per_second},
+		{half_micro_hour_per_second, 0, 0, half_micro_hour_per_second});
+	expect(read_record_u64(sink.records[2U],
+		ENERGY_SUMMARY_IMPORT_BASE_WORD) == 1U,
+		"retained fixed-point remainder carries into the next block");
+
+	// A sign transition starts the opposite directional counters without
+	// subtracting the already accumulated import/quadrant-I energy.
+	emit_basic_energy(engine, sink, 3U,
+		{-one_micro_hour_per_second, 0, 0, -one_micro_hour_per_second},
+		{-one_micro_hour_per_second, 0, 0, -one_micro_hour_per_second});
+	expect(read_record_u64(sink.records[4U],
+		ENERGY_SUMMARY_IMPORT_BASE_WORD) == 1U &&
+		read_record_u64(sink.records[4U],
+			ENERGY_SUMMARY_EXPORT_BASE_WORD) == 1U &&
+		read_record_u64(sink.records[5U],
+			ENERGY_QUADRANT_III_BASE_WORD) == 1U,
+		"sign transition preserves import and accumulates export/quadrant III");
+
+	const auto before_invalid = read_record_u64(sink.records[4U],
+		ENERGY_SUMMARY_IMPORT_BASE_WORD);
+	emit_basic_energy(engine, sink, 4U,
+		{one_micro_hour_per_second, 0, 0, one_micro_hour_per_second},
+		{one_micro_hour_per_second, 0, 0, one_micro_hour_per_second},
+		1U << MREC_STATUS_ARITHMETIC_BIT);
+	const auto &invalid = sink.records[6U];
+	expect(read_record_u64(invalid, ENERGY_SUMMARY_IMPORT_BASE_WORD) ==
+		before_invalid &&
+		read_record_u64(invalid, ENERGY_SKIPPED_SAMPLES_LOW_WORD) == 1000U &&
+		invalid.words[ENERGY_SKIPPED_BLOCKS_WORD] == 1U &&
+		(invalid.words[MREC_STATUS_WORD] &
+			(1U << ENERGY_STATUS_INCOMPLETE_INPUT_BIT)) != 0U,
+		"invalid Basic block is skipped with sticky sample/block provenance");
+
+	// Missing typed siblings are rejected as one skipped source interval.
+	auto missing_basic = make_typed_record(MREC_FORMAT_BASIC_V4, 5U);
+	write_record_u64(missing_basic, BASIC_LAST_SAMPLE_LOW_WORD, 4999U);
+	auto missing_power = make_typed_record(MREC_FORMAT_POWER_V1, 5U);
+	const auto missing_unbalance = make_typed_record(MREC_FORMAT_UNBAL_V2, 5U);
+	expect(engine.observe(missing_basic, sink, true),
+		"ENERGY accepts incomplete-family BASIC");
+	expect(engine.observe(missing_power, sink, true),
+		"ENERGY accepts incomplete-family POWER");
+	expect(engine.observe(missing_unbalance, sink, true),
+		"ENERGY rejects a family missing PHASOR without emitting");
+	expect(sink.count == 8U,
+		"incomplete Basic sibling set emitted no ENERGY part");
+
+	emit_basic_energy(engine, sink, 6U,
+		{one_micro_hour_per_second, 0, 0, one_micro_hour_per_second},
+		{one_micro_hour_per_second, 0, 0, one_micro_hour_per_second});
+	expect(read_record_u64(sink.records[8U],
+		ENERGY_SKIPPED_SAMPLES_LOW_WORD) == 2000U &&
+		sink.records[8U].words[ENERGY_SKIPPED_BLOCKS_WORD] == 2U,
+		"missing sibling family advances skipped provenance exactly once");
+	const auto before_duplicate = read_record_u64(sink.records[8U],
+		ENERGY_SUMMARY_IMPORT_BASE_WORD);
+
+	// A repeated source sequence is idempotent and remains visible as a
+	// rejected block on the next genuinely new cumulative family.
+	emit_basic_energy(engine, sink, 6U,
+		{one_micro_hour_per_second, 0, 0, one_micro_hour_per_second},
+		{one_micro_hour_per_second, 0, 0, one_micro_hour_per_second});
+	expect(sink.count == 10U, "duplicate Basic family emits no ENERGY pair");
+	emit_basic_energy(engine, sink, 7U,
+		{one_micro_hour_per_second, 0, 0, one_micro_hour_per_second},
+		{one_micro_hour_per_second, 0, 0, one_micro_hour_per_second});
+	expect(read_record_u64(sink.records[10U],
+		ENERGY_SUMMARY_IMPORT_BASE_WORD) == before_duplicate + 1U &&
+		sink.records[10U].words[ENERGY_SKIPPED_BLOCKS_WORD] == 3U,
+		"duplicate family neither double-counts energy nor hides provenance");
+
+	// A forward sequence/sample-anchor gap is not interpolated. The missing
+	// interval is counted while the next coherent family still integrates.
+	emit_basic_energy(engine, sink, 9U,
+		{one_micro_hour_per_second, 0, 0, one_micro_hour_per_second},
+		{one_micro_hour_per_second, 0, 0, one_micro_hour_per_second});
+	expect(read_record_u64(sink.records[12U],
+		ENERGY_SKIPPED_SAMPLES_LOW_WORD) == 3000U &&
+		sink.records[12U].words[ENERGY_SKIPPED_BLOCKS_WORD] == 4U &&
+		(read_record_u64(sink.records[12U],
+			ENERGY_SUMMARY_IMPORT_BASE_WORD) == before_duplicate + 2U) &&
+		(sink.records[12U].words[MREC_STATUS_WORD] &
+			(1U << ENERGY_STATUS_DISCONTINUITY_BIT)) != 0U,
+		"forward gap records missing samples/blocks and resumes accumulation");
+
+	LatestEnergyRecordSink saturation_sink;
+	aggregation::EnergyDemandEngine saturation_engine(0x7788U);
+	saturation_engine.initialize(0x7788U);
+	for (std::uint32_t sequence = 1U; sequence <= 900U; ++sequence)
+		emit_basic_energy(saturation_engine, saturation_sink, sequence,
+			{INT64_MAX, INT64_MAX, INT64_MAX, INT64_MAX},
+			{INT64_MAX, INT64_MAX, INT64_MAX, INT64_MAX}, 0U, 1000U,
+			UINT32_MAX);
+	expect(read_record_u64(saturation_sink.summary,
+		ENERGY_SUMMARY_IMPORT_BASE_WORD) ==
+		static_cast<std::uint64_t>(INT64_MAX) &&
+		read_record_u64(saturation_sink.quadrants,
+			ENERGY_QUADRANT_I_BASE_WORD) ==
+			static_cast<std::uint64_t>(INT64_MAX) &&
+		(saturation_sink.summary.words[MREC_STATUS_WORD] &
+			(1U << ENERGY_STATUS_SATURATED_BIT)) != 0U,
+		"energy counters saturate at INT64_MAX and latch overflow");
+}
+
+void emit_demand(aggregation::EnergyDemandEngine &engine,
+	CapturingRecordSink &sink, std::uint32_t sequence,
+	const std::array<std::int64_t, 4U> &active, bool contaminated)
+{
+	const std::uint32_t status =
+		(1U << TEN_MINUTE_STATUS_COMPLETE_BIT) |
+		(1U << TEN_MINUTE_STATUS_TIME_ALIGNED_BIT) |
+		(1U << TEN_MINUTE_STATUS_BOUNDARY_VALID_BIT) |
+		(static_cast<std::uint32_t>(contaminated)
+			<< TEN_MINUTE_STATUS_CONTAMINATED_BIT);
+	auto fundamental = make_typed_record(MREC_FORMAT_TEN_MINUTE_V1,
+		sequence, status);
+	write_record_u64(fundamental, AGG_LAST_SAMPLE_LOW_WORD,
+		static_cast<std::uint64_t>(sequence) * 1000U - 1U);
+	write_record_u64(fundamental, TEN_MINUTE_TARGET_SAMPLE_LOW_WORD,
+		static_cast<std::uint64_t>(sequence) * 1000U);
+	fundamental.words[MTR2_SHAPE_WORD] = 1U;
+	auto power = make_typed_record(MREC_FORMAT_TEN_MINUTE_POWER_V1,
+		sequence, status);
+	for (std::size_t phase = 0U; phase < 3U; ++phase) {
+		const auto base = static_cast<std::size_t>(POWER_PHASE_BASE_WORD) +
+			phase * static_cast<std::size_t>(POWER_PHASE_STRIDE);
+		write_record_s64(power, base + POWER_PHASE_P_LOW, active[phase]);
+	}
+	write_record_s64(power, POWER_TOTAL_P_LOW_WORD, active[3U]);
+	const auto phasor = make_typed_record(MREC_FORMAT_TEN_MINUTE_PHASOR_V2,
+		sequence, status);
+	const auto unbalance = make_typed_record(MREC_FORMAT_TEN_MINUTE_UNBAL_V2,
+		sequence, status);
+	expect(engine.observe(fundamental, sink, true), "DEMAND accepts Min10");
+	expect(engine.observe(power, sink, true), "DEMAND accepts Min10 POWER");
+	expect(engine.observe(phasor, sink, true), "DEMAND accepts Min10 PHASOR");
+	expect(engine.observe(unbalance, sink, true), "DEMAND accepts Min10 UNBALANCE");
+}
+
+void test_demand_engine_peaks_and_contamination()
+{
+	constexpr std::uint64_t session_id = 0x123456789abcdef0ULL;
+	CapturingRecordSink sink;
+	aggregation::EnergyDemandEngine engine(session_id);
+	engine.initialize(session_id);
+	expect(engine.configure_demand(aggregation::DemandMethod::fixed_block,
+		DEMAND_FIXED_INTERVAL_SECONDS, DEMAND_FIXED_INTERVAL_SECONDS, 2U),
+		"fixed ten-minute demand profile is accepted");
+	emit_demand(engine, sink, 1U,
+		{5000000LL, -7000000LL, 3000000LL, -9000000LL}, false);
+	expect(sink.count == 1U, "one Min10 family emits one DEMAND record");
+	const auto &valid = sink.records[0U];
+	expect(read_record_s64(valid, DEMAND_CURRENT_BASE_WORD) == 5 &&
+		read_record_s64(valid,
+			DEMAND_CURRENT_BASE_WORD + DEMAND_VALUE_STRIDE) == -7 &&
+		read_record_s64(valid,
+			DEMAND_CURRENT_BASE_WORD + 3U * DEMAND_VALUE_STRIDE) == -9,
+		"DEMAND publishes signed current micro-watts");
+	expect(read_record_u64(valid, DEMAND_IMPORT_PEAK_BASE_WORD) == 5U &&
+		read_record_u64(valid,
+			DEMAND_EXPORT_PEAK_BASE_WORD + DEMAND_VALUE_STRIDE) == 7U &&
+		read_record_u64(valid,
+			DEMAND_EXPORT_PEAK_BASE_WORD + 3U * DEMAND_VALUE_STRIDE) == 9U,
+		"valid Min10 interval updates directional session peaks");
+	expect(read_record_u64(valid, DEMAND_SESSION_ID_LOW_WORD) == session_id,
+		"DEMAND preserves the R5C1 session identity");
+
+	emit_demand(engine, sink, 2U,
+		{50000000LL, -70000000LL, 30000000LL, -90000000LL}, true);
+	expect(sink.count == 2U, "contaminated Min10 family still emits DEMAND quality");
+	const auto &invalid = sink.records[1U];
+	expect(((invalid.words[MREC_FORMAT_HEADER_WORD] >>
+		DEMAND_HEADER_VALID_LSB) & 0x0fU) == 0U,
+		"contaminated interval invalidates current demand");
+	expect(read_record_u64(invalid, DEMAND_IMPORT_PEAK_BASE_WORD) == 5U &&
+		read_record_u64(invalid,
+			DEMAND_EXPORT_PEAK_BASE_WORD + DEMAND_VALUE_STRIDE) == 7U,
+		"contaminated interval does not update session peaks");
+}
+
+void emit_sliding_demand(aggregation::EnergyDemandEngine &engine,
+	CapturingRecordSink &sink, std::uint32_t sequence,
+	const std::array<std::int64_t, 4U> &active, bool valid = true)
+{
+	constexpr std::uint32_t sample_rate_hz = 1000U;
+	constexpr std::uint32_t sample_count =
+		sample_rate_hz * DEMAND_SLIDING_UPDATE_SECONDS;
+	const std::uint32_t status = valid
+		? 1U << MTR2_STATUS_COMPLETE_BIT
+		: (1U << MTR2_STATUS_COMPLETE_BIT) |
+			(1U << MREC_STATUS_ARITHMETIC_BIT);
+	auto fundamental = make_typed_record(MREC_FORMAT_AGG_V3, sequence,
+		status, sample_rate_hz, sample_count);
+	write_record_u64(fundamental, AGG_LAST_SAMPLE_LOW_WORD,
+		static_cast<std::uint64_t>(sequence) * sample_count - 1U);
+	const std::uint32_t shape = 15U | (50U << MTR2_SHAPE_NOMINAL_LSB);
+	fundamental.words[MTR2_SHAPE_WORD] = shape;
+	auto power = make_typed_record(MREC_FORMAT_AGG_POWER_V1, sequence,
+		status, sample_rate_hz, sample_count);
+	power.words[MTR2_SHAPE_WORD] = shape;
+	for (std::size_t phase = 0U; phase < 3U; ++phase) {
+		const auto base = static_cast<std::size_t>(POWER_PHASE_BASE_WORD) +
+			phase * static_cast<std::size_t>(POWER_PHASE_STRIDE);
+		write_record_s64(power, base + POWER_PHASE_P_LOW, active[phase]);
+	}
+	write_record_s64(power, POWER_TOTAL_P_LOW_WORD, active[3U]);
+	auto phasor = make_typed_record(MREC_FORMAT_AGG_PHASOR_V2,
+		sequence, status, sample_rate_hz, sample_count);
+	phasor.words[MTR2_SHAPE_WORD] = shape;
+	auto unbalance = make_typed_record(MREC_FORMAT_AGG_UNBAL_V2,
+		sequence, status, sample_rate_hz, sample_count);
+	unbalance.words[MTR2_SHAPE_WORD] = shape;
+	expect(engine.observe(fundamental, sink, true),
+		"sliding DEMAND accepts aggregate fundamental");
+	expect(engine.observe(power, sink, true),
+		"sliding DEMAND accepts aggregate POWER");
+	expect(engine.observe(phasor, sink, true),
+		"sliding DEMAND accepts aggregate PHASOR");
+	expect(engine.observe(unbalance, sink, true),
+		"sliding DEMAND accepts aggregate UNBALANCE");
+}
+
+void test_sliding_demand_cadence_recovery_and_profile()
+{
+	constexpr std::int64_t five_micro_watts = 5000000LL;
+	CapturingRecordSink sink;
+	aggregation::EnergyDemandEngine engine(0x445566778899aabbULL);
+	engine.initialize(0x445566778899aabbULL);
+
+	expect(aggregation::EnergyDemandEngine::valid_demand_configuration(
+		aggregation::DemandMethod::sliding, 60U, 3U),
+		"default sliding demand profile is valid");
+	for (const auto window : {300U, 600U, 900U, 1800U})
+		expect(aggregation::EnergyDemandEngine::valid_demand_configuration(
+			aggregation::DemandMethod::sliding, window, 3U),
+			"every selectable sliding demand profile is valid");
+	expect(!aggregation::EnergyDemandEngine::valid_demand_configuration(
+		aggregation::DemandMethod::sliding, 61U, 3U),
+		"unsupported sliding window is rejected");
+	expect(!aggregation::EnergyDemandEngine::valid_demand_configuration(
+		aggregation::DemandMethod::sliding, 60U, 1U),
+		"sliding update cadence remains tied to completed aggregates");
+
+	for (std::uint32_t sequence = 1U; sequence <= 19U; ++sequence)
+		emit_sliding_demand(engine, sink, sequence,
+			{five_micro_watts, -five_micro_watts,
+				five_micro_watts, -five_micro_watts});
+	expect(sink.count == 0U,
+		"sliding demand waits for one complete 60-second window");
+	emit_sliding_demand(engine, sink, 20U,
+		{five_micro_watts, -five_micro_watts,
+			five_micro_watts, -five_micro_watts});
+	expect(sink.count == 1U,
+		"full sliding window emits at the three-second aggregate cadence");
+	const auto &first = sink.records[0U];
+	expect(read_record_s64(first, DEMAND_CURRENT_BASE_WORD) == 5 &&
+		read_record_s64(first,
+			DEMAND_CURRENT_BASE_WORD + DEMAND_VALUE_STRIDE) == -5,
+		"sliding demand publishes the sample-weighted signed average");
+	expect(((first.words[MREC_FORMAT_HEADER_WORD] >>
+		DEMAND_HEADER_METHOD_LSB) & 0x03U) == DEMAND_METHOD_SLIDING &&
+		(first.words[MREC_FORMAT_HEADER_WORD] & 0xffffU) == 60U &&
+		((first.words[MREC_FORMAT_HEADER_WORD] >>
+			DEMAND_HEADER_UPDATE_SECONDS_LSB) & 0x03ffU) == 3U &&
+		first.words[DEMAND_PROFILE_GENERATION_WORD] == 1U,
+		"DEMAND-v1 carries the active method, window, cadence, and profile");
+
+	// Once warm, each new aggregate advances the window and emits a fresh
+	// value. Replacing one 5-uW bucket with a 25-uW bucket yields 6 uW.
+	emit_sliding_demand(engine, sink, 21U,
+		{25000000LL, -25000000LL, 25000000LL, -25000000LL});
+	expect(sink.count == 2U &&
+		read_record_s64(sink.records[1U], DEMAND_CURRENT_BASE_WORD) == 6,
+		"warm sliding demand advances every three seconds");
+
+	// A rejected aggregate publishes invalid current immediately and clears
+	// the window. The quality is current-window state, not a sticky lifetime
+	// latch: twenty subsequent clean buckets recover it automatically.
+	emit_sliding_demand(engine, sink, 22U,
+		{five_micro_watts, -five_micro_watts,
+			five_micro_watts, -five_micro_watts}, false);
+	expect(sink.count == 3U &&
+		((sink.records[2U].words[MREC_FORMAT_HEADER_WORD] >>
+			DEMAND_HEADER_VALID_LSB) & 0x0fU) == 0U &&
+		(sink.records[2U].words[MREC_STATUS_WORD] &
+			(1U << DEMAND_STATUS_INCOMPLETE_INPUT_BIT)) != 0U,
+		"bad aggregate invalidates demand and starts a clean refill");
+	for (std::uint32_t sequence = 23U; sequence <= 42U; ++sequence)
+		emit_sliding_demand(engine, sink, sequence,
+			{five_micro_watts, -five_micro_watts,
+				five_micro_watts, -five_micro_watts});
+	expect(sink.count == 4U &&
+		((sink.records[3U].words[MREC_FORMAT_HEADER_WORD] >>
+			DEMAND_HEADER_VALID_LSB) & 0x0fU) == 0x0fU &&
+		(sink.records[3U].words[MREC_STATUS_WORD] &
+			(1U << DEMAND_STATUS_INCOMPLETE_INPUT_BIT)) == 0U,
+		"clean refill clears incomplete demand quality without a restart");
+
+	// Exercise the maximum static ring, not just its validation branch. It
+	// must warm for all 600 three-second buckets and then publish one coherent
+	// 30-minute result without heap or task-stack storage.
+	CapturingRecordSink maximum_sink;
+	aggregation::EnergyDemandEngine maximum_engine(0xaabbccddU);
+	maximum_engine.initialize(0xaabbccddU);
+	expect(maximum_engine.configure_demand(
+		aggregation::DemandMethod::sliding, 1800U, 3U, 2U),
+		"maximum sliding demand profile is accepted");
+	for (std::uint32_t sequence = 1U; sequence <= 599U; ++sequence)
+		emit_sliding_demand(maximum_engine, maximum_sink, sequence,
+			{five_micro_watts, -five_micro_watts,
+				five_micro_watts, -five_micro_watts});
+	expect(maximum_sink.count == 0U,
+		"30-minute profile waits for the complete static ring");
+	emit_sliding_demand(maximum_engine, maximum_sink, 600U,
+		{five_micro_watts, -five_micro_watts,
+			five_micro_watts, -five_micro_watts});
+	expect(maximum_sink.count == 1U &&
+		maximum_sink.records[0U].words[DEMAND_SOURCE_INTERVAL_COUNT_WORD] ==
+			600U &&
+		read_record_s64(maximum_sink.records[0U],
+			DEMAND_CURRENT_BASE_WORD) == 5,
+		"30-minute profile publishes after exactly 600 clean buckets");
+}
+
+void test_r5_engine_primes_energy_before_emission()
 {
 	constexpr std::uint32_t generation = 0x12345678U;
 	constexpr std::uint32_t samples_per_cycle = 533U;
@@ -895,7 +1518,7 @@ void test_r5_engine_emits_complete_basic_family()
 	expect(engine.initialize(), "R5 aggregation engine initialization");
 
 	std::uint64_t first_sample = 0U;
-	for (std::uint32_t cycle = 1U; cycle <= 12U; ++cycle) {
+	for (std::uint32_t cycle = 1U; cycle <= 24U; ++cycle) {
 		auto words = make_zero_cycle(cycle, generation, first_sample,
 			samples_per_cycle);
 		aggregation::AggregationInputView input{};
@@ -913,13 +1536,19 @@ void test_r5_engine_emits_complete_basic_family()
 		first_sample += samples_per_cycle;
 	}
 
-	expect(sink.count == 4U,
-		"12 cycles must emit one four-record Basic family");
-	constexpr std::array<std::uint32_t, 4U> expected_formats = {
+	expect(sink.count == 10U,
+		"startup Basic primes energy; the next Basic emits the first ENERGY pair");
+	constexpr std::array<std::uint32_t, 10U> expected_formats = {
 		MREC_FORMAT_BASIC_V4,
 		MREC_FORMAT_POWER_V1,
 		MREC_FORMAT_PHASOR_V2,
 		MREC_FORMAT_UNBAL_V2,
+		MREC_FORMAT_BASIC_V4,
+		MREC_FORMAT_POWER_V1,
+		MREC_FORMAT_PHASOR_V2,
+		MREC_FORMAT_UNBAL_V2,
+		MREC_FORMAT_ENERGY_V1,
+		MREC_FORMAT_ENERGY_V1,
 	};
 	for (std::size_t index = 0U; index < sink.count; ++index) {
 		const auto &record = sink.records[index];
@@ -930,16 +1559,35 @@ void test_r5_engine_emits_complete_basic_family()
 			"R5 record byte count");
 		expect(record.words[MREC_FORMAT_WORD] == expected_formats[index],
 			"R5 Basic-family record order and format");
-		expect(record.words[MREC_SEQUENCE_WORD] == 1U,
+		const auto expected_sequence = index < 4U ? 1U : 2U;
+		expect(record.words[MREC_SEQUENCE_WORD] == expected_sequence,
 			"R5 Basic-family sequence");
 	}
+	expect((sink.records[8U].words[MREC_FORMAT_HEADER_WORD] & 0x3U) ==
+		ENERGY_PART_SUMMARY &&
+		(sink.records[9U].words[MREC_FORMAT_HEADER_WORD] & 0x3U) ==
+			ENERGY_PART_QUADRANTS,
+		"ENERGY summary and quadrant part ordering");
+	expect(((sink.records[8U].words[MREC_FORMAT_HEADER_WORD] >>
+		ENERGY_HEADER_PART_COUNT_LSB) & 0x3U) == ENERGY_PART_COUNT &&
+		((sink.records[9U].words[MREC_FORMAT_HEADER_WORD] >>
+		ENERGY_HEADER_PART_COUNT_LSB) & 0x3U) == ENERGY_PART_COUNT,
+		"ENERGY atomic family part count");
+	expect(sink.records[8U].words[ENERGY_ACCEPTED_BLOCKS_WORD] == 1U &&
+		sink.records[8U].words[ENERGY_SKIPPED_BLOCKS_WORD] == 0U &&
+		read_record_u64(sink.records[8U], ENERGY_SKIPPED_SAMPLES_LOW_WORD) == 0U,
+		"startup priming is outside accepted/skipped session provenance");
+	expect((sink.records[8U].words[MREC_STATUS_WORD] &
+		((1U << ENERGY_STATUS_INCOMPLETE_INPUT_BIT) |
+		 (1U << ENERGY_STATUS_DISCONTINUITY_BIT))) == 0U,
+		"first authoritative ENERGY family starts complete and continuous");
 
 	const auto status = health.snapshot();
 	expect(status.engine_ready, "R5 aggregation engine remains ready");
 	expect(status.authoritative,
 		"emit-mode R5 aggregation engine reports authoritative");
-	expect(status.basic_completed == 1U,
-		"R5 health counts the completed Basic measurement record");
+	expect(status.basic_completed == 2U,
+		"R5 health counts both completed Basic measurement records");
 }
 
 void test_r5_engine_fails_closed_when_output_rejects_record()
@@ -1038,6 +1686,7 @@ void test_r5_shadow_mode_is_non_authoritative()
 
 int main()
 {
+	test_session_id_uses_boot_varying_counter();
 	test_crc32c();
 	test_valid_frame();
 	test_invalid_frames();
@@ -1053,7 +1702,12 @@ int main()
 	test_ring_pressure_telemetry();
 	test_scheduler_timing_survives_pmu_counter_wrap();
 	test_bounded_input_handoff_preserves_validator_progress();
-	test_r5_engine_emits_complete_basic_family();
+	test_energy_engine_discards_startup_priming();
+	test_energy_engine_four_quadrants_and_axes();
+	test_energy_engine_rates_remainders_invalidity_and_saturation();
+	test_demand_engine_peaks_and_contamination();
+	test_sliding_demand_cadence_recovery_and_profile();
+	test_r5_engine_primes_energy_before_emission();
 	test_r5_engine_fails_closed_when_output_rejects_record();
 	test_r5_engine_drains_deferred_aggregate_family();
 	test_r5_shadow_mode_is_non_authoritative();

@@ -4,6 +4,7 @@
 #include "aggregation_health.hpp"
 #include "aggregation_protocol.hpp"
 #include "aggregation_record_sink.hpp"
+#include "energy_demand_engine.hpp"
 
 #include "aggregation_engine.hpp"
 
@@ -33,8 +34,17 @@ enum class AggregationOutputMode : std::uint8_t {
 class R5AggregationEngine final {
 public:
 	R5AggregationEngine(AggregationRecordSink &sink,
-		AggregationHealth &health, AggregationOutputMode mode) noexcept;
+		AggregationHealth &health, AggregationOutputMode mode,
+		std::uint64_t session_id = 1U) noexcept;
 
+	/** Install the boot nonce before the worker initializes the engine. */
+	[[nodiscard]] bool configure_session_id(
+		std::uint64_t session_id) noexcept;
+	/** Stage a Demand-v1 profile; the aggregation worker applies it at the
+	 * next record boundary so RPMsg never races the large static state. */
+	[[nodiscard]] bool configure_demand(DemandMethod method,
+		std::uint32_t window_seconds, std::uint32_t update_seconds,
+		std::uint32_t &profile_generation) noexcept;
 	bool initialize() noexcept;
 	void process(const AggregationInputView &input) noexcept;
 	/**
@@ -66,10 +76,16 @@ private:
 	void fail_engine() noexcept;
 	[[nodiscard]] bool accept_transport_sequence(std::uint32_t sequence,
 		bool &discontinuity) noexcept;
+	void apply_demand_configuration() noexcept;
+	[[nodiscard]] static std::uint32_t pack_demand_configuration(
+		DemandMethod method, std::uint32_t window_seconds,
+		std::uint32_t update_seconds) noexcept;
 
 	AggregationRecordSink &sink_;
 	AggregationHealth &health_;
 	AggregationOutputMode mode_;
+	std::uint64_t session_id_;
+	EnergyDemandEngine energy_demand_;
 	hls::stream<single_cycle_word_t> input_{};
 	record_axis_stream_t basic_output_{};
 	record_axis_stream_t aggregate_output_{};
@@ -78,6 +94,12 @@ private:
 	std::size_t pass_records_completed_{};
 	std::uint32_t last_transport_sequence_{};
 	std::uint32_t discontinuity_pending_{};
+	std::uint32_t demand_profile_word_{
+		static_cast<std::uint32_t>(DemandMethod::sliding) |
+		(60U << 2U) | (3U << 14U)};
+	std::uint32_t demand_profile_generation_{1U};
+	std::uint32_t demand_profile_revision_{};
+	std::uint32_t applied_demand_profile_generation_{};
 	bool have_transport_sequence_{};
 	bool ready_{};
 };

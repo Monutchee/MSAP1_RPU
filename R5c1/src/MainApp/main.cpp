@@ -21,6 +21,7 @@
 #include "aggregation/aggregation_record_ring.hpp"
 #include "aggregation/aggregation_runtime.hpp"
 #include "aggregation/r5_aggregation_engine.hpp"
+#include "aggregation/r5_session_id.hpp"
 #include "aggregation/aggregation_shadow_service.hpp"
 #include "aggregation/axi_fifo_aggregation_transport.hpp"
 
@@ -56,7 +57,7 @@ static msap1::aggregation::AggregationShadowService aggregation_shadow(
 static msap1::aggregation::AggregationRuntime aggregation_runtime(
 	aggregation_shadow, aggregation_output, aggregation_health);
 static R5c1Service service(msap1::CoreConfig::current(), aggregation_health,
-	aggregation_runtime);
+	aggregation_runtime, aggregation_engine);
 
 static TaskHandle_t comm_task_handle;
 
@@ -80,6 +81,13 @@ static void aggregation_bootstrap_task(void *)
 
 int main(void)
 {
+	/* All BSP constructors, including timer setup, have completed by main().
+	 * Generating this from another global constructor made its inputs
+	 * deterministic and repeated the session across full device reboots. */
+	if (!aggregation_engine.configure_session_id(
+		msap1::aggregation::generate_r5_session_id()))
+		return -1;
+
 	/* Keep the control plane independent so FIFO failure cannot remove Linux
 	 * diagnostics. */
 	if (xTaskCreate(comm_task, "RPMSG", 2048, NULL, 4,
