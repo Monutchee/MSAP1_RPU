@@ -17,6 +17,7 @@
 
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -2006,15 +2007,35 @@ msap1_m18_config_payload make_event_configuration(std::uint32_t generation)
 	return configuration;
 }
 
+using FlickerClassifier = std::array<std::array<std::uint32_t,
+	aggregation::FlickerProtocol::classifier_bins>,
+	aggregation::FlickerProtocol::phases>;
+
+FlickerClassifier make_flicker_reference_histogram(std::uint32_t interval)
+{
+	FlickerClassifier histogram{};
+	constexpr std::array<std::uint32_t, 7U> counts{
+		480000U, 360000U, 240000U, 84000U, 24000U, 10800U, 1200U};
+	for (std::size_t phase = 0U; phase < histogram.size(); ++phase) {
+		const auto shift = static_cast<std::size_t>(interval * 2U + phase * 3U);
+		constexpr std::array<std::size_t, 7U> bins{
+			80U, 140U, 200U, 260U, 320U, 380U, 440U};
+		for (std::size_t point = 0U; point < bins.size(); ++point)
+			histogram[phase][bins[point] + shift] = counts[point];
+	}
+	return histogram;
+}
+
 aggregation::FlickerInputView make_flicker_histogram_input(
 	std::uint32_t sequence, std::uint32_t interval,
-	std::uint16_t histogram_base)
+	std::uint16_t histogram_base, const FlickerClassifier &classifier,
+	std::uint32_t status = 0x3U)
 {
 	aggregation::FlickerInputView input{};
 	input.sequence = sequence;
 	input.configuration_generation = 7U;
 	input.sample_rate_hz = 32000U;
-	input.status = 0x3U;
+	input.status = status;
 	input.phase_mask = 0x7U;
 	input.kind = static_cast<std::uint8_t>(
 		aggregation::FlickerProtocol::kind_histogram);
@@ -2027,13 +2048,84 @@ aggregation::FlickerInputView make_flicker_histogram_input(
 	input.pinst_q16 = {2U << 16U, 3U << 16U, 4U << 16U};
 	input.first_sample = std::uint64_t{interval} * 600U * 32000U;
 	input.last_sample = input.first_sample + 600U * 32000U - 1U;
-	if (histogram_base <= 255U && histogram_base +
-			aggregation::FlickerProtocol::histogram_bins > 255U) {
-		const auto offset = 255U - histogram_base;
-		for (auto &phase : input.histogram)
-			phase[offset] = 1200000U;
+	for (std::size_t phase = 0U; phase < input.histogram.size(); ++phase) {
+		for (std::size_t offset = 0U;
+			offset < aggregation::FlickerProtocol::histogram_bins; ++offset) {
+			const auto bin = static_cast<std::size_t>(histogram_base) + offset;
+			if (bin < aggregation::FlickerProtocol::classifier_bins)
+				input.histogram[phase][offset] = classifier[phase][bin];
+		}
 	}
 	return input;
+}
+
+double flicker_bin_center(std::size_t bin)
+{
+	const auto octave = static_cast<unsigned>(bin / 32U);
+	const auto fraction = static_cast<unsigned>(bin % 32U);
+	const auto base = std::uint32_t{1U} << (octave + 8U);
+	const auto width = std::uint32_t{1U} << (octave + 3U);
+	return static_cast<double>(base + fraction * width + width / 2U) /
+		65536.0;
+}
+
+double flicker_exceedance_percentile(
+	const std::array<std::uint32_t,
+		aggregation::FlickerProtocol::classifier_bins> &histogram,
+	double exceedance_percent)
+{
+	double total = 0.0;
+	for (const auto count : histogram)
+		total += static_cast<double>(count);
+	const auto target = std::ceil(total * exceedance_percent / 100.0);
+	double accumulated = 0.0;
+	for (std::size_t reverse = histogram.size(); reverse != 0U; --reverse) {
+		const auto bin = reverse - 1U;
+		accumulated += static_cast<double>(histogram[bin]);
+		if (accumulated >= target)
+			return flicker_bin_center(bin);
+	}
+	return flicker_bin_center(0U);
+}
+
+double flicker_reference_pst(const std::array<std::uint32_t,
+	aggregation::FlickerProtocol::classifier_bins> &histogram)
+{
+	const auto percentile = [&histogram](double exceedance_percent) {
+		return flicker_exceedance_percentile(histogram,
+			exceedance_percent);
+	};
+	const auto p01 = percentile(0.1);
+	const auto p1s = (percentile(0.7) + percentile(1.0) +
+		percentile(1.5)) / 3.0;
+	const auto p3s = (percentile(2.2) + percentile(3.0) +
+		percentile(4.0)) / 3.0;
+	const auto p10s = (percentile(6.0) + percentile(8.0) +
+		percentile(10.0) + percentile(13.0) + percentile(17.0)) / 5.0;
+	const auto p50s = (percentile(30.0) + percentile(50.0) +
+		percentile(80.0)) / 3.0;
+	return std::sqrt(0.0314 * p01 + 0.0525 * p1s + 0.0657 * p3s +
+		0.28 * p10s + 0.08 * p50s);
+}
+
+double flicker_reference_plt(const std::array<double, 12U> &pst)
+{
+	double sum = 0.0;
+	for (const auto value : pst)
+		sum += value * value * value;
+	return std::cbrt(sum / static_cast<double>(pst.size()));
+}
+
+void feed_flicker_interval(aggregation::FlickerEngine &engine,
+	std::uint32_t &sequence, std::uint32_t interval,
+	const FlickerClassifier &histogram, std::uint32_t status = 0x3U)
+{
+	for (std::uint32_t chunk = 0U;
+		chunk < aggregation::FlickerProtocol::classifier_chunks; ++chunk) {
+		engine.process(make_flicker_histogram_input(++sequence, interval,
+			static_cast<std::uint16_t>(chunk *
+				aggregation::FlickerProtocol::histogram_bins), histogram, status));
+	}
 }
 
 void test_flicker_engine_pst_and_plt()
@@ -2047,13 +2139,13 @@ void test_flicker_engine_pst_and_plt()
 	expect(engine.configure(configuration), "valid flicker profile stages");
 
 	std::uint32_t sequence = 0U;
+	std::array<std::array<double, 12U>, 3U> reference_pst{};
 	for (std::uint32_t interval = 0U; interval < 12U; ++interval) {
-		for (std::uint32_t chunk = 0U;
-			chunk < aggregation::FlickerProtocol::classifier_chunks; ++chunk) {
-			engine.process(make_flicker_histogram_input(++sequence, interval,
-				static_cast<std::uint16_t>(chunk *
-					aggregation::FlickerProtocol::histogram_bins)));
-		}
+		const auto histogram = make_flicker_reference_histogram(interval);
+		for (std::size_t phase = 0U; phase < reference_pst.size(); ++phase)
+			reference_pst[phase][interval] =
+				flicker_reference_pst(histogram[phase]);
+		feed_flicker_interval(engine, sequence, interval, histogram);
 	}
 	expect(sink.count == 13U,
 		"twelve complete Pst intervals emit twelve Pst and one Plt record");
@@ -2065,6 +2157,12 @@ void test_flicker_engine_pst_and_plt()
 		expect(record.words[19U] != 0U && record.words[20U] != 0U &&
 			record.words[21U] != 0U && record.words[28U] == 600U,
 			"Pst percentiles retain all configured phases and duration");
+		for (std::size_t phase = 0U; phase < reference_pst.size(); ++phase) {
+			const auto actual = static_cast<double>(record.words[19U + phase]) /
+				65536.0;
+			expect(std::abs(actual - reference_pst[phase][interval]) < 0.0002,
+				"fixed-point Pst matches the independent double-precision oracle");
+		}
 	}
 	const auto &plt = sink.records[12U];
 	expect((plt.words[13U] & 0xffU) == 2U &&
@@ -2077,16 +2175,52 @@ void test_flicker_engine_pst_and_plt()
 		"Plt sample and valid-count spans cover all twelve Pst intervals");
 	expect(plt.words[9U] == 0U && plt.words[10U] == 0U,
 		"Plt provenance starts at the oldest retained Pst interval");
+	for (std::size_t phase = 0U; phase < reference_pst.size(); ++phase) {
+		const auto actual = static_cast<double>(plt.words[22U + phase]) /
+			65536.0;
+		expect(std::abs(actual - flicker_reference_plt(reference_pst[phase])) <
+			0.0003,
+			"fixed-point Plt matches the independent double-precision oracle");
+	}
 
 	const auto before_gap = sink.count;
-	engine.process(make_flicker_histogram_input(sequence + 1U, 12U, 0U));
+	const auto gap_histogram = make_flicker_reference_histogram(12U);
+	engine.process(make_flicker_histogram_input(sequence + 1U, 12U, 0U,
+		gap_histogram));
 	for (std::uint32_t chunk = 1U;
 		chunk < aggregation::FlickerProtocol::classifier_chunks; ++chunk)
 		engine.process(make_flicker_histogram_input(sequence + 2U + chunk,
 			12U, static_cast<std::uint16_t>(chunk *
-				aggregation::FlickerProtocol::histogram_bins)));
+				aggregation::FlickerProtocol::histogram_bins), gap_histogram));
 	expect(sink.count == before_gap,
 		"a sequence gap invalidates the whole in-flight classifier family");
+
+	CapturingRecordSink recovery_sink;
+	aggregation::AggregationHealth recovery_health;
+	aggregation::FlickerEngine recovery_engine(recovery_sink, recovery_health);
+	expect(recovery_engine.initialize(),
+		"flicker contamination-recovery engine initializes");
+	expect(recovery_engine.configure(configuration),
+		"flicker contamination-recovery profile stages");
+	sequence = 0U;
+	for (std::uint32_t interval = 0U; interval < 11U; ++interval)
+		feed_flicker_interval(recovery_engine, sequence, interval,
+			make_flicker_reference_histogram(interval));
+	feed_flicker_interval(recovery_engine, sequence, 11U,
+		make_flicker_reference_histogram(11U), 0x3U | (1U << 4U));
+	expect(recovery_sink.count == 12U &&
+		((recovery_sink.records[11U].words[13U] >> 8U) & 0x7U) == 0U,
+		"one contaminated ten-minute interval emits invalid Pst and clears Plt");
+	for (std::uint32_t interval = 12U; interval < 23U; ++interval)
+		feed_flicker_interval(recovery_engine, sequence, interval,
+			make_flicker_reference_histogram(interval));
+	expect(recovery_sink.count == 23U,
+		"eleven clean intervals after contamination cannot emit Plt early");
+	feed_flicker_interval(recovery_engine, sequence, 23U,
+		make_flicker_reference_histogram(23U));
+	expect(recovery_sink.count == 25U &&
+		(recovery_sink.records[24U].words[13U] & 0xffU) == 2U,
+		"twelve new clean intervals are required before Plt recovers");
 }
 
 void test_mains_signal_engine()
@@ -2147,24 +2281,170 @@ void test_mains_signal_engine()
 		"unstaged mains-signalling generation cannot emit a record");
 }
 
-aggregation::PqEventInputView make_pq_input(std::uint32_t sequence,
-	std::uint32_t generation, std::uint64_t last_sample,
-	std::array<std::uint32_t, 3U> voltage)
+aggregation::PqEventInputView make_pq_input_full(std::uint32_t sequence,
+	std::uint32_t generation, std::uint32_t sample_rate_hz,
+	std::uint64_t last_sample,
+	std::uint32_t window_samples,
+	std::array<std::uint32_t, 3U> voltage,
+	std::array<std::uint32_t, 3U> current,
+	std::uint32_t status = 0U)
 {
 	aggregation::PqEventInputView input{};
 	input.sequence = sequence;
 	input.configuration_generation = generation;
-	input.sample_rate_hz = 32000U;
+	input.sample_rate_hz = sample_rate_hz;
+	input.status = status;
 	input.voltage_valid_mask = 0x7U;
 	input.current_valid_mask = 0x7U;
-	input.window_samples = 640U;
-	input.first_sample = last_sample - 639U;
+	input.window_samples = window_samples;
+	input.first_sample = last_sample - window_samples + 1U;
 	input.last_sample = last_sample;
 	for (std::size_t phase = 0U; phase < 3U; ++phase) {
 		input.urms_q16[phase] = std::uint64_t{voltage[phase]} << 16U;
-		input.irms_q16[phase] = std::uint64_t{5000000U} << 16U;
+		input.irms_q16[phase] = std::uint64_t{current[phase]} << 16U;
 	}
 	return input;
+}
+
+aggregation::PqEventInputView make_pq_input(std::uint32_t sequence,
+	std::uint32_t generation, std::uint64_t last_sample,
+	std::array<std::uint32_t, 3U> voltage)
+{
+	return make_pq_input_full(sequence, generation, 32000U, last_sample, 640U,
+		voltage, {5000000U, 5000000U, 5000000U});
+}
+
+struct EventThresholdCase final {
+	std::size_t type;
+	bool voltage;
+	std::uint32_t threshold_e4;
+	std::uint32_t hysteresis_e4;
+	std::uint32_t exact_threshold;
+	std::uint32_t trigger;
+	std::uint32_t hysteresis_hold;
+	std::uint32_t exact_recovery;
+};
+
+void run_event_threshold_case(const EventThresholdCase &test,
+	std::uint32_t nominal_frequency_hz, std::uint32_t sample_rate_hz)
+{
+	constexpr std::uint32_t start_lifecycle = 0U;
+	constexpr std::uint32_t end_lifecycle = 2U;
+	CapturingRecordSink sink;
+	aggregation::AggregationHealth health;
+	aggregation::PqEventLifecycleEngine engine(sink, health,
+		0x5566778899aabbccULL);
+	expect(engine.initialize(), "threshold-matrix PQ engine initializes");
+	auto configuration = make_event_configuration(
+		100U + nominal_frequency_hz + static_cast<std::uint32_t>(test.type));
+	for (auto &profile : configuration.event)
+		profile.flags &= ~(MSAP1_M18_EVENT_ENABLED |
+			MSAP1_M18_EVENT_WAVEFORM_ENABLED | MSAP1_M18_EVENT_PER_PHASE);
+	auto &profile = configuration.event[test.type];
+	profile.flags |= MSAP1_M18_EVENT_ENABLED | MSAP1_M18_EVENT_PER_PHASE;
+	profile.threshold_e4 = test.threshold_e4;
+	profile.hysteresis_e4 = test.hysteresis_e4;
+	profile.phase_mask = 0x1U;
+	profile.waveform_pretrigger_ms = 0U;
+	profile.waveform_posttrigger_ms = 0U;
+	profile.waveform_decimation = 1U;
+	expect(engine.configure(configuration),
+		"threshold-matrix event profile stages");
+
+	const auto half_cycle_samples = [sample_rate_hz,
+		nominal_frequency_hz](std::uint32_t index) {
+		const auto denominator = 2U * nominal_frequency_hz;
+		return static_cast<std::uint32_t>(
+			(static_cast<std::uint64_t>(index + 1U) * sample_rate_hz) /
+				denominator -
+			(static_cast<std::uint64_t>(index) * sample_rate_hz) /
+				denominator);
+	};
+	std::uint32_t sequence = 0U;
+	std::uint32_t half_cycle_index = 1U;
+	std::uint32_t previous_half_cycle = half_cycle_samples(0U);
+	std::uint32_t current_half_cycle = half_cycle_samples(half_cycle_index);
+	std::uint64_t last_sample = previous_half_cycle + current_half_cycle - 1U;
+	if (sample_rate_hz == 128000U) {
+		if (nominal_frequency_hz == 50U) {
+			expect(previous_half_cycle == 1280U && current_half_cycle == 1280U,
+				"default-rate 50 Hz events use exact 1280-sample half cycles");
+		} else {
+			expect(previous_half_cycle == 1066U && current_half_cycle == 1067U,
+				"default-rate 60 Hz events preserve fractional half-cycle cadence");
+		}
+	}
+	auto process_level = [&](std::uint32_t level, std::uint32_t status = 0U) {
+		std::array<std::uint32_t, 3U> voltage{
+			120000000U, 120000000U, 120000000U};
+		std::array<std::uint32_t, 3U> current{
+			5000000U, 5000000U, 5000000U};
+		(test.voltage ? voltage : current)[0U] = level;
+		const auto window_samples = previous_half_cycle + current_half_cycle;
+		engine.process(make_pq_input_full(++sequence, configuration.generation,
+			sample_rate_hz, last_sample, window_samples, voltage, current,
+			status));
+		const auto processed_last = last_sample;
+		previous_half_cycle = current_half_cycle;
+		current_half_cycle = half_cycle_samples(++half_cycle_index);
+		last_sample += current_half_cycle;
+		return processed_last;
+	};
+
+	process_level(test.voltage ? 120000000U : 5000000U, 1U << 2U);
+	process_level(test.exact_threshold);
+	expect(sink.count == 0U,
+		"an exact PQ threshold value does not start a strict event");
+	const auto first_trigger_sample = process_level(test.trigger);
+	expect(sink.count == 1U &&
+		(sink.records[0U].words[13U] & 0x3U) == start_lifecycle &&
+		((sink.records[0U].words[13U] >> 4U) & 0xfU) == test.type &&
+		((sink.records[0U].words[13U] >> 8U) & 0x7U) == 0x1U,
+		"one unit beyond the strict threshold starts the selected event");
+	expect(sink.records[0U].words[14U] == first_trigger_sample &&
+		sink.records[0U].words[5U] == sample_rate_hz &&
+		sink.records[0U].words[21U] == test.threshold_e4 &&
+		sink.records[0U].words[22U] == test.hysteresis_e4,
+		"threshold START preserves rate, half-cycle anchor, and profile snapshot");
+	process_level(test.hysteresis_hold);
+	expect(sink.count == 1U,
+		"an active event remains armed inside the hysteresis band");
+	const auto recovery_sample = process_level(test.exact_recovery);
+	expect(sink.count == 2U &&
+		(sink.records[1U].words[13U] & 0x3U) == end_lifecycle &&
+		sink.records[1U].words[14U] == recovery_sample,
+		"the exact inclusive recovery boundary ends the active event");
+	const auto first_id_low = sink.records[0U].words[18U];
+	const auto first_id_high = sink.records[0U].words[19U];
+	process_level(test.trigger);
+	expect(sink.count == 3U &&
+		(sink.records[2U].words[13U] & 0x3U) == start_lifecycle &&
+		(sink.records[2U].words[18U] != first_id_low ||
+			sink.records[2U].words[19U] != first_id_high),
+		"a recovered event rearms with a new stable event ID");
+}
+
+void test_pq_event_threshold_matrix_50_60()
+{
+	constexpr std::array<EventThresholdCase, 5U> cases{{
+		{MSAP1_M18_EVENT_VOLTAGE_SAG, true, 9000U, 200U,
+			108000000U, 107999999U, 110399999U, 110400000U},
+		{MSAP1_M18_EVENT_VOLTAGE_SWELL, true, 11000U, 200U,
+			132000000U, 132000001U, 129600001U, 129600000U},
+		{MSAP1_M18_EVENT_VOLTAGE_INTERRUPTION, true, 1000U, 200U,
+			12000000U, 11999999U, 14399999U, 14400000U},
+		{MSAP1_M18_EVENT_CURRENT_SAG, false, 9000U, 200U,
+			4500000U, 4499999U, 4599999U, 4600000U},
+		{MSAP1_M18_EVENT_CURRENT_SWELL, false, 11000U, 200U,
+			5500000U, 5500001U, 5400001U, 5400000U},
+	}};
+	// Run the product-default 128 kSPS profile first, then retain both lower
+	// PQE1-compatible rates as co-release regression coverage.
+	for (const auto sample_rate_hz : {128000U, 64000U, 32000U})
+		for (const auto nominal_frequency_hz : {50U, 60U})
+			for (const auto &test : cases)
+				run_event_threshold_case(test, nominal_frequency_hz,
+					sample_rate_hz);
 }
 
 void test_pq_event_lifecycle_engine()
@@ -2280,6 +2560,7 @@ int main()
 	test_r5_shadow_mode_is_non_authoritative();
 	test_pq_event_frame_decoder();
 	test_pq_event_lifecycle_engine();
+	test_pq_event_threshold_matrix_50_60();
 	test_flicker_frame_decoder();
 	test_flicker_engine_pst_and_plt();
 	test_mains_signal_frame_decoder();
