@@ -64,6 +64,11 @@ inline bool valid_configuration(const msap1_m18_config_payload &value,
 	    static_cast<std::uint64_t>(value.mains_carrier_millihz) * 2u >=
 		static_cast<std::uint64_t>(sample_rate_hz) * 1000u)
 		return false;
+	if ((value.flicker_flags & MSAP1_M18_ENGINE_ENABLED) != 0u &&
+	    (value.reference_voltage_microvolts == 0u ||
+	     (sample_rate_hz != 0u &&
+	      (sample_rate_hz < 2000u || sample_rate_hz % 2000u != 0u))))
+		return false;
 	for (std::size_t index = 0; index < MSAP1_M18_EVENT_TYPE_COUNT; ++index)
 		if (!valid_event_profile(value.event[index], index))
 			return false;

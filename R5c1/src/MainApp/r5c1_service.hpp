@@ -13,6 +13,7 @@
 
 #include "control_service.hpp"
 #include "aggregation/aggregation_health.hpp"
+#include "aggregation/flicker_engine.hpp"
 #include "aggregation/r5_aggregation_engine.hpp"
 #include "aggregation/aggregation_runtime.hpp"
 #include "aggregation/pq_event_lifecycle_engine.hpp"
@@ -23,7 +24,8 @@ public:
 		msap1::aggregation::AggregationHealth &health,
 		msap1::aggregation::AggregationRuntime &runtime,
 		msap1::aggregation::R5AggregationEngine &engine,
-		msap1::aggregation::PqEventLifecycleEngine &pq_event_engine) noexcept;
+		msap1::aggregation::PqEventLifecycleEngine &pq_event_engine,
+		msap1::aggregation::FlickerEngine &flicker_engine) noexcept;
 
 protected:
 	bool handle_custom(const msap1_rpu_msg_header &request,
@@ -36,6 +38,7 @@ private:
 	msap1::aggregation::AggregationRuntime &runtime_;
 	msap1::aggregation::R5AggregationEngine &engine_;
 	msap1::aggregation::PqEventLifecycleEngine &pq_event_engine_;
+	msap1::aggregation::FlickerEngine &flicker_engine_;
 };
 
 #endif /* MSAP1_R5C1_SERVICE_HPP */

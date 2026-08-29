@@ -4,6 +4,8 @@
 #include "aggregation_record_ring.hpp"
 #include "aggregation_scheduler_policy.hpp"
 #include "crc32c.hpp"
+#include "flicker_engine.hpp"
+#include "flicker_frame_decoder.hpp"
 #include "harmonic_aggregation_engine.hpp"
 #include "harmonic_frame_decoder.hpp"
 #include "pq_event_frame_decoder.hpp"
@@ -1762,6 +1764,113 @@ void test_pq_event_frame_decoder()
 		"PQE1 rejects CRC corruption");
 }
 
+aggregation::AggregationFrame make_flicker_frame(std::uint32_t sequence,
+	std::uint32_t kind = aggregation::FlickerProtocol::kind_live,
+	std::uint32_t histogram_base = 0U)
+{
+	aggregation::AggregationFrame frame{};
+	frame.word_count = aggregation::FlickerProtocol::frame_words;
+	auto &words = frame.words;
+	words[0U] = aggregation::FlickerProtocol::magic;
+	words[1U] = aggregation::FlickerProtocol::contract_revision;
+	words[2U] = aggregation::FlickerProtocol::payload_words;
+	words[3U] = sequence;
+	const auto payload = aggregation::FlickerProtocol::payload_index;
+	words[payload + aggregation::FlickerProtocol::sequence_word] = sequence;
+	words[payload + aggregation::FlickerProtocol::generation_word] = 7U;
+	words[payload + aggregation::FlickerProtocol::sample_rate_word] = 32000U;
+	words[payload + aggregation::FlickerProtocol::status_word] = 0x3U;
+	words[payload + aggregation::FlickerProtocol::phase_mask_word] = 0x7U;
+	words[payload + aggregation::FlickerProtocol::kind_word] = kind;
+	words[payload + aggregation::FlickerProtocol::model_word] =
+		120U | (60U << 16U);
+	words[payload + aggregation::FlickerProtocol::timing_word] =
+		1000U | (600U << 16U);
+	words[payload + aggregation::FlickerProtocol::histogram_base_word] =
+		histogram_base;
+	const auto seconds = kind == aggregation::FlickerProtocol::kind_live
+		? 1U : 600U;
+	const auto ticks = seconds * 2000U;
+	for (std::size_t phase = 0U;
+		phase < aggregation::FlickerProtocol::phases; ++phase) {
+		words[payload + aggregation::FlickerProtocol::valid_count_word + phase] =
+			ticks;
+		words[payload + aggregation::FlickerProtocol::pinst_word + phase] =
+			static_cast<std::uint32_t>((phase + 1U) << 16U);
+	}
+	write_u64(words,
+		payload + aggregation::FlickerProtocol::first_sample_word, 1000U);
+	write_u64(words,
+		payload + aggregation::FlickerProtocol::last_sample_word,
+		1000U + std::uint64_t{seconds} * 32000U - 1U);
+	if (kind == aggregation::FlickerProtocol::kind_histogram &&
+		histogram_base <= 255U && histogram_base +
+			aggregation::FlickerProtocol::histogram_bins > 255U) {
+		const auto offset = 255U - histogram_base;
+		for (std::size_t phase = 0U;
+			phase < aggregation::FlickerProtocol::phases; ++phase)
+			words[payload + aggregation::FlickerProtocol::histogram_word +
+				phase * aggregation::FlickerProtocol::histogram_bins + offset] =
+				1200000U;
+	}
+	words[aggregation::FlickerProtocol::crc_index] =
+		aggregation::crc32c_words(words.data(),
+			aggregation::FlickerProtocol::crc_index);
+	return frame;
+}
+
+void refresh_flicker_crc(aggregation::AggregationFrame &frame)
+{
+	frame.words[aggregation::FlickerProtocol::crc_index] =
+		aggregation::crc32c_words(frame.words.data(),
+			aggregation::FlickerProtocol::crc_index);
+}
+
+void test_flicker_frame_decoder()
+{
+	aggregation::FlickerFrameDecoder decoder;
+	aggregation::FlickerInputView input{};
+	auto frame = make_flicker_frame(11U);
+	expect(decoder.decode(frame, input) ==
+		aggregation::FrameValidationError::none,
+		"valid one-second FLK1 frame decodes");
+	expect(input.sequence == 11U && input.configuration_generation == 7U &&
+		input.lamp_voltage == 120U && input.nominal_hz == 60U &&
+		input.valid_count[2U] == 2000U,
+		"FLK1 model, timing, and phase counts decode exactly");
+
+	frame = make_flicker_frame(12U,
+		aggregation::FlickerProtocol::kind_histogram, 510U);
+	expect(decoder.decode(frame, input) ==
+		aggregation::FrameValidationError::none,
+		"final lossless classifier chunk accepts zero padding");
+	const auto payload = aggregation::FlickerProtocol::payload_index;
+	frame.words[payload + aggregation::FlickerProtocol::histogram_word + 2U] =
+		1U;
+	refresh_flicker_crc(frame);
+	expect(decoder.decode(frame, input) ==
+		aggregation::FrameValidationError::reserved_bits_nonzero,
+		"final FLK1 classifier chunk rejects nonzero padding");
+
+	frame = make_flicker_frame(13U);
+	frame.words[payload + aggregation::FlickerProtocol::last_sample_word] -= 1U;
+	refresh_flicker_crc(frame);
+	expect(decoder.decode(frame, input) ==
+		aggregation::FrameValidationError::invalid_record_geometry,
+		"FLK1 rejects a shortened source-sample interval");
+	frame = make_flicker_frame(14U);
+	frame.words[payload + aggregation::FlickerProtocol::valid_count_word] -= 1U;
+	refresh_flicker_crc(frame);
+	expect(decoder.decode(frame, input) ==
+		aggregation::FrameValidationError::invalid_record_geometry,
+		"FLK1 rejects a short count marked phase-valid");
+	frame = make_flicker_frame(15U);
+	frame.words[aggregation::FlickerProtocol::crc_index] ^= 1U;
+	expect(decoder.decode(frame, input) ==
+		aggregation::FrameValidationError::crc_mismatch,
+		"FLK1 rejects CRC corruption");
+}
+
 msap1_m18_config_payload make_event_configuration(std::uint32_t generation)
 {
 	msap1_m18_config_payload configuration{};
@@ -1803,6 +1912,89 @@ msap1_m18_config_payload make_event_configuration(std::uint32_t generation)
 	configuration.mains_observation_ms = 200U;
 	configuration.mains_phase_mask = 0x7U;
 	return configuration;
+}
+
+aggregation::FlickerInputView make_flicker_histogram_input(
+	std::uint32_t sequence, std::uint32_t interval,
+	std::uint16_t histogram_base)
+{
+	aggregation::FlickerInputView input{};
+	input.sequence = sequence;
+	input.configuration_generation = 7U;
+	input.sample_rate_hz = 32000U;
+	input.status = 0x3U;
+	input.phase_mask = 0x7U;
+	input.kind = static_cast<std::uint8_t>(
+		aggregation::FlickerProtocol::kind_histogram);
+	input.lamp_voltage = 120U;
+	input.nominal_hz = 60U;
+	input.live_cadence_ms = 1000U;
+	input.pst_interval_seconds = 600U;
+	input.histogram_base = histogram_base;
+	input.valid_count.fill(1200000U);
+	input.pinst_q16 = {2U << 16U, 3U << 16U, 4U << 16U};
+	input.first_sample = std::uint64_t{interval} * 600U * 32000U;
+	input.last_sample = input.first_sample + 600U * 32000U - 1U;
+	if (histogram_base <= 255U && histogram_base +
+			aggregation::FlickerProtocol::histogram_bins > 255U) {
+		const auto offset = 255U - histogram_base;
+		for (auto &phase : input.histogram)
+			phase[offset] = 1200000U;
+	}
+	return input;
+}
+
+void test_flicker_engine_pst_and_plt()
+{
+	CapturingRecordSink sink;
+	aggregation::AggregationHealth health;
+	aggregation::FlickerEngine engine(sink, health);
+	expect(engine.initialize(), "flicker aggregation engine initializes");
+	auto configuration = make_event_configuration(7U);
+	configuration.flicker_flags = MSAP1_M18_ENGINE_ENABLED;
+	expect(engine.configure(configuration), "valid flicker profile stages");
+
+	std::uint32_t sequence = 0U;
+	for (std::uint32_t interval = 0U; interval < 12U; ++interval) {
+		for (std::uint32_t chunk = 0U;
+			chunk < aggregation::FlickerProtocol::classifier_chunks; ++chunk) {
+			engine.process(make_flicker_histogram_input(++sequence, interval,
+				static_cast<std::uint16_t>(chunk *
+					aggregation::FlickerProtocol::histogram_bins)));
+		}
+	}
+	expect(sink.count == 13U,
+		"twelve complete Pst intervals emit twelve Pst and one Plt record");
+	for (std::size_t interval = 0U; interval < 12U; ++interval) {
+		const auto &record = sink.records[interval];
+		expect((record.words[13U] & 0xffU) == 1U &&
+			((record.words[13U] >> 8U) & 0x7U) == 0x7U,
+			"each lossless classifier family emits one valid Pst record");
+		expect(record.words[19U] != 0U && record.words[20U] != 0U &&
+			record.words[21U] != 0U && record.words[28U] == 600U,
+			"Pst percentiles retain all configured phases and duration");
+	}
+	const auto &plt = sink.records[12U];
+	expect((plt.words[13U] & 0xffU) == 2U &&
+		((plt.words[13U] >> 8U) & 0x7U) == 0x7U &&
+		plt.words[22U] != 0U && plt.words[24U] != 0U &&
+		plt.words[28U] == 7200U,
+		"twelfth consecutive valid Pst emits the cubic-mean Plt");
+	expect(plt.words[6U] == 7200U * 32000U &&
+		plt.words[25U] == 12U * 1200000U,
+		"Plt sample and valid-count spans cover all twelve Pst intervals");
+	expect(plt.words[9U] == 0U && plt.words[10U] == 0U,
+		"Plt provenance starts at the oldest retained Pst interval");
+
+	const auto before_gap = sink.count;
+	engine.process(make_flicker_histogram_input(sequence + 1U, 12U, 0U));
+	for (std::uint32_t chunk = 1U;
+		chunk < aggregation::FlickerProtocol::classifier_chunks; ++chunk)
+		engine.process(make_flicker_histogram_input(sequence + 2U + chunk,
+			12U, static_cast<std::uint16_t>(chunk *
+				aggregation::FlickerProtocol::histogram_bins)));
+	expect(sink.count == before_gap,
+		"a sequence gap invalidates the whole in-flight classifier family");
 }
 
 aggregation::PqEventInputView make_pq_input(std::uint32_t sequence,
@@ -1938,6 +2130,8 @@ int main()
 	test_r5_shadow_mode_is_non_authoritative();
 	test_pq_event_frame_decoder();
 	test_pq_event_lifecycle_engine();
+	test_flicker_frame_decoder();
+	test_flicker_engine_pst_and_plt();
 	std::cout << "aggregation shadow tests passed\n";
 	return EXIT_SUCCESS;
 }

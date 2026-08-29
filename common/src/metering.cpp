@@ -5,6 +5,9 @@
 #include "sleep.h"
 #include "xil_io.h"
 
+#include <array>
+#include <cstring>
+
 namespace msap1::meter {
 namespace {
 
@@ -55,6 +58,11 @@ constexpr std::uint32_t processing_pq_shadow_reference = 0xa0;
 constexpr std::uint32_t processing_pq_shadow_threshold = 0xa4;
 constexpr std::uint32_t processing_pq_shadow_limits = 0xa8;
 constexpr std::uint32_t processing_pq_status = 0xac;
+constexpr std::uint32_t processing_m18_config_index = 0xf4;
+constexpr std::uint32_t processing_m18_config_data = 0xf8;
+constexpr std::uint32_t processing_m18_config_status = 0xfc;
+constexpr std::size_t m18_config_words = 79u;
+static_assert(sizeof(msap1_m18_config_payload) == m18_config_words * 4u);
 
 constexpr std::uint32_t conversion_identifier = 0x41435631u; // "ACV1"
 constexpr std::uint32_t processing_identifier = 0x4d505231u; // "MPR1"
@@ -266,6 +274,28 @@ Error MeteringPipeline::configure(const Configuration &configuration)
 			 pq_threshold(configuration.power_quality));
 	processing_write(processing_pq_shadow_limits,
 			 pq_limits(configuration.power_quality));
+
+	std::array<std::uint32_t, m18_config_words> expected_m18{};
+	if (m18_staged_) {
+		std::memcpy(expected_m18.data(), &m18_configuration_,
+			sizeof(m18_configuration_));
+		if ((processing_read(processing_m18_config_status) >> 16u) !=
+			m18_config_words)
+			return Error::ReadbackMismatch;
+		for (std::size_t word = 0; word < expected_m18.size(); ++word) {
+			processing_write(processing_m18_config_index,
+				static_cast<std::uint32_t>(word));
+			processing_write(processing_m18_config_data,
+				expected_m18[word]);
+		}
+		for (std::size_t word = 0; word < expected_m18.size(); ++word) {
+			processing_write(processing_m18_config_index,
+				static_cast<std::uint32_t>(word));
+			if (processing_read(processing_m18_config_data) !=
+				expected_m18[word])
+				return Error::ReadbackMismatch;
+		}
+	}
 
 	const auto conversion_control =
 		(configuration.enable ? control_enable : 0u) | control_apply;

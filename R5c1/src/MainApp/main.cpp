@@ -17,6 +17,8 @@
 #include "aggregation/aggregation_health.hpp"
 #include "aggregation/harmonic_aggregation_engine.hpp"
 #include "aggregation/harmonic_frame_decoder.hpp"
+#include "aggregation/flicker_engine.hpp"
+#include "aggregation/flicker_frame_decoder.hpp"
 #include "aggregation/pq_event_frame_decoder.hpp"
 #include "aggregation/pq_event_lifecycle_engine.hpp"
 #include "aggregation/aggregation_output_service.hpp"
@@ -46,6 +48,7 @@ static msap1::aggregation::AggregationFrameRing aggregation_ring;
 static msap1::aggregation::AggregationFrameDecoder aggregation_decoder;
 static msap1::aggregation::HarmonicFrameDecoder harmonic_decoder;
 static msap1::aggregation::PqEventFrameDecoder pq_event_decoder;
+static msap1::aggregation::FlickerFrameDecoder flicker_decoder;
 static msap1::aggregation::AggregationRecordRing aggregation_output_ring;
 static msap1::aggregation::AggregationOutputService aggregation_output(
 	aggregation_transport, aggregation_output_ring, aggregation_health);
@@ -56,14 +59,16 @@ static msap1::aggregation::HarmonicAggregationEngine harmonic_engine(
 	aggregation_output, aggregation_health);
 static msap1::aggregation::PqEventLifecycleEngine pq_event_engine(
 	aggregation_output, aggregation_health);
+static msap1::aggregation::FlickerEngine flicker_engine(
+	aggregation_output, aggregation_health);
 static msap1::aggregation::AggregationShadowService aggregation_shadow(
 	aggregation_transport, aggregation_ring, aggregation_decoder,
 	aggregation_engine, harmonic_decoder, harmonic_engine, pq_event_decoder,
-	pq_event_engine, aggregation_health);
+	pq_event_engine, flicker_decoder, flicker_engine, aggregation_health);
 static msap1::aggregation::AggregationRuntime aggregation_runtime(
 	aggregation_shadow, aggregation_output, aggregation_health);
 static R5c1Service service(msap1::CoreConfig::current(), aggregation_health,
-	aggregation_runtime, aggregation_engine, pq_event_engine);
+	aggregation_runtime, aggregation_engine, pq_event_engine, flicker_engine);
 
 static TaskHandle_t comm_task_handle;
 
