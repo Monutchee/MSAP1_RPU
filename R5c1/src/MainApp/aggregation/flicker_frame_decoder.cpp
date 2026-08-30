@@ -13,7 +13,8 @@ std::uint64_t u64(const std::uint32_t *words, std::size_t index) noexcept
 
 bool supported_sample_rate(std::uint32_t rate) noexcept
 {
-	return rate >= 2000U && rate <= 128000U && rate % 2000U == 0U;
+	return rate >= 2000U && rate <= 128000U && rate % 2000U == 0U &&
+		rate / 2000U <= 64U;
 }
 
 } // namespace
@@ -46,84 +47,66 @@ FrameValidationError FlickerFrameDecoder::decode(
 	const auto nominal = static_cast<std::uint8_t>((model >> 16U) & 0xffU);
 	const auto live_ms = static_cast<std::uint16_t>(timing & 0xffffU);
 	const auto pst_seconds = static_cast<std::uint16_t>(timing >> 16U);
-	const auto kind = payload[FlickerProtocol::kind_word];
-	const auto histogram_base = payload[FlickerProtocol::histogram_base_word];
+	const auto phase_mask = payload[FlickerProtocol::phase_mask_word];
+	const auto actual_count = payload[FlickerProtocol::actual_count_word];
+	const auto batch_status = payload[FlickerProtocol::batch_status_word];
 	if (payload[FlickerProtocol::generation_word] == 0U ||
 		!supported_sample_rate(payload[FlickerProtocol::sample_rate_word]) ||
-		(payload[FlickerProtocol::status_word] &
-			~FlickerProtocol::status_mask) != 0U ||
-		(payload[FlickerProtocol::phase_mask_word] & ~0x7U) != 0U ||
-		kind > FlickerProtocol::kind_histogram ||
+		payload[FlickerProtocol::frame_capacity_word] !=
+			FlickerProtocol::batch_frames ||
+		phase_mask == 0U || (phase_mask & ~0x7U) != 0U ||
 		(model & 0xff000000U) != 0U ||
 		(lamp != 120U && lamp != 230U) ||
 		(nominal != 50U && nominal != 60U) || live_ms != 1000U ||
-		pst_seconds != 600U)
+		pst_seconds != 600U ||
+		payload[FlickerProtocol::reference_microvolts_word] == 0U ||
+		(batch_status & ~FlickerProtocol::batch_status_mask) != 0U ||
+		((batch_status & FlickerProtocol::batch_source_drop) != 0U &&
+			(batch_status & FlickerProtocol::batch_discontinuity) == 0U))
 		return FrameValidationError::reserved_bits_nonzero;
 
 	const auto first_sample = u64(payload, FlickerProtocol::first_sample_word);
 	const auto last_sample = u64(payload, FlickerProtocol::last_sample_word);
-	const auto maximum_count = kind == FlickerProtocol::kind_live
-		? 2000U : 600U * 2000U;
-	const auto interval_samples = static_cast<std::uint64_t>(
-		payload[FlickerProtocol::sample_rate_word]) *
-		(kind == FlickerProtocol::kind_live ? 1U : 600U);
-	if (last_sample < first_sample ||
-		last_sample - first_sample + 1U != interval_samples)
+	if (actual_count == 0U || actual_count > FlickerProtocol::batch_frames ||
+		last_sample < first_sample ||
+		last_sample - first_sample + 1U != actual_count ||
+		(actual_count != FlickerProtocol::batch_frames &&
+			(batch_status & (FlickerProtocol::batch_discontinuity |
+				FlickerProtocol::batch_source_drop)) !=
+				(FlickerProtocol::batch_discontinuity |
+					FlickerProtocol::batch_source_drop)))
 		return FrameValidationError::invalid_record_geometry;
-	for (std::size_t phase = 0U; phase < FlickerProtocol::phases; ++phase) {
-		const auto count = payload[FlickerProtocol::valid_count_word + phase];
-		if (count > maximum_count ||
-			((payload[FlickerProtocol::phase_mask_word] & (1U << phase)) != 0U &&
-				count != maximum_count))
-			return FrameValidationError::invalid_record_geometry;
+	for (std::size_t sample = 0U; sample < actual_count; ++sample) {
+		const auto packed_word = payload[FlickerProtocol::sample_word +
+			sample * FlickerProtocol::words_per_sample + 4U];
+		if ((packed_word & FlickerProtocol::packed_reserved_mask) != 0U)
+			return FrameValidationError::reserved_bits_nonzero;
 	}
-
-	if (kind == FlickerProtocol::kind_live) {
-		if (histogram_base != 0U)
-			return FrameValidationError::invalid_record_geometry;
-		for (std::size_t word = FlickerProtocol::histogram_word;
-			word < FlickerProtocol::payload_words; ++word)
-			if (payload[word] != 0U)
+	for (std::size_t sample = actual_count;
+		sample < FlickerProtocol::batch_frames; ++sample)
+		for (std::size_t word = 0U;
+			word < FlickerProtocol::words_per_sample; ++word)
+			if (payload[FlickerProtocol::sample_word +
+				sample * FlickerProtocol::words_per_sample + word] != 0U)
 				return FrameValidationError::reserved_bits_nonzero;
-	} else {
-		if (histogram_base >= FlickerProtocol::classifier_bins ||
-			histogram_base % FlickerProtocol::histogram_bins != 0U)
-			return FrameValidationError::invalid_record_geometry;
-		for (std::size_t phase = 0U; phase < FlickerProtocol::phases; ++phase)
-			for (std::size_t offset = 0U;
-				offset < FlickerProtocol::histogram_bins; ++offset)
-				if (histogram_base + offset >= FlickerProtocol::classifier_bins &&
-					payload[FlickerProtocol::histogram_word +
-						phase * FlickerProtocol::histogram_bins + offset] != 0U)
-					return FrameValidationError::reserved_bits_nonzero;
-	}
 
 	output = {};
 	output.sequence = payload[FlickerProtocol::sequence_word];
 	output.configuration_generation =
 		payload[FlickerProtocol::generation_word];
 	output.sample_rate_hz = payload[FlickerProtocol::sample_rate_word];
-	output.status = payload[FlickerProtocol::status_word];
-	output.phase_mask = static_cast<std::uint8_t>(
-		payload[FlickerProtocol::phase_mask_word]);
-	output.kind = static_cast<std::uint8_t>(kind);
+	output.phase_mask = static_cast<std::uint8_t>(phase_mask);
 	output.lamp_voltage = lamp;
 	output.nominal_hz = nominal;
 	output.live_cadence_ms = live_ms;
 	output.pst_interval_seconds = pst_seconds;
-	output.histogram_base = static_cast<std::uint16_t>(histogram_base);
+	output.reference_microvolts =
+		payload[FlickerProtocol::reference_microvolts_word];
 	output.first_sample = first_sample;
 	output.last_sample = last_sample;
-	for (std::size_t phase = 0U; phase < FlickerProtocol::phases; ++phase) {
-		output.valid_count[phase] =
-			payload[FlickerProtocol::valid_count_word + phase];
-		output.pinst_q16[phase] = payload[FlickerProtocol::pinst_word + phase];
-		for (std::size_t offset = 0U;
-			offset < FlickerProtocol::histogram_bins; ++offset)
-			output.histogram[phase][offset] =
-				payload[FlickerProtocol::histogram_word +
-					phase * FlickerProtocol::histogram_bins + offset];
-	}
+	output.actual_count = static_cast<std::uint16_t>(actual_count);
+	output.batch_status = static_cast<std::uint8_t>(batch_status);
+	output.packed_sample_words = payload + FlickerProtocol::sample_word;
 	return FrameValidationError::none;
 }
 

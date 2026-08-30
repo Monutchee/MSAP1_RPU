@@ -26,6 +26,39 @@
 
 namespace aggregation = msap1::aggregation;
 
+namespace msap1::aggregation {
+
+struct FlickerEngineTestAccess final {
+	using Classifier = std::array<std::array<std::uint32_t,
+		FlickerProtocol::classifier_bins>, FlickerProtocol::phases>;
+
+	static bool activate(FlickerEngine &engine,
+		const FlickerInputView &input) noexcept
+	{
+		return engine.apply_matching_configuration(input);
+	}
+
+	static void complete_interval(FlickerEngine &engine,
+		const Classifier &histogram, std::uint64_t first_sample,
+		bool contaminated = false) noexcept
+	{
+		engine.histogram_ = histogram;
+		engine.interval_valid_count_.fill(600U * 2000U);
+		engine.interval_peak_ = {2U << 16U, 3U << 16U, 4U << 16U};
+		engine.interval_first_sample_ = first_sample;
+		engine.interval_ticks_ = 600U * 2000U;
+		engine.interval_discontinuity_ = false;
+		engine.interval_contaminated_ = contaminated;
+		engine.interval_classifier_overflow_ = false;
+		engine.arithmetic_overflow_ = false;
+		engine.locked_ = true;
+		engine.complete_interval(first_sample + 600U *
+			engine.sample_rate_hz_ - 1U);
+	}
+};
+
+} // namespace msap1::aggregation
+
 static_assert(!std::is_copy_constructible_v<aggregation::EnergyDemandEngine>);
 static_assert(!std::is_copy_assignable_v<aggregation::EnergyDemandEngine>);
 static_assert(!std::is_move_constructible_v<aggregation::EnergyDemandEngine>);
@@ -1767,9 +1800,34 @@ void test_pq_event_frame_decoder()
 		"PQE1 rejects CRC corruption");
 }
 
+std::uint64_t flicker_wire_q16(std::int64_t value)
+{
+	return static_cast<std::uint64_t>(value) & 0x0000ffffffffffffULL;
+}
+
+void pack_flicker_sample(aggregation::AggregationFrame &frame,
+	std::size_t sample, std::int64_t va, std::int64_t vb, std::int64_t vc,
+	std::uint8_t flags)
+{
+	const auto payload = aggregation::FlickerProtocol::payload_index;
+	const auto base = payload + aggregation::FlickerProtocol::sample_word +
+		sample * aggregation::FlickerProtocol::words_per_sample;
+	const auto a = flicker_wire_q16(va);
+	const auto b = flicker_wire_q16(vb);
+	const auto c = flicker_wire_q16(vc);
+	frame.words[base + 0U] = static_cast<std::uint32_t>(a);
+	frame.words[base + 1U] = static_cast<std::uint32_t>(a >> 32U) |
+		(static_cast<std::uint32_t>(b & 0xffffU) << 16U);
+	frame.words[base + 2U] = static_cast<std::uint32_t>(b >> 16U);
+	frame.words[base + 3U] = static_cast<std::uint32_t>(c);
+	frame.words[base + 4U] = static_cast<std::uint32_t>(c >> 32U) |
+		(static_cast<std::uint32_t>(flags) << 16U);
+}
+
 aggregation::AggregationFrame make_flicker_frame(std::uint32_t sequence,
-	std::uint32_t kind = aggregation::FlickerProtocol::kind_live,
-	std::uint32_t histogram_base = 0U)
+	std::uint32_t actual_count = aggregation::FlickerProtocol::batch_frames,
+	std::uint32_t batch_status =
+		aggregation::FlickerProtocol::batch_discontinuity)
 {
 	aggregation::AggregationFrame frame{};
 	frame.word_count = aggregation::FlickerProtocol::frame_words;
@@ -1781,41 +1839,30 @@ aggregation::AggregationFrame make_flicker_frame(std::uint32_t sequence,
 	const auto payload = aggregation::FlickerProtocol::payload_index;
 	words[payload + aggregation::FlickerProtocol::sequence_word] = sequence;
 	words[payload + aggregation::FlickerProtocol::generation_word] = 7U;
-	words[payload + aggregation::FlickerProtocol::sample_rate_word] = 32000U;
-	words[payload + aggregation::FlickerProtocol::status_word] = 0x3U;
+	words[payload + aggregation::FlickerProtocol::sample_rate_word] = 128000U;
+	words[payload + aggregation::FlickerProtocol::frame_capacity_word] =
+		aggregation::FlickerProtocol::batch_frames;
 	words[payload + aggregation::FlickerProtocol::phase_mask_word] = 0x7U;
-	words[payload + aggregation::FlickerProtocol::kind_word] = kind;
 	words[payload + aggregation::FlickerProtocol::model_word] =
 		120U | (60U << 16U);
 	words[payload + aggregation::FlickerProtocol::timing_word] =
 		1000U | (600U << 16U);
-	words[payload + aggregation::FlickerProtocol::histogram_base_word] =
-		histogram_base;
-	const auto seconds = kind == aggregation::FlickerProtocol::kind_live
-		? 1U : 600U;
-	const auto ticks = seconds * 2000U;
-	for (std::size_t phase = 0U;
-		phase < aggregation::FlickerProtocol::phases; ++phase) {
-		words[payload + aggregation::FlickerProtocol::valid_count_word + phase] =
-			ticks;
-		words[payload + aggregation::FlickerProtocol::pinst_word + phase] =
-			static_cast<std::uint32_t>((phase + 1U) << 16U);
-	}
+	words[payload + aggregation::FlickerProtocol::reference_microvolts_word] =
+		120000000U;
 	write_u64(words,
 		payload + aggregation::FlickerProtocol::first_sample_word, 1000U);
+	for (std::size_t sample = 0U; sample < actual_count; ++sample)
+		pack_flicker_sample(frame, sample,
+			(static_cast<std::int64_t>(1000U + sample) << 16U),
+			-(static_cast<std::int64_t>(2000U + sample) << 16U),
+			(static_cast<std::int64_t>(3000U + sample) << 16U), 0x17U);
+	words[payload + aggregation::FlickerProtocol::actual_count_word] =
+		actual_count;
+	words[payload + aggregation::FlickerProtocol::batch_status_word] =
+		batch_status;
 	write_u64(words,
 		payload + aggregation::FlickerProtocol::last_sample_word,
-		1000U + std::uint64_t{seconds} * 32000U - 1U);
-	if (kind == aggregation::FlickerProtocol::kind_histogram &&
-		histogram_base <= 255U && histogram_base +
-			aggregation::FlickerProtocol::histogram_bins > 255U) {
-		const auto offset = 255U - histogram_base;
-		for (std::size_t phase = 0U;
-			phase < aggregation::FlickerProtocol::phases; ++phase)
-			words[payload + aggregation::FlickerProtocol::histogram_word +
-				phase * aggregation::FlickerProtocol::histogram_bins + offset] =
-				1200000U;
-	}
+		1000U + actual_count - 1U);
 	words[aggregation::FlickerProtocol::crc_index] =
 		aggregation::crc32c_words(words.data(),
 			aggregation::FlickerProtocol::crc_index);
@@ -1836,37 +1883,43 @@ void test_flicker_frame_decoder()
 	auto frame = make_flicker_frame(11U);
 	expect(decoder.decode(frame, input) ==
 		aggregation::FrameValidationError::none,
-		"valid one-second FLK1 frame decodes");
+		"valid revision-2 FLK1 raw batch decodes");
 	expect(input.sequence == 11U && input.configuration_generation == 7U &&
 		input.lamp_voltage == 120U && input.nominal_hz == 60U &&
-		input.valid_count[2U] == 2000U,
-		"FLK1 model, timing, and phase counts decode exactly");
+		input.sample_rate_hz == 128000U && input.actual_count == 256U &&
+		input.first_sample == 1000U && input.last_sample == 1255U &&
+		input.packed_sample_words != nullptr,
+		"FLK1 metadata and zero-copy batch view decode exactly");
 
-	frame = make_flicker_frame(12U,
-		aggregation::FlickerProtocol::kind_histogram, 510U);
+	frame = make_flicker_frame(12U, 100U,
+		aggregation::FlickerProtocol::batch_discontinuity |
+			aggregation::FlickerProtocol::batch_source_drop);
 	expect(decoder.decode(frame, input) ==
 		aggregation::FrameValidationError::none,
-		"final lossless classifier chunk accepts zero padding");
+		"short discontinuous FLK1 batch accepts a zero-padded tail");
 	const auto payload = aggregation::FlickerProtocol::payload_index;
-	frame.words[payload + aggregation::FlickerProtocol::histogram_word + 2U] =
-		1U;
+	frame.words[payload + aggregation::FlickerProtocol::sample_word +
+		100U * aggregation::FlickerProtocol::words_per_sample] = 1U;
 	refresh_flicker_crc(frame);
 	expect(decoder.decode(frame, input) ==
 		aggregation::FrameValidationError::reserved_bits_nonzero,
-		"final FLK1 classifier chunk rejects nonzero padding");
+		"short FLK1 batch rejects nonzero padded sample words");
 
 	frame = make_flicker_frame(13U);
+	frame.words[payload + aggregation::FlickerProtocol::sample_word + 4U] |=
+		1U << 23U;
+	refresh_flicker_crc(frame);
+	expect(decoder.decode(frame, input) ==
+		aggregation::FrameValidationError::reserved_bits_nonzero,
+		"FLK1 rejects reserved packed-sample flag bits");
+	frame = make_flicker_frame(14U, 100U,
+		aggregation::FlickerProtocol::batch_discontinuity |
+			aggregation::FlickerProtocol::batch_source_drop);
 	frame.words[payload + aggregation::FlickerProtocol::last_sample_word] -= 1U;
 	refresh_flicker_crc(frame);
 	expect(decoder.decode(frame, input) ==
 		aggregation::FrameValidationError::invalid_record_geometry,
-		"FLK1 rejects a shortened source-sample interval");
-	frame = make_flicker_frame(14U);
-	frame.words[payload + aggregation::FlickerProtocol::valid_count_word] -= 1U;
-	refresh_flicker_crc(frame);
-	expect(decoder.decode(frame, input) ==
-		aggregation::FrameValidationError::invalid_record_geometry,
-		"FLK1 rejects a short count marked phase-valid");
+		"FLK1 rejects a last-sample/count mismatch");
 	frame = make_flicker_frame(15U);
 	frame.words[aggregation::FlickerProtocol::crc_index] ^= 1U;
 	expect(decoder.decode(frame, input) ==
@@ -2007,9 +2060,7 @@ msap1_m18_config_payload make_event_configuration(std::uint32_t generation)
 	return configuration;
 }
 
-using FlickerClassifier = std::array<std::array<std::uint32_t,
-	aggregation::FlickerProtocol::classifier_bins>,
-	aggregation::FlickerProtocol::phases>;
+using FlickerClassifier = aggregation::FlickerEngineTestAccess::Classifier;
 
 FlickerClassifier make_flicker_reference_histogram(std::uint32_t interval)
 {
@@ -2026,36 +2077,18 @@ FlickerClassifier make_flicker_reference_histogram(std::uint32_t interval)
 	return histogram;
 }
 
-aggregation::FlickerInputView make_flicker_histogram_input(
-	std::uint32_t sequence, std::uint32_t interval,
-	std::uint16_t histogram_base, const FlickerClassifier &classifier,
-	std::uint32_t status = 0x3U)
+aggregation::FlickerInputView make_flicker_profile_input()
 {
 	aggregation::FlickerInputView input{};
-	input.sequence = sequence;
+	input.sequence = 1U;
 	input.configuration_generation = 7U;
 	input.sample_rate_hz = 32000U;
-	input.status = status;
 	input.phase_mask = 0x7U;
-	input.kind = static_cast<std::uint8_t>(
-		aggregation::FlickerProtocol::kind_histogram);
 	input.lamp_voltage = 120U;
 	input.nominal_hz = 60U;
 	input.live_cadence_ms = 1000U;
 	input.pst_interval_seconds = 600U;
-	input.histogram_base = histogram_base;
-	input.valid_count.fill(1200000U);
-	input.pinst_q16 = {2U << 16U, 3U << 16U, 4U << 16U};
-	input.first_sample = std::uint64_t{interval} * 600U * 32000U;
-	input.last_sample = input.first_sample + 600U * 32000U - 1U;
-	for (std::size_t phase = 0U; phase < input.histogram.size(); ++phase) {
-		for (std::size_t offset = 0U;
-			offset < aggregation::FlickerProtocol::histogram_bins; ++offset) {
-			const auto bin = static_cast<std::size_t>(histogram_base) + offset;
-			if (bin < aggregation::FlickerProtocol::classifier_bins)
-				input.histogram[phase][offset] = classifier[phase][bin];
-		}
-	}
+	input.reference_microvolts = 120000000U;
 	return input;
 }
 
@@ -2117,15 +2150,110 @@ double flicker_reference_plt(const std::array<double, 12U> &pst)
 }
 
 void feed_flicker_interval(aggregation::FlickerEngine &engine,
-	std::uint32_t &sequence, std::uint32_t interval,
-	const FlickerClassifier &histogram, std::uint32_t status = 0x3U)
+	std::uint32_t interval, const FlickerClassifier &histogram,
+	bool contaminated = false)
 {
-	for (std::uint32_t chunk = 0U;
-		chunk < aggregation::FlickerProtocol::classifier_chunks; ++chunk) {
-		engine.process(make_flicker_histogram_input(++sequence, interval,
-			static_cast<std::uint16_t>(chunk *
-				aggregation::FlickerProtocol::histogram_bins), histogram, status));
+	aggregation::FlickerEngineTestAccess::complete_interval(engine, histogram,
+		std::uint64_t{interval} * 600U * 32000U, contaminated);
+}
+
+void process_flicker_standard_batch(aggregation::FlickerEngine &engine,
+	aggregation::FlickerFrameDecoder &decoder, std::uint32_t sequence,
+	std::uint64_t first_sample, std::uint32_t batch_status)
+{
+	constexpr double pi = 3.14159265358979323846;
+	constexpr double sample_rate = 2000.0;
+	constexpr double modulation_hz = 8.8;
+	constexpr double modulation_depth = 0.00321;
+	constexpr double reference_microvolts = 120000000.0;
+	auto frame = make_flicker_frame(sequence);
+	const auto payload = aggregation::FlickerProtocol::payload_index;
+	frame.words[payload + aggregation::FlickerProtocol::sample_rate_word] =
+		2000U;
+	frame.words[payload + aggregation::FlickerProtocol::batch_status_word] =
+		batch_status;
+	write_u64(frame.words,
+		payload + aggregation::FlickerProtocol::first_sample_word, first_sample);
+	write_u64(frame.words,
+		payload + aggregation::FlickerProtocol::last_sample_word,
+		first_sample + aggregation::FlickerProtocol::batch_frames - 1U);
+	for (std::size_t offset = 0U;
+		offset < aggregation::FlickerProtocol::batch_frames; ++offset) {
+		const auto index = first_sample + offset;
+		const auto time = static_cast<double>(index) / sample_rate;
+		const auto modulation = 1.0 + modulation_depth *
+			std::sin(2.0 * pi * modulation_hz * time);
+		std::array<std::int64_t, 3U> voltage{};
+		for (std::size_t phase = 0U; phase < voltage.size(); ++phase) {
+			const auto phase_angle =
+				-2.0 * pi * static_cast<double>(phase) / 3.0;
+			const auto microvolts = reference_microvolts * std::sqrt(2.0) *
+				modulation * std::sin(2.0 * pi * 60.0 * time + phase_angle);
+			voltage[phase] = static_cast<std::int64_t>(
+				std::llround(microvolts * 65536.0));
+		}
+		pack_flicker_sample(frame, offset, voltage[0U], voltage[1U],
+			voltage[2U], 0x17U);
 	}
+	refresh_flicker_crc(frame);
+	aggregation::FlickerInputView input{};
+	expect(decoder.decode(frame, input) ==
+		aggregation::FrameValidationError::none,
+		"generated IEC modulation batch passes strict FLK1 decode");
+	engine.process(input);
+}
+
+void test_flicker_engine_raw_frontend()
+{
+	CapturingRecordSink sink;
+	aggregation::AggregationHealth health;
+	aggregation::FlickerEngine engine(sink, health);
+	aggregation::FlickerFrameDecoder decoder;
+	expect(engine.initialize(), "raw-batch flicker engine initializes");
+	auto configuration = make_event_configuration(7U);
+	configuration.flicker_flags = MSAP1_M18_ENGINE_ENABLED;
+	expect(engine.configure(configuration),
+		"raw-batch flicker profile stages");
+	std::uint64_t first_sample = 0U;
+	std::uint32_t sequence = 0U;
+	for (std::size_t batch = 0U; batch < 102U; ++batch) {
+		process_flicker_standard_batch(engine, decoder, ++sequence,
+			first_sample, batch == 0U
+				? aggregation::FlickerProtocol::batch_discontinuity : 0U);
+		first_sample += aggregation::FlickerProtocol::batch_frames;
+	}
+	expect(sink.count == 13U,
+		"thirteen seconds of packed samples emit thirteen live records");
+	std::size_t settled = 0U;
+	for (std::size_t record = 0U; record < sink.count; ++record) {
+		const auto &words = sink.records[record].words;
+		if ((words[31U] & (1U << 7U)) != 0U)
+			continue;
+		++settled;
+		expect((words[13U] & 0xffU) == 0U &&
+			((words[13U] >> 8U) & 0x7U) == 0x7U && words[6U] == 2000U,
+			"settled raw processing emits a complete valid live record");
+		for (std::size_t phase = 0U; phase < 3U; ++phase) {
+			const auto pinst = static_cast<double>(words[16U + phase]) / 65536.0;
+			expect(pinst > 0.95 && pinst < 1.05,
+				"120 V/60 Hz IEC 8.8 Hz point remains unity after R5 offload");
+		}
+	}
+	expect(settled >= 3U,
+		"raw fixed-point frontend produces multiple settled IEC intervals");
+	const auto before_drop = sink.count;
+	for (std::size_t batch = 0U; batch < 8U; ++batch) {
+		process_flicker_standard_batch(engine, decoder, ++sequence,
+			first_sample, batch == 0U
+				? aggregation::FlickerProtocol::batch_discontinuity |
+					aggregation::FlickerProtocol::batch_source_drop : 0U);
+		first_sample += aggregation::FlickerProtocol::batch_frames;
+	}
+	expect(sink.count == before_drop + 1U &&
+		((sink.records[before_drop].words[13U] >> 8U) & 0x7U) == 0U &&
+		(sink.records[before_drop].words[31U] & ((1U << 3U) | (1U << 6U))) ==
+			((1U << 3U) | (1U << 6U)),
+		"source-drop marker resets filters and invalidates the next live record");
 }
 
 void test_flicker_engine_pst_and_plt()
@@ -2137,15 +2265,17 @@ void test_flicker_engine_pst_and_plt()
 	auto configuration = make_event_configuration(7U);
 	configuration.flicker_flags = MSAP1_M18_ENGINE_ENABLED;
 	expect(engine.configure(configuration), "valid flicker profile stages");
+	expect(aggregation::FlickerEngineTestAccess::activate(engine,
+		make_flicker_profile_input()),
+		"matching raw-batch profile activates the R5C1 flickermeter");
 
-	std::uint32_t sequence = 0U;
 	std::array<std::array<double, 12U>, 3U> reference_pst{};
 	for (std::uint32_t interval = 0U; interval < 12U; ++interval) {
 		const auto histogram = make_flicker_reference_histogram(interval);
 		for (std::size_t phase = 0U; phase < reference_pst.size(); ++phase)
 			reference_pst[phase][interval] =
 				flicker_reference_pst(histogram[phase]);
-		feed_flicker_interval(engine, sequence, interval, histogram);
+		feed_flicker_interval(engine, interval, histogram);
 	}
 	expect(sink.count == 13U,
 		"twelve complete Pst intervals emit twelve Pst and one Plt record");
@@ -2183,18 +2313,6 @@ void test_flicker_engine_pst_and_plt()
 			"fixed-point Plt matches the independent double-precision oracle");
 	}
 
-	const auto before_gap = sink.count;
-	const auto gap_histogram = make_flicker_reference_histogram(12U);
-	engine.process(make_flicker_histogram_input(sequence + 1U, 12U, 0U,
-		gap_histogram));
-	for (std::uint32_t chunk = 1U;
-		chunk < aggregation::FlickerProtocol::classifier_chunks; ++chunk)
-		engine.process(make_flicker_histogram_input(sequence + 2U + chunk,
-			12U, static_cast<std::uint16_t>(chunk *
-				aggregation::FlickerProtocol::histogram_bins), gap_histogram));
-	expect(sink.count == before_gap,
-		"a sequence gap invalidates the whole in-flight classifier family");
-
 	CapturingRecordSink recovery_sink;
 	aggregation::AggregationHealth recovery_health;
 	aggregation::FlickerEngine recovery_engine(recovery_sink, recovery_health);
@@ -2202,21 +2320,23 @@ void test_flicker_engine_pst_and_plt()
 		"flicker contamination-recovery engine initializes");
 	expect(recovery_engine.configure(configuration),
 		"flicker contamination-recovery profile stages");
-	sequence = 0U;
+	expect(aggregation::FlickerEngineTestAccess::activate(recovery_engine,
+		make_flicker_profile_input()),
+		"recovery engine activates the matching raw-batch profile");
 	for (std::uint32_t interval = 0U; interval < 11U; ++interval)
-		feed_flicker_interval(recovery_engine, sequence, interval,
+		feed_flicker_interval(recovery_engine, interval,
 			make_flicker_reference_histogram(interval));
-	feed_flicker_interval(recovery_engine, sequence, 11U,
-		make_flicker_reference_histogram(11U), 0x3U | (1U << 4U));
+	feed_flicker_interval(recovery_engine, 11U,
+		make_flicker_reference_histogram(11U), true);
 	expect(recovery_sink.count == 12U &&
 		((recovery_sink.records[11U].words[13U] >> 8U) & 0x7U) == 0U,
 		"one contaminated ten-minute interval emits invalid Pst and clears Plt");
 	for (std::uint32_t interval = 12U; interval < 23U; ++interval)
-		feed_flicker_interval(recovery_engine, sequence, interval,
+		feed_flicker_interval(recovery_engine, interval,
 			make_flicker_reference_histogram(interval));
 	expect(recovery_sink.count == 23U,
 		"eleven clean intervals after contamination cannot emit Plt early");
-	feed_flicker_interval(recovery_engine, sequence, 23U,
+	feed_flicker_interval(recovery_engine, 23U,
 		make_flicker_reference_histogram(23U));
 	expect(recovery_sink.count == 25U &&
 		(recovery_sink.records[24U].words[13U] & 0xffU) == 2U,
@@ -2562,6 +2682,7 @@ int main()
 	test_pq_event_lifecycle_engine();
 	test_pq_event_threshold_matrix_50_60();
 	test_flicker_frame_decoder();
+	test_flicker_engine_raw_frontend();
 	test_flicker_engine_pst_and_plt();
 	test_mains_signal_frame_decoder();
 	test_mains_signal_engine();

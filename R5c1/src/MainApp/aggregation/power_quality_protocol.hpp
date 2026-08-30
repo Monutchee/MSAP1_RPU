@@ -71,52 +71,60 @@ struct PqEventInputView final {
 
 struct FlickerProtocol final : PowerQualityPacketHeader {
 	static constexpr std::uint32_t magic = 0x314B4C46U; // "FLK1"
-	static constexpr std::size_t payload_words = 64U;
+	static constexpr std::uint32_t contract_revision = 2U;
+	static constexpr std::size_t payload_words = 1294U;
 	static constexpr std::size_t frame_words =
 		header_words + payload_words + crc_words;
 	static constexpr std::size_t crc_index = frame_words - 1U;
 	static constexpr std::size_t sequence_word = 0U;
 	static constexpr std::size_t generation_word = 1U;
 	static constexpr std::size_t sample_rate_word = 2U;
-	static constexpr std::size_t status_word = 3U;
+	static constexpr std::size_t frame_capacity_word = 3U;
 	static constexpr std::size_t phase_mask_word = 4U;
-	static constexpr std::size_t kind_word = 5U;
-	static constexpr std::size_t model_word = 6U;
-	static constexpr std::size_t timing_word = 7U;
-	static constexpr std::size_t histogram_base_word = 8U;
-	static constexpr std::size_t valid_count_word = 9U;
-	static constexpr std::size_t first_sample_word = 12U;
-	static constexpr std::size_t last_sample_word = 14U;
-	static constexpr std::size_t pinst_word = 16U;
-	static constexpr std::size_t histogram_word = 19U;
-	static constexpr std::size_t histogram_bins = 15U;
+	static constexpr std::size_t model_word = 5U;
+	static constexpr std::size_t timing_word = 6U;
+	static constexpr std::size_t reference_microvolts_word = 7U;
+	static constexpr std::size_t first_sample_word = 8U;
+	static constexpr std::size_t sample_word = 10U;
+	static constexpr std::size_t batch_frames = 256U;
+	static constexpr std::size_t words_per_sample = 5U;
+	static constexpr std::size_t actual_count_word = 1290U;
+	static constexpr std::size_t batch_status_word = 1291U;
+	static constexpr std::size_t last_sample_word = 1292U;
 	static constexpr std::size_t phases = 3U;
 	static constexpr std::size_t classifier_bins = 512U;
-	static constexpr std::size_t classifier_chunks = 35U;
-	static constexpr std::uint32_t kind_live = 0U;
-	static constexpr std::uint32_t kind_histogram = 1U;
-	static constexpr std::uint32_t status_mask = 0xffU;
-	static_assert(histogram_word + histogram_bins * phases == payload_words);
+	static constexpr std::uint32_t batch_status_mask = 0x3U;
+	static constexpr std::uint32_t batch_discontinuity = 1U << 0U;
+	static constexpr std::uint32_t batch_source_drop = 1U << 1U;
+	static constexpr std::uint32_t sample_valid_a = 1U << 0U;
+	static constexpr std::uint32_t sample_valid_b = 1U << 1U;
+	static constexpr std::uint32_t sample_valid_c = 1U << 2U;
+	static constexpr std::uint32_t sample_malformed = 1U << 3U;
+	static constexpr std::uint32_t sample_locked = 1U << 4U;
+	static constexpr std::uint32_t sample_fallback = 1U << 5U;
+	static constexpr std::uint32_t sample_saturated = 1U << 6U;
+	static constexpr std::uint32_t sample_flags_mask = 0x7fU;
+	static constexpr std::uint32_t packed_reserved_mask = 0xff800000U;
+	static_assert(sample_word + batch_frames * words_per_sample ==
+		actual_count_word);
+	static_assert(last_sample_word + 2U == payload_words);
 };
 
 struct FlickerInputView final {
 	std::uint32_t sequence{};
 	std::uint32_t configuration_generation{};
 	std::uint32_t sample_rate_hz{};
-	std::uint32_t status{};
 	std::uint8_t phase_mask{};
-	std::uint8_t kind{};
 	std::uint16_t lamp_voltage{};
 	std::uint8_t nominal_hz{};
 	std::uint16_t live_cadence_ms{};
 	std::uint16_t pst_interval_seconds{};
-	std::uint16_t histogram_base{};
-	std::array<std::uint32_t, FlickerProtocol::phases> valid_count{};
+	std::uint32_t reference_microvolts{};
 	std::uint64_t first_sample{};
 	std::uint64_t last_sample{};
-	std::array<std::uint32_t, FlickerProtocol::phases> pinst_q16{};
-	std::array<std::array<std::uint32_t, FlickerProtocol::histogram_bins>,
-		FlickerProtocol::phases> histogram{};
+	std::uint16_t actual_count{};
+	std::uint8_t batch_status{};
+	const std::uint32_t *packed_sample_words{};
 };
 
 struct MainsSignalProtocol final : PowerQualityPacketHeader {

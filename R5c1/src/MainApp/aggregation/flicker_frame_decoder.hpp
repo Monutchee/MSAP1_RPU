@@ -5,7 +5,7 @@
 
 namespace msap1::aggregation {
 
-/** Strict decoder for one CRC32C-protected FLK1 sufficient-statistic packet. */
+/** Strict decoder for one CRC32C-protected FLK1 raw-voltage batch. */
 class FlickerFrameDecoder final {
 public:
 	[[nodiscard]] FrameValidationError decode(const AggregationFrame &frame,

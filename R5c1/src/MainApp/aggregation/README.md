@@ -1,9 +1,9 @@
 # R5C1 aggregation offload
 
-This directory owns the modular R5C1 interval-aggregation datapath. R5C1 is
-the production authority: it receives every complete PL SingleCycle input,
-validates and aggregates it, then returns complete meter records to the PL
-meter-DMA switch.
+This directory owns the modular R5C1 metrology-offload datapath. R5C1 is the
+production authority: it receives complete private PL packets, validates and
+dispatches them, performs interval and power-quality processing, then returns
+complete meter records to the PL meter-DMA switch.
 
 The private link is an exact co-release contract between the bitstream and R5C1
 firmware. `AggregationProtocol::contract_revision` is only an image-integrity
@@ -69,9 +69,20 @@ packet; R5C1 never aggregates across a missing sequence. Production builds
 require both the hardware FIFO and its interrupt; the fixed one-millisecond
 poll is a development-only fallback.
 
-## Packet contract
+## Packet contracts
 
-Each PL-to-R5C1 packet has 239 little-endian 32-bit words:
+All packets use little-endian 32-bit words, a four-word header, and a final
+CRC32C word. The dispatcher accepts these exact co-release contracts:
+
+| Magic | Total words | Payload |
+| --- | ---: | --- |
+| `AGG1` | 239 | 221-word SingleCycle result plus 13 context words |
+| `PQE1` | 69 | Half-cycle PQ-event sufficient statistics |
+| `FLK1` rev. 2 | 1,299 | 256 raw VA/VB/VC frames packed into five words each, plus metadata/trailer |
+| `MCS1` | 25 | Mains-signalling observation result |
+| `HRM1` | 2,693 | One byte-exact 42-record base-harmonic family |
+
+The AGG1 frame is:
 
 | Words | Meaning |
 | --- | --- |
@@ -84,6 +95,16 @@ Each PL-to-R5C1 packet has 239 little-endian 32-bit words:
 
 CRC32C uses reflected polynomial `0x82F63B78`, initial and final XOR
 `0xFFFFFFFF`. The required `123456789` vector is `0xE3069283`.
+
+FLK1 revision 2 deliberately transports raw converted voltage rather than a
+wide parallel result. At the default 128-kSPS rate it produces 500 bounded
+packets/s (about 2.60 MB/s). `FlickerFrameDecoder` validates sample rate,
+geometry, reserved bits, provenance, zero padding, and CRC without copying the
+1,280 sample words. `FlickerEngine` then owns reference normalization, 2 kHz
+decimation, seven IEC lamp-model filter sections, the 512-bin classifier, Pst,
+Plt, and Flicker-v1 record serialization. Its filter, histogram, and rolling
+Pst state is statically allocated; no packet-sized object is placed on a task
+stack.
 
 ## Authority and failure behavior
 

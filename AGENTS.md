@@ -34,17 +34,21 @@
   existing apply toggle, and verifies `GRID_ACTIVE_CONFIG` readback. The RMS
   window register `0x18` remains the PL's free-run fallback window.
 - PL aggregate health registers `0x78`-`0x8C` remain read-only status inputs.
-  One AXI FIFO MM-S carries two exact PL-to-R5C1 packet contracts: the 239-word
-  AGG1 packet (234-word SingleCycle input plus framing/CRC) and the 2,693-word
-  HRM1 packet (one byte-exact 42-record base-harmonic family plus
-  framing/CRC). AGG1 has priority only at whole-packet boundaries. The
+  One AXI FIFO MM-S carries five exact PL-to-R5C1 packet contracts: 239-word
+  AGG1, 69-word PQE1, 1,299-word FLK1 revision 2, 25-word MCS1, and 2,693-word
+  HRM1. FLK1 contains ten metadata words, 256 consecutive converted
+  three-phase voltage samples packed into five 32-bit words each, and four
+  trailer words. Arbitration occurs only at whole-packet boundaries. The
   dedicated validator dispatches by magic and must reject a mixed-image
   contract, malformed family geometry, inconsistent provenance, or CRC error.
   These are exact co-release interfaces, not negotiated protocol versions;
   no legacy decoder is maintained. R5C1 owns Basic, 150/180-cycle,
   10-minute, and 2-hour aggregation for ordinary measurements, plus
   RMS-magnitude plus magnitude-weighted circular-phase 150/180-cycle, UTC
-  10-minute, and 2-hour harmonic aggregation.
+  10-minute, and 2-hour harmonic aggregation. R5C1 also owns Flicker reference
+  normalization, 2 kHz decimation, IEC 61000-4-15 filtering and
+  classification, Pst, Plt, and the unchanged `0x000E0001` public record; do
+  not restore the retired PL Flicker HLS implementation.
   It writes complete 256-byte records into the same FIFO's TX side. Aggregate
   measurement data never travels over RPMsg; the FIFO return stream joins the
   existing meter AXIS switch and Linux DMA path. The PL direct harmonic output
@@ -109,7 +113,11 @@
   software input storage. Production firmware must require the FIFO interrupt
   rather than silently falling back to polling. The static transport frame is
   sized to the 2,693-word HRM1 maximum, while the AXI FIFO must hold at least
-  one complete HRM1 packet. Keep large frames out of the worker-task stacks.
+  one complete HRM1 packet. FLK1 arrives at 500 packets/s for the default
+  128-kSPS profile, so retain the bounded four-packet drain and one-tick
+  validator handoff. Keep large frames and Flicker classifier state out of
+  worker-task stacks; all Flicker state is static `.bss`/`.data` and must not
+  allocate dynamically.
 - ADC health reports both the measured DCLK rate and the physical
   `ADC_DRDY_N` falling-edge rate. Keep these fields coordinated with the APU
   wire-ABI copy when extending capture diagnostics. Health is not valid until
