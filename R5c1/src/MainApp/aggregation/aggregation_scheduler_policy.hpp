@@ -18,6 +18,38 @@ namespace msap1::aggregation::scheduler_policy {
 inline constexpr std::size_t maximum_input_batch = 4U;
 
 /*
+ * Worst-case private FIFO packet rate at the product's 128 kSPS default.
+ * VSB1 is the dominant stream (128000 / 256).  The remaining producers can
+ * coincide with it at 60 Hz: one AGG1 per cycle, one PQE1 per half cycle, and
+ * one HRM1 family per 200 ms.  Keep ten percent scheduling capacity above the
+ * sum so a nominally sufficient tick cannot operate exactly at saturation.
+ */
+inline constexpr std::uint32_t voltage_sample_packets_per_second = 500U;
+inline constexpr std::uint32_t aggregation_packets_per_second = 60U;
+inline constexpr std::uint32_t pq_event_packets_per_second = 120U;
+inline constexpr std::uint32_t harmonic_packets_per_second = 5U;
+inline constexpr std::uint32_t maximum_input_packets_per_second =
+	voltage_sample_packets_per_second + aggregation_packets_per_second +
+	pq_event_packets_per_second + harmonic_packets_per_second;
+inline constexpr std::uint32_t scheduling_margin_percent = 10U;
+inline constexpr std::uint32_t minimum_input_capacity_per_second =
+	(maximum_input_packets_per_second *
+		(100U + scheduling_margin_percent) + 99U) / 100U;
+
+[[nodiscard]] inline constexpr std::uint32_t input_capacity_per_second(
+	std::uint32_t tick_rate_hz) noexcept
+{
+	return static_cast<std::uint32_t>(maximum_input_batch) * tick_rate_hz;
+}
+
+[[nodiscard]] inline constexpr bool supports_maximum_input_rate(
+	std::uint32_t tick_rate_hz) noexcept
+{
+	return input_capacity_per_second(tick_rate_hz) >=
+		minimum_input_capacity_per_second;
+}
+
+/*
  * Cortex-R5 XTime is backed by the 32-bit PMU cycle counter on this BSP.  The
  * counter wraps roughly every nine minutes, so convert an unsigned tick delta
  * instead of converting each absolute timestamp independently.  Unsigned

@@ -9,6 +9,10 @@ namespace msap1::aggregation {
 
 namespace {
 
+static_assert(scheduler_policy::supports_maximum_input_rate(
+	static_cast<std::uint32_t>(configTICK_RATE_HZ)),
+	"R5C1 RTOS tick cannot drain the maximum private FIFO packet rate");
+
 TickType_t validator_handoff_delay() noexcept
 {
 	const auto ticks = pdMS_TO_TICKS(1U);

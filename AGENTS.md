@@ -118,7 +118,10 @@
   sized to the 2,693-word HRM1 maximum, while the AXI FIFO must hold at least
   one complete HRM1 packet. VSB1 arrives at 500 packets/s for the default
   128-kSPS profile, so retain the bounded four-packet drain and one-tick
-  validator handoff. Keep large frames, Flicker classifier state, and mains
+  validator handoff and configure R5C1 for a 1 kHz FreeRTOS tick. The scheduler
+  rate-budget guard must cover all 685 packets/s of coincident private traffic
+  with at least ten percent margin; the default 100 Hz tick is insufficient.
+  Keep large frames, Flicker classifier state, and mains
   correlation banks out of worker-task stacks; all power-quality state is
   static `.bss`/`.data` and must not allocate dynamically.
 - ADC health reports both the measured DCLK rate and the physical
@@ -128,7 +131,7 @@
 - Runtime sample-rate changes arrive in `METER_CONFIG_SET` while capture is
   stopped. Apply ADC PGA/SRC and PL window configuration as one coordinated
   operating-point transaction; the packaged boot default is 128 kSPS.
-  The RPMsg-v9 meter payload is 352 bytes and includes simulator-v1.5 AM and
+  The RPMsg-v10 meter payload is 352 bytes and includes simulator-v1.5 AM and
   carrier controls; the separate fixed M18 policy payload is 316 bytes. Both
   remain below the 384-byte control-frame bound and share one coordinated,
   nonzero configuration generation. `nominal_frequency_hz` remains 50 or 60

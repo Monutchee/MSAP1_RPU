@@ -8,7 +8,16 @@
 #include "FreeRTOS.h"
 #include "task.h"
 
+#include <cstdint>
+
 namespace msap1::aggregation {
+
+struct AggregationStackHighWater {
+	std::uint32_t control_bytes{};
+	std::uint32_t input_bytes{};
+	std::uint32_t output_bytes{};
+	std::uint32_t validator_bytes{};
+};
 
 /**
  * Owns the FreeRTOS lifecycle of the optional R5C1 aggregation workers.
@@ -27,6 +36,9 @@ public:
 	/** Create and release the aggregation workers. Safe to call repeatedly. */
 	[[nodiscard]] bool start() noexcept;
 	[[nodiscard]] bool started() const noexcept { return started_; }
+	/** Minimum unused stack observed since each task was created, in bytes. */
+	[[nodiscard]] AggregationStackHighWater stack_high_water(
+		TaskHandle_t control_task) const noexcept;
 
 private:
 	static void input_task_entry(void *context) noexcept;

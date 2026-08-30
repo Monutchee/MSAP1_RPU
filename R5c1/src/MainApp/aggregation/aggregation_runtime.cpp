@@ -6,6 +6,19 @@ namespace {
 
 constexpr configSTACK_DEPTH_TYPE worker_stack_depth = 2048U;
 
+static_assert(configUSE_TRACE_FACILITY == 1,
+	"runtime stack telemetry requires FreeRTOS trace task snapshots");
+
+std::uint32_t stack_high_water_bytes(TaskHandle_t task) noexcept
+{
+	if (task == nullptr)
+		return 0U;
+	TaskStatus_t status{};
+	vTaskGetInfo(task, &status, pdTRUE, eInvalid);
+	return static_cast<std::uint32_t>(status.usStackHighWaterMark) *
+		sizeof(StackType_t);
+}
+
 /*
  * The hardware receiver is highest so CPU-heavy aggregation can never prevent
  * the AXI FIFO from being drained into the bounded software ring.  The output
@@ -60,6 +73,17 @@ bool AggregationRuntime::start() noexcept
 	started_ = true;
 	xTaskNotifyGive(input_task_);
 	return true;
+}
+
+AggregationStackHighWater AggregationRuntime::stack_high_water(
+	TaskHandle_t control_task) const noexcept
+{
+	return {
+		stack_high_water_bytes(control_task),
+		stack_high_water_bytes(input_task_),
+		stack_high_water_bytes(output_task_),
+		stack_high_water_bytes(validator_task_),
+	};
 }
 
 void AggregationRuntime::discard_partial_start() noexcept

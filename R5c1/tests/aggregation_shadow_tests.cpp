@@ -921,6 +921,19 @@ void test_bounded_input_handoff_preserves_validator_progress()
 	static_assert(
 		aggregation::scheduler_policy::maximum_input_batch == 4U,
 		"production input drain must remain bounded to four packets");
+	static_assert(
+		aggregation::scheduler_policy::maximum_input_packets_per_second == 685U,
+		"128 kSPS private-input rate budget changed unexpectedly");
+	static_assert(
+		aggregation::scheduler_policy::minimum_input_capacity_per_second == 754U,
+		"scheduler must retain at least ten percent packet-rate margin");
+
+	expect(!aggregation::scheduler_policy::supports_maximum_input_rate(100U),
+		"100 Hz RTOS tick exposes the former 400-packet/s ceiling");
+	expect(aggregation::scheduler_policy::input_capacity_per_second(1000U) ==
+		4000U, "1 kHz RTOS tick provides four thousand packet/s slots");
+	expect(aggregation::scheduler_policy::supports_maximum_input_rate(1000U),
+		"1 kHz RTOS tick covers all private producers with margin");
 
 	std::uint32_t hardware_pending = backlog;
 	std::uint32_t software_pending = 0U;

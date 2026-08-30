@@ -4,7 +4,7 @@
 
 #include <cstring>
 
-static_assert(sizeof(msap1_aggregation_health_payload) == 200U,
+static_assert(sizeof(msap1_aggregation_health_payload) == 216U,
 	"R5C1 aggregation-health wire payload changed unexpectedly");
 static_assert(sizeof(msap1_demand_config_payload) == 12U,
 	"R5C1 demand-configuration wire payload changed unexpectedly");
@@ -176,6 +176,11 @@ bool R5c1Service::handle_custom(const msap1_rpu_msg_header &request,
 	response.validator_max_runtime_us = value.validator_max_runtime_us;
 	response.validator_max_schedule_gap_us =
 		value.validator_max_schedule_gap_us;
+	const auto stacks = runtime_.stack_high_water(xTaskGetCurrentTaskHandle());
+	response.control_stack_high_water_bytes = stacks.control_bytes;
+	response.input_stack_high_water_bytes = stacks.input_bytes;
+	response.output_stack_high_water_bytes = stacks.output_bytes;
+	response.validator_stack_high_water_bytes = stacks.validator_bytes;
 
 	(void)send_response(&request, src, MSAP1_RPU_MSG_AGGREGATION_HEALTH,
 		MSAP1_RPU_STATUS_OK, &response, sizeof(response));
