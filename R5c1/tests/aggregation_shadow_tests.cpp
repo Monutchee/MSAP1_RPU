@@ -5,16 +5,16 @@
 #include "aggregation_scheduler_policy.hpp"
 #include "crc32c.hpp"
 #include "flicker_engine.hpp"
-#include "flicker_frame_decoder.hpp"
+#include "voltage_sample_frame_decoder.hpp"
 #include "harmonic_aggregation_engine.hpp"
 #include "harmonic_frame_decoder.hpp"
 #include "mains_signal_engine.hpp"
-#include "mains_signal_frame_decoder.hpp"
 #include "pq_event_frame_decoder.hpp"
 #include "pq_event_lifecycle_engine.hpp"
 #include "r5_aggregation_engine.hpp"
 #include "r5_session_id.hpp"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cmath>
@@ -30,10 +30,10 @@ namespace msap1::aggregation {
 
 struct FlickerEngineTestAccess final {
 	using Classifier = std::array<std::array<std::uint32_t,
-		FlickerProtocol::classifier_bins>, FlickerProtocol::phases>;
+		VoltageSampleProtocol::classifier_bins>, VoltageSampleProtocol::phases>;
 
 	static bool activate(FlickerEngine &engine,
-		const FlickerInputView &input) noexcept
+		const VoltageSampleInputView &input) noexcept
 	{
 		return engine.apply_matching_configuration(input);
 	}
@@ -1800,221 +1800,120 @@ void test_pq_event_frame_decoder()
 		"PQE1 rejects CRC corruption");
 }
 
-std::uint64_t flicker_wire_q16(std::int64_t value)
-{
-	return static_cast<std::uint64_t>(value) & 0x0000ffffffffffffULL;
-}
-
-void pack_flicker_sample(aggregation::AggregationFrame &frame,
-	std::size_t sample, std::int64_t va, std::int64_t vb, std::int64_t vc,
+void pack_voltage_sample(aggregation::AggregationFrame &frame,
+	std::size_t sample, std::int32_t va, std::int32_t vb, std::int32_t vc,
 	std::uint8_t flags)
 {
-	const auto payload = aggregation::FlickerProtocol::payload_index;
-	const auto base = payload + aggregation::FlickerProtocol::sample_word +
-		sample * aggregation::FlickerProtocol::words_per_sample;
-	const auto a = flicker_wire_q16(va);
-	const auto b = flicker_wire_q16(vb);
-	const auto c = flicker_wire_q16(vc);
-	frame.words[base + 0U] = static_cast<std::uint32_t>(a);
-	frame.words[base + 1U] = static_cast<std::uint32_t>(a >> 32U) |
-		(static_cast<std::uint32_t>(b & 0xffffU) << 16U);
-	frame.words[base + 2U] = static_cast<std::uint32_t>(b >> 16U);
-	frame.words[base + 3U] = static_cast<std::uint32_t>(c);
-	frame.words[base + 4U] = static_cast<std::uint32_t>(c >> 32U) |
-		(static_cast<std::uint32_t>(flags) << 16U);
+	const auto payload = aggregation::VoltageSampleProtocol::payload_index;
+	const auto base = payload + aggregation::VoltageSampleProtocol::sample_word +
+		sample * aggregation::VoltageSampleProtocol::words_per_sample;
+	frame.words[base + 0U] = static_cast<std::uint32_t>(va);
+	frame.words[base + 1U] = static_cast<std::uint32_t>(vb);
+	frame.words[base + 2U] = static_cast<std::uint32_t>(vc);
+	frame.words[base + 3U] = flags;
 }
 
-aggregation::AggregationFrame make_flicker_frame(std::uint32_t sequence,
-	std::uint32_t actual_count = aggregation::FlickerProtocol::batch_frames,
+aggregation::AggregationFrame make_voltage_sample_frame(std::uint32_t sequence,
+	std::uint32_t actual_count = aggregation::VoltageSampleProtocol::batch_frames,
 	std::uint32_t batch_status =
-		aggregation::FlickerProtocol::batch_discontinuity)
+		aggregation::VoltageSampleProtocol::batch_discontinuity)
 {
 	aggregation::AggregationFrame frame{};
-	frame.word_count = aggregation::FlickerProtocol::frame_words;
+	frame.word_count = aggregation::VoltageSampleProtocol::frame_words;
 	auto &words = frame.words;
-	words[0U] = aggregation::FlickerProtocol::magic;
-	words[1U] = aggregation::FlickerProtocol::contract_revision;
-	words[2U] = aggregation::FlickerProtocol::payload_words;
+	words[0U] = aggregation::VoltageSampleProtocol::magic;
+	words[1U] = aggregation::VoltageSampleProtocol::contract_revision;
+	words[2U] = aggregation::VoltageSampleProtocol::payload_words;
 	words[3U] = sequence;
-	const auto payload = aggregation::FlickerProtocol::payload_index;
-	words[payload + aggregation::FlickerProtocol::sequence_word] = sequence;
-	words[payload + aggregation::FlickerProtocol::generation_word] = 7U;
-	words[payload + aggregation::FlickerProtocol::sample_rate_word] = 128000U;
-	words[payload + aggregation::FlickerProtocol::frame_capacity_word] =
-		aggregation::FlickerProtocol::batch_frames;
-	words[payload + aggregation::FlickerProtocol::phase_mask_word] = 0x7U;
-	words[payload + aggregation::FlickerProtocol::model_word] =
+	const auto payload = aggregation::VoltageSampleProtocol::payload_index;
+	words[payload + aggregation::VoltageSampleProtocol::sequence_word] = sequence;
+	words[payload + aggregation::VoltageSampleProtocol::generation_word] = 7U;
+	words[payload + aggregation::VoltageSampleProtocol::sample_rate_word] = 128000U;
+	words[payload + aggregation::VoltageSampleProtocol::frame_capacity_word] =
+		aggregation::VoltageSampleProtocol::batch_frames;
+	words[payload + aggregation::VoltageSampleProtocol::phase_mask_word] = 0x7U;
+	words[payload + aggregation::VoltageSampleProtocol::model_word] =
 		120U | (60U << 16U);
-	words[payload + aggregation::FlickerProtocol::timing_word] =
+	words[payload + aggregation::VoltageSampleProtocol::timing_word] =
 		1000U | (600U << 16U);
-	words[payload + aggregation::FlickerProtocol::reference_microvolts_word] =
+	words[payload + aggregation::VoltageSampleProtocol::reference_microvolts_word] =
 		120000000U;
 	write_u64(words,
-		payload + aggregation::FlickerProtocol::first_sample_word, 1000U);
+		payload + aggregation::VoltageSampleProtocol::first_sample_word, 1000U);
 	for (std::size_t sample = 0U; sample < actual_count; ++sample)
-		pack_flicker_sample(frame, sample,
-			(static_cast<std::int64_t>(1000U + sample) << 16U),
-			-(static_cast<std::int64_t>(2000U + sample) << 16U),
-			(static_cast<std::int64_t>(3000U + sample) << 16U), 0x17U);
-	words[payload + aggregation::FlickerProtocol::actual_count_word] =
+		pack_voltage_sample(frame, sample,
+			static_cast<std::int32_t>(1000U + sample),
+			-static_cast<std::int32_t>(2000U + sample),
+			static_cast<std::int32_t>(3000U + sample), 0x17U);
+	words[payload + aggregation::VoltageSampleProtocol::actual_count_word] =
 		actual_count;
-	words[payload + aggregation::FlickerProtocol::batch_status_word] =
+	words[payload + aggregation::VoltageSampleProtocol::batch_status_word] =
 		batch_status;
 	write_u64(words,
-		payload + aggregation::FlickerProtocol::last_sample_word,
+		payload + aggregation::VoltageSampleProtocol::last_sample_word,
 		1000U + actual_count - 1U);
-	words[aggregation::FlickerProtocol::crc_index] =
+	words[aggregation::VoltageSampleProtocol::crc_index] =
 		aggregation::crc32c_words(words.data(),
-			aggregation::FlickerProtocol::crc_index);
+			aggregation::VoltageSampleProtocol::crc_index);
 	return frame;
 }
 
-void refresh_flicker_crc(aggregation::AggregationFrame &frame)
+void refresh_voltage_sample_crc(aggregation::AggregationFrame &frame)
 {
-	frame.words[aggregation::FlickerProtocol::crc_index] =
+	frame.words[aggregation::VoltageSampleProtocol::crc_index] =
 		aggregation::crc32c_words(frame.words.data(),
-			aggregation::FlickerProtocol::crc_index);
+			aggregation::VoltageSampleProtocol::crc_index);
 }
 
-void test_flicker_frame_decoder()
+void test_voltage_sample_frame_decoder()
 {
-	aggregation::FlickerFrameDecoder decoder;
-	aggregation::FlickerInputView input{};
-	auto frame = make_flicker_frame(11U);
+	aggregation::VoltageSampleFrameDecoder decoder;
+	aggregation::VoltageSampleInputView input{};
+	auto frame = make_voltage_sample_frame(11U);
 	expect(decoder.decode(frame, input) ==
 		aggregation::FrameValidationError::none,
-		"valid revision-2 FLK1 raw batch decodes");
+		"valid revision-1 VSB1 raw-voltage batch decodes");
 	expect(input.sequence == 11U && input.configuration_generation == 7U &&
 		input.lamp_voltage == 120U && input.nominal_hz == 60U &&
 		input.sample_rate_hz == 128000U && input.actual_count == 256U &&
 		input.first_sample == 1000U && input.last_sample == 1255U &&
 		input.packed_sample_words != nullptr,
-		"FLK1 metadata and zero-copy batch view decode exactly");
+		"VSB1 metadata and zero-copy batch view decode exactly");
 
-	frame = make_flicker_frame(12U, 100U,
-		aggregation::FlickerProtocol::batch_discontinuity |
-			aggregation::FlickerProtocol::batch_source_drop);
+	frame = make_voltage_sample_frame(12U, 100U,
+		aggregation::VoltageSampleProtocol::batch_discontinuity |
+			aggregation::VoltageSampleProtocol::batch_source_drop);
 	expect(decoder.decode(frame, input) ==
 		aggregation::FrameValidationError::none,
-		"short discontinuous FLK1 batch accepts a zero-padded tail");
-	const auto payload = aggregation::FlickerProtocol::payload_index;
-	frame.words[payload + aggregation::FlickerProtocol::sample_word +
-		100U * aggregation::FlickerProtocol::words_per_sample] = 1U;
-	refresh_flicker_crc(frame);
+		"short discontinuous VSB1 batch accepts a zero-padded tail");
+	const auto payload = aggregation::VoltageSampleProtocol::payload_index;
+	frame.words[payload + aggregation::VoltageSampleProtocol::sample_word +
+		100U * aggregation::VoltageSampleProtocol::words_per_sample] = 1U;
+	refresh_voltage_sample_crc(frame);
 	expect(decoder.decode(frame, input) ==
 		aggregation::FrameValidationError::reserved_bits_nonzero,
-		"short FLK1 batch rejects nonzero padded sample words");
+		"short VSB1 batch rejects nonzero padded sample words");
 
-	frame = make_flicker_frame(13U);
-	frame.words[payload + aggregation::FlickerProtocol::sample_word + 4U] |=
+	frame = make_voltage_sample_frame(13U);
+	frame.words[payload + aggregation::VoltageSampleProtocol::sample_word + 3U] |=
 		1U << 23U;
-	refresh_flicker_crc(frame);
+	refresh_voltage_sample_crc(frame);
 	expect(decoder.decode(frame, input) ==
 		aggregation::FrameValidationError::reserved_bits_nonzero,
-		"FLK1 rejects reserved packed-sample flag bits");
-	frame = make_flicker_frame(14U, 100U,
-		aggregation::FlickerProtocol::batch_discontinuity |
-			aggregation::FlickerProtocol::batch_source_drop);
-	frame.words[payload + aggregation::FlickerProtocol::last_sample_word] -= 1U;
-	refresh_flicker_crc(frame);
+		"VSB1 rejects reserved packed-sample flag bits");
+	frame = make_voltage_sample_frame(14U, 100U,
+		aggregation::VoltageSampleProtocol::batch_discontinuity |
+			aggregation::VoltageSampleProtocol::batch_source_drop);
+	frame.words[payload + aggregation::VoltageSampleProtocol::last_sample_word] -= 1U;
+	refresh_voltage_sample_crc(frame);
 	expect(decoder.decode(frame, input) ==
 		aggregation::FrameValidationError::invalid_record_geometry,
-		"FLK1 rejects a last-sample/count mismatch");
-	frame = make_flicker_frame(15U);
-	frame.words[aggregation::FlickerProtocol::crc_index] ^= 1U;
+		"VSB1 rejects a last-sample/count mismatch");
+	frame = make_voltage_sample_frame(15U);
+	frame.words[aggregation::VoltageSampleProtocol::crc_index] ^= 1U;
 	expect(decoder.decode(frame, input) ==
 		aggregation::FrameValidationError::crc_mismatch,
-		"FLK1 rejects CRC corruption");
-}
-
-aggregation::AggregationFrame make_mains_signal_frame(std::uint32_t sequence)
-{
-	aggregation::AggregationFrame frame{};
-	frame.word_count = aggregation::MainsSignalProtocol::frame_words;
-	auto &words = frame.words;
-	words[aggregation::MainsSignalProtocol::magic_index] =
-		aggregation::MainsSignalProtocol::magic;
-	words[aggregation::MainsSignalProtocol::contract_revision_index] =
-		aggregation::MainsSignalProtocol::contract_revision;
-	words[aggregation::MainsSignalProtocol::payload_count_index] =
-		aggregation::MainsSignalProtocol::payload_words;
-	words[aggregation::MainsSignalProtocol::transport_sequence_index] =
-		sequence;
-	const auto payload = aggregation::MainsSignalProtocol::payload_index;
-	words[payload + aggregation::MainsSignalProtocol::sequence_word] = sequence;
-	words[payload + aggregation::MainsSignalProtocol::generation_word] = 7U;
-	words[payload + aggregation::MainsSignalProtocol::sample_rate_word] =
-		32000U;
-	words[payload + aggregation::MainsSignalProtocol::status_word] = 0x3U;
-	words[payload + aggregation::MainsSignalProtocol::phases_word] = 0x707U;
-	words[payload + aggregation::MainsSignalProtocol::configured_millihz_word] =
-		1000000U;
-	words[payload + aggregation::MainsSignalProtocol::measured_millihz_word] =
-		1005000U;
-	words[payload + aggregation::MainsSignalProtocol::bandwidth_millihz_word] =
-		20000U;
-	words[payload + aggregation::MainsSignalProtocol::observation_ms_word] =
-		200U;
-	write_u64(words,
-		payload + aggregation::MainsSignalProtocol::first_sample_word, 1000U);
-	write_u64(words,
-		payload + aggregation::MainsSignalProtocol::last_sample_word, 7399U);
-	for (std::size_t phase = 0U;
-		phase < aggregation::MainsSignalProtocol::phases; ++phase) {
-		words[payload +
-			aggregation::MainsSignalProtocol::magnitude_microvolts_word + phase] =
-			1200000U + static_cast<std::uint32_t>(phase);
-		words[payload +
-			aggregation::MainsSignalProtocol::background_microvolts_word + phase] =
-			1000U + static_cast<std::uint32_t>(phase);
-	}
-	words[payload + aggregation::MainsSignalProtocol::threshold_e4_word] = 50U;
-	words[aggregation::MainsSignalProtocol::crc_index] =
-		aggregation::crc32c_words(words.data(),
-			aggregation::MainsSignalProtocol::crc_index);
-	return frame;
-}
-
-void refresh_mains_signal_crc(aggregation::AggregationFrame &frame)
-{
-	frame.words[aggregation::MainsSignalProtocol::crc_index] =
-		aggregation::crc32c_words(frame.words.data(),
-			aggregation::MainsSignalProtocol::crc_index);
-}
-
-void test_mains_signal_frame_decoder()
-{
-	aggregation::MainsSignalFrameDecoder decoder;
-	aggregation::MainsSignalInputView input{};
-	auto frame = make_mains_signal_frame(21U);
-	expect(decoder.decode(frame, input) ==
-		aggregation::FrameValidationError::none,
-		"valid MCS1 frame decodes");
-	expect(input.sequence == 21U && input.configuration_generation == 7U &&
-		input.valid_phase_mask == 0x7U && input.detected_phase_mask == 0x7U &&
-		input.configured_millihz == 1000000U &&
-		input.measured_millihz == 1005000U && input.first_sample == 1000U &&
-		input.last_sample == 7399U,
-		"MCS1 carrier and observation provenance decode exactly");
-
-	const auto payload = aggregation::MainsSignalProtocol::payload_index;
-	frame.words[payload + aggregation::MainsSignalProtocol::phases_word] =
-		0x701U;
-	refresh_mains_signal_crc(frame);
-	expect(decoder.decode(frame, input) ==
-		aggregation::FrameValidationError::reserved_bits_nonzero,
-		"MCS1 rejects detections outside the valid-phase mask");
-	frame = make_mains_signal_frame(22U);
-	frame.words[payload + aggregation::MainsSignalProtocol::last_sample_word]--;
-	refresh_mains_signal_crc(frame);
-	expect(decoder.decode(frame, input) ==
-		aggregation::FrameValidationError::invalid_record_geometry,
-		"MCS1 rejects a shortened 200 ms observation");
-	frame = make_mains_signal_frame(23U);
-	frame.words[aggregation::MainsSignalProtocol::crc_index] ^= 1U;
-	expect(decoder.decode(frame, input) ==
-		aggregation::FrameValidationError::crc_mismatch,
-		"MCS1 rejects CRC corruption");
+		"VSB1 rejects CRC corruption");
 }
 
 msap1_m18_config_payload make_event_configuration(std::uint32_t generation)
@@ -2077,9 +1976,9 @@ FlickerClassifier make_flicker_reference_histogram(std::uint32_t interval)
 	return histogram;
 }
 
-aggregation::FlickerInputView make_flicker_profile_input()
+aggregation::VoltageSampleInputView make_flicker_profile_input()
 {
-	aggregation::FlickerInputView input{};
+	aggregation::VoltageSampleInputView input{};
 	input.sequence = 1U;
 	input.configuration_generation = 7U;
 	input.sample_rate_hz = 32000U;
@@ -2104,7 +2003,7 @@ double flicker_bin_center(std::size_t bin)
 
 double flicker_exceedance_percentile(
 	const std::array<std::uint32_t,
-		aggregation::FlickerProtocol::classifier_bins> &histogram,
+		aggregation::VoltageSampleProtocol::classifier_bins> &histogram,
 	double exceedance_percent)
 {
 	double total = 0.0;
@@ -2122,7 +2021,7 @@ double flicker_exceedance_percentile(
 }
 
 double flicker_reference_pst(const std::array<std::uint32_t,
-	aggregation::FlickerProtocol::classifier_bins> &histogram)
+	aggregation::VoltageSampleProtocol::classifier_bins> &histogram)
 {
 	const auto percentile = [&histogram](double exceedance_percent) {
 		return flicker_exceedance_percentile(histogram,
@@ -2158,7 +2057,7 @@ void feed_flicker_interval(aggregation::FlickerEngine &engine,
 }
 
 void process_flicker_standard_batch(aggregation::FlickerEngine &engine,
-	aggregation::FlickerFrameDecoder &decoder, std::uint32_t sequence,
+	aggregation::VoltageSampleFrameDecoder &decoder, std::uint32_t sequence,
 	std::uint64_t first_sample, std::uint32_t batch_status)
 {
 	constexpr double pi = 3.14159265358979323846;
@@ -2166,40 +2065,40 @@ void process_flicker_standard_batch(aggregation::FlickerEngine &engine,
 	constexpr double modulation_hz = 8.8;
 	constexpr double modulation_depth = 0.00321;
 	constexpr double reference_microvolts = 120000000.0;
-	auto frame = make_flicker_frame(sequence);
-	const auto payload = aggregation::FlickerProtocol::payload_index;
-	frame.words[payload + aggregation::FlickerProtocol::sample_rate_word] =
+	auto frame = make_voltage_sample_frame(sequence);
+	const auto payload = aggregation::VoltageSampleProtocol::payload_index;
+	frame.words[payload + aggregation::VoltageSampleProtocol::sample_rate_word] =
 		2000U;
-	frame.words[payload + aggregation::FlickerProtocol::batch_status_word] =
+	frame.words[payload + aggregation::VoltageSampleProtocol::batch_status_word] =
 		batch_status;
 	write_u64(frame.words,
-		payload + aggregation::FlickerProtocol::first_sample_word, first_sample);
+		payload + aggregation::VoltageSampleProtocol::first_sample_word, first_sample);
 	write_u64(frame.words,
-		payload + aggregation::FlickerProtocol::last_sample_word,
-		first_sample + aggregation::FlickerProtocol::batch_frames - 1U);
+		payload + aggregation::VoltageSampleProtocol::last_sample_word,
+		first_sample + aggregation::VoltageSampleProtocol::batch_frames - 1U);
 	for (std::size_t offset = 0U;
-		offset < aggregation::FlickerProtocol::batch_frames; ++offset) {
+		offset < aggregation::VoltageSampleProtocol::batch_frames; ++offset) {
 		const auto index = first_sample + offset;
 		const auto time = static_cast<double>(index) / sample_rate;
 		const auto modulation = 1.0 + modulation_depth *
 			std::sin(2.0 * pi * modulation_hz * time);
-		std::array<std::int64_t, 3U> voltage{};
+		std::array<std::int32_t, 3U> voltage{};
 		for (std::size_t phase = 0U; phase < voltage.size(); ++phase) {
 			const auto phase_angle =
 				-2.0 * pi * static_cast<double>(phase) / 3.0;
 			const auto microvolts = reference_microvolts * std::sqrt(2.0) *
 				modulation * std::sin(2.0 * pi * 60.0 * time + phase_angle);
-			voltage[phase] = static_cast<std::int64_t>(
-				std::llround(microvolts * 65536.0));
+			voltage[phase] = static_cast<std::int32_t>(
+				std::llround(microvolts));
 		}
-		pack_flicker_sample(frame, offset, voltage[0U], voltage[1U],
+		pack_voltage_sample(frame, offset, voltage[0U], voltage[1U],
 			voltage[2U], 0x17U);
 	}
-	refresh_flicker_crc(frame);
-	aggregation::FlickerInputView input{};
+	refresh_voltage_sample_crc(frame);
+	aggregation::VoltageSampleInputView input{};
 	expect(decoder.decode(frame, input) ==
 		aggregation::FrameValidationError::none,
-		"generated IEC modulation batch passes strict FLK1 decode");
+		"generated IEC modulation batch passes strict VSB1 decode");
 	engine.process(input);
 }
 
@@ -2208,7 +2107,7 @@ void test_flicker_engine_raw_frontend()
 	CapturingRecordSink sink;
 	aggregation::AggregationHealth health;
 	aggregation::FlickerEngine engine(sink, health);
-	aggregation::FlickerFrameDecoder decoder;
+	aggregation::VoltageSampleFrameDecoder decoder;
 	expect(engine.initialize(), "raw-batch flicker engine initializes");
 	auto configuration = make_event_configuration(7U);
 	configuration.flicker_flags = MSAP1_M18_ENGINE_ENABLED;
@@ -2219,8 +2118,8 @@ void test_flicker_engine_raw_frontend()
 	for (std::size_t batch = 0U; batch < 102U; ++batch) {
 		process_flicker_standard_batch(engine, decoder, ++sequence,
 			first_sample, batch == 0U
-				? aggregation::FlickerProtocol::batch_discontinuity : 0U);
-		first_sample += aggregation::FlickerProtocol::batch_frames;
+				? aggregation::VoltageSampleProtocol::batch_discontinuity : 0U);
+		first_sample += aggregation::VoltageSampleProtocol::batch_frames;
 	}
 	expect(sink.count == 13U,
 		"thirteen seconds of packed samples emit thirteen live records");
@@ -2245,9 +2144,9 @@ void test_flicker_engine_raw_frontend()
 	for (std::size_t batch = 0U; batch < 8U; ++batch) {
 		process_flicker_standard_batch(engine, decoder, ++sequence,
 			first_sample, batch == 0U
-				? aggregation::FlickerProtocol::batch_discontinuity |
-					aggregation::FlickerProtocol::batch_source_drop : 0U);
-		first_sample += aggregation::FlickerProtocol::batch_frames;
+				? aggregation::VoltageSampleProtocol::batch_discontinuity |
+					aggregation::VoltageSampleProtocol::batch_source_drop : 0U);
+		first_sample += aggregation::VoltageSampleProtocol::batch_frames;
 	}
 	expect(sink.count == before_drop + 1U &&
 		((sink.records[before_drop].words[13U] >> 8U) & 0x7U) == 0U &&
@@ -2343,62 +2242,322 @@ void test_flicker_engine_pst_and_plt()
 		"twelve new clean intervals are required before Plt recovers");
 }
 
-void test_mains_signal_engine()
+double mains_source_microvolts(std::uint64_t index, std::size_t phase,
+	std::uint32_t rate, double carrier_hz, double carrier_rms_microvolts,
+	double adjacent_hz = 0.0, double adjacent_rms_microvolts = 0.0)
 {
-	CapturingRecordSink sink;
-	aggregation::AggregationHealth health;
-	aggregation::MainsSignalEngine engine(sink, health);
-	expect(engine.initialize(), "mains-signalling engine initializes");
-	auto configuration = make_event_configuration(7U);
-	configuration.mains_flags = MSAP1_M18_ENGINE_ENABLED;
-	configuration.mains_threshold_e4 = 50U;
-	expect(engine.configure(configuration),
-		"valid mains-signalling profile stages");
+	constexpr double pi = 3.14159265358979323846;
+	constexpr double fundamental_rms_microvolts = 120000000.0;
+	const auto time = static_cast<double>(index) / rate;
+	const auto phase_angle =
+		-2.0 * pi * static_cast<double>(phase) / 3.0;
+	auto sample = fundamental_rms_microvolts * std::sqrt(2.0) *
+		std::sin(2.0 * pi * 60.0 * time + phase_angle);
+	sample += carrier_rms_microvolts * std::sqrt(2.0) *
+		std::sin(2.0 * pi * carrier_hz * time + 0.21);
+	if (adjacent_hz > 0.0)
+		sample += adjacent_rms_microvolts * std::sqrt(2.0) *
+			std::sin(2.0 * pi * adjacent_hz * time - 0.37);
+	return sample;
+}
 
-	aggregation::MainsSignalFrameDecoder decoder;
-	aggregation::MainsSignalInputView input{};
-	auto frame = make_mains_signal_frame(1U);
+struct MainsReference final {
+	std::array<double, 3U> carrier_microvolts{};
+	std::array<double, 3U> background_microvolts{};
+	double measured_hz{1000.0};
+};
+
+MainsReference mains_reference_window(std::uint32_t rate,
+	std::uint64_t first, double carrier_hz, double carrier_rms_microvolts,
+	double adjacent_hz = 0.0, double adjacent_rms_microvolts = 0.0,
+	std::uint8_t valid_mask = 0x7U)
+{
+	constexpr double pi = 3.14159265358979323846;
+	constexpr std::array<double, 7U> probe_hz{
+		980.0, 990.0, 995.0, 1000.0, 1005.0, 1010.0, 1020.0};
+	const auto frames = rate / 5U;
+	std::array<std::array<double, 7U>, 3U> real{};
+	std::array<std::array<double, 7U>, 3U> imaginary{};
+	for (std::uint32_t offset = 0U; offset < frames; ++offset) {
+		for (std::size_t phase = 0U; phase < real.size(); ++phase) {
+			const auto sample = static_cast<double>(std::llround(
+				mains_source_microvolts(first + offset, phase, rate,
+					carrier_hz, carrier_rms_microvolts, adjacent_hz,
+					adjacent_rms_microvolts)));
+			for (std::size_t probe = 0U; probe < probe_hz.size(); ++probe) {
+				const auto angle = 2.0 * pi * probe_hz[probe] * offset / rate;
+				real[phase][probe] += sample * std::cos(angle);
+				imaginary[phase][probe] -= sample * std::sin(angle);
+			}
+		}
+	}
+
+	MainsReference reference;
+	std::array<double, 5U> weights{};
+	for (std::size_t phase = 0U; phase < real.size(); ++phase) {
+		std::array<double, 7U> magnitude{};
+		for (std::size_t probe = 0U; probe < probe_hz.size(); ++probe)
+			magnitude[probe] = std::hypot(real[phase][probe],
+				imaginary[phase][probe]) * std::sqrt(2.0) / frames;
+		reference.carrier_microvolts[phase] = *std::max_element(
+			magnitude.begin() + 1, magnitude.begin() + 6);
+		reference.background_microvolts[phase] =
+			std::max(magnitude.front(), magnitude.back());
+		if ((valid_mask & (1U << phase)) != 0U)
+			for (std::size_t inner = 0U; inner < weights.size(); ++inner)
+				weights[inner] += magnitude[inner + 1U];
+	}
+	constexpr std::array<double, 5U> inner_offset_hz{
+		-10.0, -5.0, 0.0, 5.0, 10.0};
+	double weight_total = 0.0;
+	double weighted_offset = 0.0;
+	for (std::size_t inner = 0U; inner < weights.size(); ++inner) {
+		weight_total += weights[inner];
+		weighted_offset += weights[inner] * inner_offset_hz[inner];
+	}
+	if (weight_total != 0.0)
+		reference.measured_hz += weighted_offset / weight_total;
+	return reference;
+}
+
+void process_mains_batch(aggregation::MainsSignalEngine &engine,
+	aggregation::VoltageSampleFrameDecoder &decoder, std::uint32_t sequence,
+	std::uint32_t generation, std::uint32_t rate, std::uint64_t first,
+	double carrier_hz, double carrier_rms_microvolts,
+	double adjacent_hz = 0.0, double adjacent_rms_microvolts = 0.0,
+	std::uint8_t sample_flags = 0x17U, std::uint32_t batch_status = 0U,
+	bool process_twice = false)
+{
+	auto frame = make_voltage_sample_frame(sequence);
+	const auto payload = aggregation::VoltageSampleProtocol::payload_index;
+	frame.words[payload + aggregation::VoltageSampleProtocol::generation_word] =
+		generation;
+	frame.words[payload + aggregation::VoltageSampleProtocol::sample_rate_word] =
+		rate;
+	frame.words[payload + aggregation::VoltageSampleProtocol::batch_status_word] =
+		batch_status;
+	write_u64(frame.words,
+		payload + aggregation::VoltageSampleProtocol::first_sample_word, first);
+	write_u64(frame.words,
+		payload + aggregation::VoltageSampleProtocol::last_sample_word,
+		first + aggregation::VoltageSampleProtocol::batch_frames - 1U);
+	for (std::size_t offset = 0U;
+		offset < aggregation::VoltageSampleProtocol::batch_frames; ++offset) {
+		std::array<std::int32_t, 3U> voltage{};
+		for (std::size_t phase = 0U; phase < voltage.size(); ++phase)
+			voltage[phase] = static_cast<std::int32_t>(std::llround(
+				mains_source_microvolts(first + offset, phase, rate, carrier_hz,
+					carrier_rms_microvolts, adjacent_hz,
+					adjacent_rms_microvolts)));
+		pack_voltage_sample(frame, offset, voltage[0U], voltage[1U], voltage[2U],
+			sample_flags);
+	}
+	refresh_voltage_sample_crc(frame);
+	aggregation::VoltageSampleInputView input{};
 	expect(decoder.decode(frame, input) ==
 		aggregation::FrameValidationError::none,
-		"engine test MCS1 packet decodes");
+		"generated mains-signalling samples pass strict VSB1 decode");
 	engine.process(input);
-	expect(sink.count == 1U,
-		"one MCS1 observation emits one public record");
-	const auto &record = sink.records[0U];
-	expect(record.words[0U] == 0x3152544DU &&
-		record.words[1U] == 0x000F0001U && record.words[2U] == 256U &&
-		record.words[3U] == 1U && record.words[4U] == 7U &&
-		record.words[5U] == 32000U && record.words[6U] == 6400U,
-		"MAINS-SIGNAL-v1 header and cadence are exact");
-	expect(record.words[7U] == 0x70U && record.words[13U] == 0x707U &&
-		record.words[14U] == 7399U && record.words[16U] == 1000000U &&
-		record.words[17U] == 1005000U,
-		"MAINS-SIGNAL-v1 validity, anchors, and frequencies are exact");
-	expect(record.words[18U] == 1200000U && record.words[20U] == 1200002U &&
-		record.words[21U] == 1000U && record.words[23U] == 1002U &&
-		record.words[24U] == 20000U && record.words[25U] == 200U &&
-		record.words[26U] == 7U && record.words[27U] == 0x3U &&
-		record.words[28U] == 50U && record.words[29U] == 120000000U,
-		"MAINS-SIGNAL-v1 magnitudes and capture-time profile are exact");
-	expect((record.words[8U] & (1U << 2U)) != 0U,
-		"first mains-signalling record carries discontinuity provenance");
-	for (std::size_t word = 30U; word < record.words.size(); ++word)
-		expect(record.words[word] == 0U,
-			"MAINS-SIGNAL-v1 reserved words remain zero");
+	if (process_twice)
+		engine.process(input);
+}
 
-	engine.process(input);
-	expect(sink.count == 1U, "duplicate MCS1 sequence is idempotent");
-	input.sequence = 3U;
-	input.first_sample = 13800U;
-	input.last_sample = 20199U;
-	engine.process(input);
-	expect(sink.count == 2U &&
-		(sink.records[1U].words[8U] & (1U << 2U)) != 0U,
-		"MCS1 sequence gap is retained on the next public record");
-	input.configuration_generation = 8U;
-	engine.process(input);
-	expect(sink.count == 2U,
-		"unstaged mains-signalling generation cannot emit a record");
+void run_mains_window(aggregation::MainsSignalEngine &engine,
+	aggregation::VoltageSampleFrameDecoder &decoder, std::uint32_t generation,
+	std::uint32_t rate, std::uint64_t first, double carrier_hz,
+	double carrier_rms_microvolts, double adjacent_hz = 0.0,
+	double adjacent_rms_microvolts = 0.0, std::uint8_t sample_flags = 0x17U)
+{
+	const auto observation_samples = rate / 5U;
+	const auto batches = (observation_samples +
+		aggregation::VoltageSampleProtocol::batch_frames - 1U) /
+		aggregation::VoltageSampleProtocol::batch_frames;
+	for (std::uint32_t batch = 0U; batch < batches; ++batch)
+		process_mains_batch(engine, decoder, batch + 1U, generation, rate,
+			first + batch * aggregation::VoltageSampleProtocol::batch_frames,
+			carrier_hz, carrier_rms_microvolts, adjacent_hz,
+			adjacent_rms_microvolts, sample_flags,
+			batch == 0U
+				? aggregation::VoltageSampleProtocol::batch_discontinuity : 0U);
+}
+
+void check_mains_reference(const aggregation::AggregationMeterRecord &record,
+	const MainsReference &reference, std::uint8_t valid_mask,
+	std::string_view description)
+{
+	const auto detected_mask = static_cast<std::uint8_t>(record.words[13U] >> 8U);
+	expect((record.words[13U] & 0x7U) == valid_mask,
+		"mains-signalling validity mask matches the input");
+	for (std::size_t phase = 0U; phase < 3U; ++phase) {
+		const bool valid = (valid_mask & (1U << phase)) != 0U;
+		const bool should_detect = valid &&
+			reference.carrier_microvolts[phase] >= 600000.0;
+		expect(((detected_mask >> phase) & 1U) == should_detect,
+			"mains-signalling detection mask matches the independent oracle");
+		const auto carrier_error = std::abs(
+			static_cast<double>(record.words[18U + phase]) -
+			reference.carrier_microvolts[phase]);
+		const auto background_error = std::abs(
+			static_cast<double>(record.words[21U + phase]) -
+			reference.background_microvolts[phase]);
+		const auto carrier_tolerance = std::max(
+			2500.0, reference.carrier_microvolts[phase] * 0.01);
+		const auto background_tolerance = std::max(
+			25000.0, reference.background_microvolts[phase] * 0.01);
+		if (valid && carrier_error > carrier_tolerance)
+			std::cerr << "mains carrier oracle mismatch (" << description << ")\n";
+		expect(!valid || carrier_error <= carrier_tolerance,
+			"fixed-point mains carrier matches the double-precision oracle");
+		expect(!valid || background_error <= background_tolerance,
+			"fixed-point mains background matches the double-precision oracle");
+		expect(valid || (record.words[18U + phase] == 0U &&
+			record.words[21U + phase] == 0U),
+			"invalid mains phase cannot retain correlation magnitude");
+	}
+	if ((detected_mask & valid_mask) != 0U) {
+		const auto measured_hz =
+			static_cast<double>(record.words[17U]) / 1000.0;
+		expect(std::abs(measured_hz - reference.measured_hz) <= 1.5,
+			"fixed-point mains centroid matches the double-precision oracle");
+	}
+}
+
+void test_mains_signal_engine()
+{
+	constexpr std::array<std::uint32_t, 6U> rates{
+		128000U, 64000U, 32000U, 16000U, 8000U, 4000U};
+	for (const auto rate : rates) {
+		CapturingRecordSink sink;
+		aggregation::AggregationHealth health;
+		aggregation::MainsSignalEngine engine(sink, health);
+		aggregation::VoltageSampleFrameDecoder decoder;
+		expect(engine.initialize(), "mains-signalling engine initializes");
+		auto configuration = make_event_configuration(7U);
+		configuration.mains_flags = MSAP1_M18_ENGINE_ENABLED;
+		configuration.mains_threshold_e4 = 50U;
+		expect(engine.configure(configuration),
+			"valid mains-signalling profile stages");
+		run_mains_window(engine, decoder, 7U, rate, 0U, 1000.0, 1200000.0);
+		expect(sink.count == 1U,
+			"one 200 ms VSB1 sample window emits one public record");
+		if (sink.count == 0U)
+			continue;
+		const auto &record = sink.records[0U];
+		expect(record.words[0U] == 0x3152544DU &&
+			record.words[1U] == 0x000F0001U && record.words[2U] == 256U &&
+			record.words[3U] == 1U && record.words[4U] == 7U &&
+			record.words[5U] == rate && record.words[6U] == rate / 5U,
+			"MAINS-SIGNAL-v1 header and cadence are exact at every ADC rate");
+		expect(record.words[7U] == 0x70U && record.words[13U] == 0x707U &&
+			record.words[9U] == 0U && record.words[14U] == rate / 5U - 1U &&
+			record.words[16U] == 1000000U &&
+			record.words[24U] == 20000U && record.words[25U] == 200U &&
+			record.words[26U] == 7U && record.words[28U] == 50U &&
+			record.words[29U] == 120000000U,
+			"MAINS-SIGNAL-v1 provenance and capture-time profile are exact");
+		expect((record.words[8U] & (1U << 2U)) != 0U &&
+			(record.words[27U] & (1U << 3U)) != 0U,
+			"first mains-signalling record carries discontinuity provenance");
+		check_mains_reference(record,
+			mains_reference_window(rate, 0U, 1000.0, 1200000.0), 0x7U,
+			"centred carrier per-rate oracle");
+		for (std::size_t word = 30U; word < record.words.size(); ++word)
+			expect(record.words[word] == 0U,
+				"MAINS-SIGNAL-v1 reserved words remain zero");
+	}
+
+	for (const auto carrier_hz : {990.0, 1005.0, 1010.0}) {
+		CapturingRecordSink sink;
+		aggregation::AggregationHealth health;
+		aggregation::MainsSignalEngine engine(sink, health);
+		aggregation::VoltageSampleFrameDecoder decoder;
+		expect(engine.initialize(), "detuned mains engine initializes");
+		auto configuration = make_event_configuration(8U);
+		configuration.mains_flags = MSAP1_M18_ENGINE_ENABLED;
+		configuration.mains_threshold_e4 = 50U;
+		expect(engine.configure(configuration), "detuned mains profile stages");
+		run_mains_window(engine, decoder, 8U, 32000U, 0U, carrier_hz,
+			1200000.0);
+		expect(sink.count == 1U,
+			"each passband edge or inner probe emits one observation");
+		if (sink.count != 0U)
+			check_mains_reference(sink.records[0U],
+				mains_reference_window(32000U, 0U, carrier_hz, 1200000.0),
+				0x7U, "detuned passband oracle");
+	}
+
+	{
+		CapturingRecordSink sink;
+		aggregation::AggregationHealth health;
+		aggregation::MainsSignalEngine engine(sink, health);
+		aggregation::VoltageSampleFrameDecoder decoder;
+		expect(engine.initialize(), "background-probe mains engine initializes");
+		auto configuration = make_event_configuration(9U);
+		configuration.mains_flags = MSAP1_M18_ENGINE_ENABLED;
+		configuration.mains_threshold_e4 = 50U;
+		expect(engine.configure(configuration), "background mains profile stages");
+		run_mains_window(engine, decoder, 9U, 32000U, 0U, 0.0, 0.0,
+			1020.0, 2400000.0);
+		expect(sink.count == 1U &&
+			(sink.records[0U].words[13U] & 0x700U) == 0U,
+			"adjacent 1020 Hz signal reaches background but not detection");
+		if (sink.count != 0U)
+			check_mains_reference(sink.records[0U],
+				mains_reference_window(32000U, 0U, 0.0, 0.0,
+					1020.0, 2400000.0), 0x7U, "adjacent background oracle");
+	}
+
+	{
+		CapturingRecordSink sink;
+		aggregation::AggregationHealth health;
+		aggregation::MainsSignalEngine engine(sink, health);
+		aggregation::VoltageSampleFrameDecoder decoder;
+		expect(engine.initialize(), "phase-validity mains engine initializes");
+		auto configuration = make_event_configuration(10U);
+		configuration.mains_flags = MSAP1_M18_ENGINE_ENABLED;
+		configuration.mains_threshold_e4 = 50U;
+		expect(engine.configure(configuration), "phase-validity profile stages");
+		run_mains_window(engine, decoder, 10U, 128000U, 0U, 1000.0,
+			1200000.0, 0.0, 0.0, 0x15U);
+		expect(sink.count == 1U && sink.records[0U].words[13U] == 0x505U,
+			"invalid phase B is removed without poisoning phases A and C");
+		if (sink.count != 0U)
+			check_mains_reference(sink.records[0U],
+				mains_reference_window(128000U, 0U, 1000.0, 1200000.0,
+					0.0, 0.0, 0x5U), 0x5U, "phase-B invalid oracle");
+	}
+
+	{
+		CapturingRecordSink sink;
+		aggregation::AggregationHealth health;
+		aggregation::MainsSignalEngine engine(sink, health);
+		aggregation::VoltageSampleFrameDecoder decoder;
+		expect(engine.initialize(), "gap-recovery mains engine initializes");
+		auto configuration = make_event_configuration(11U);
+		configuration.mains_flags = MSAP1_M18_ENGINE_ENABLED;
+		configuration.mains_threshold_e4 = 50U;
+		expect(engine.configure(configuration), "gap-recovery profile stages");
+		process_mains_batch(engine, decoder, 1U, 11U, 32000U, 0U,
+			1000.0, 1200000.0, 0.0, 0.0, 0x17U,
+			aggregation::VoltageSampleProtocol::batch_discontinuity);
+		for (std::uint32_t batch = 1U; batch <= 26U; ++batch)
+			process_mains_batch(engine, decoder, batch + 2U, 11U, 32000U,
+				257U + (batch - 1U) *
+					aggregation::VoltageSampleProtocol::batch_frames,
+				1000.0, 1200000.0, 0.0, 0.0, 0x17U, 0U,
+				batch == 26U);
+		expect(sink.count == 1U && sink.records[0U].words[9U] == 257U &&
+			sink.records[0U].words[14U] == 6656U &&
+			(sink.records[0U].words[8U] & (1U << 2U)) != 0U,
+			"VSB1 sequence/sample gap discards partial work and marks recovery");
+		const auto before_unstaged = sink.count;
+		for (std::uint32_t batch = 0U; batch < 25U; ++batch)
+			process_mains_batch(engine, decoder, 100U + batch, 12U, 32000U,
+				7000U + batch * aggregation::VoltageSampleProtocol::batch_frames,
+				1000.0, 1200000.0);
+		expect(sink.count == before_unstaged,
+			"unstaged mains-signalling generation cannot emit a record");
+	}
 }
 
 aggregation::PqEventInputView make_pq_input_full(std::uint32_t sequence,
@@ -2681,10 +2840,9 @@ int main()
 	test_pq_event_frame_decoder();
 	test_pq_event_lifecycle_engine();
 	test_pq_event_threshold_matrix_50_60();
-	test_flicker_frame_decoder();
+	test_voltage_sample_frame_decoder();
 	test_flicker_engine_raw_frontend();
 	test_flicker_engine_pst_and_plt();
-	test_mains_signal_frame_decoder();
 	test_mains_signal_engine();
 	std::cout << "aggregation shadow tests passed\n";
 	return EXIT_SUCCESS;

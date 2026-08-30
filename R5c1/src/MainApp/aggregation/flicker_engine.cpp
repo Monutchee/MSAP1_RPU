@@ -237,14 +237,6 @@ std::int64_t run_biquad(std::int64_t input,
 	return output;
 }
 
-std::int64_t sign_extend_48(std::uint64_t value) noexcept
-{
-	value &= 0x0000ffffffffffffULL;
-	if ((value & (std::uint64_t{1U} << 47U)) != 0U)
-		value |= 0xffff000000000000ULL;
-	return static_cast<std::int64_t>(value);
-}
-
 struct PackedSample final {
 	std::array<std::int64_t, 3U> voltage_q16{};
 	std::uint8_t flags{};
@@ -253,16 +245,15 @@ struct PackedSample final {
 PackedSample unpack_sample(const std::uint32_t *words) noexcept
 {
 	PackedSample sample{};
-	const auto va = static_cast<std::uint64_t>(words[0U]) |
-		(static_cast<std::uint64_t>(words[1U] & 0xffffU) << 32U);
-	const auto vb = static_cast<std::uint64_t>(words[1U] >> 16U) |
-		(static_cast<std::uint64_t>(words[2U]) << 16U);
-	const auto vc = static_cast<std::uint64_t>(words[3U]) |
-		(static_cast<std::uint64_t>(words[4U] & 0xffffU) << 32U);
 	sample.voltage_q16 = {
-		sign_extend_48(va), sign_extend_48(vb), sign_extend_48(vc)};
-	sample.flags = static_cast<std::uint8_t>((words[4U] >> 16U) &
-		FlickerProtocol::sample_flags_mask);
+		static_cast<std::int64_t>(static_cast<std::int32_t>(words[0U])) *
+			65536LL,
+		static_cast<std::int64_t>(static_cast<std::int32_t>(words[1U])) *
+			65536LL,
+		static_cast<std::int64_t>(static_cast<std::int32_t>(words[2U])) *
+			65536LL};
+	sample.flags = static_cast<std::uint8_t>(words[3U] &
+		VoltageSampleProtocol::sample_flags_mask);
 	return sample;
 }
 
@@ -277,7 +268,7 @@ std::uint16_t histogram_bin_q16(std::uint32_t pinst_q16,
 	if (pinst_q16 >= (1U << 24U)) {
 		outside = true;
 		return static_cast<std::uint16_t>(
-			FlickerProtocol::classifier_bins - 1U);
+			VoltageSampleProtocol::classifier_bins - 1U);
 	}
 	const auto msb = static_cast<unsigned>(31U -
 		static_cast<unsigned>(__builtin_clz(pinst_q16)));
@@ -450,7 +441,7 @@ void FlickerEngine::reset_runtime(bool contaminated) noexcept
 }
 
 bool FlickerEngine::apply_matching_configuration(
-	const FlickerInputView &input) noexcept
+	const VoltageSampleInputView &input) noexcept
 {
 	if (have_active_configuration_ &&
 		active_configuration_.generation == input.configuration_generation) {
@@ -459,8 +450,8 @@ bool FlickerEngine::apply_matching_configuration(
 				input.live_cadence_ms ||
 			active_configuration_.flicker_pst_interval_seconds !=
 				input.pst_interval_seconds ||
-			(active_configuration_.flicker_phase_mask & 0x7U) !=
-				input.phase_mask ||
+			(active_configuration_.flicker_phase_mask &
+				~static_cast<std::uint32_t>(input.phase_mask)) != 0U ||
 			active_configuration_.reference_voltage_microvolts !=
 				input.reference_microvolts)
 			return false;
@@ -485,8 +476,8 @@ bool FlickerEngine::apply_matching_configuration(
 			input.live_cadence_ms ||
 		candidate_configuration_.flicker_pst_interval_seconds !=
 			input.pst_interval_seconds ||
-		(candidate_configuration_.flicker_phase_mask & 0x7U) !=
-			input.phase_mask ||
+		(candidate_configuration_.flicker_phase_mask &
+			~static_cast<std::uint32_t>(input.phase_mask)) != 0U ||
 		candidate_configuration_.reference_voltage_microvolts !=
 			input.reference_microvolts)
 		return false;
@@ -516,33 +507,33 @@ std::uint32_t FlickerEngine::status_word(bool discontinuity,
 		(static_cast<std::uint32_t>(settling) << 7U);
 }
 
-void FlickerEngine::process_sample(const FlickerInputView &input,
+void FlickerEngine::process_sample(const VoltageSampleInputView &input,
 	std::size_t offset, std::uint64_t sample_index) noexcept
 {
 	const auto sample = unpack_sample(input.packed_sample_words +
-		offset * FlickerProtocol::words_per_sample);
-	locked_ = (sample.flags & FlickerProtocol::sample_locked) != 0U;
-	fallback_ = (sample.flags & FlickerProtocol::sample_fallback) != 0U;
+		offset * VoltageSampleProtocol::words_per_sample);
+	locked_ = (sample.flags & VoltageSampleProtocol::sample_locked) != 0U;
+	fallback_ = (sample.flags & VoltageSampleProtocol::sample_fallback) != 0U;
 	const bool sequence_gap = have_last_input_sample_ &&
 		sample_index != last_input_sample_ + 1U;
 	if (sequence_gap)
 		reset_signal_path(true);
 	last_input_sample_ = sample_index;
 	have_last_input_sample_ = true;
-	if ((sample.flags & FlickerProtocol::sample_malformed) != 0U) {
+	if ((sample.flags & VoltageSampleProtocol::sample_malformed) != 0U) {
 		reset_signal_path(true);
 		last_input_sample_ = sample_index;
 		have_last_input_sample_ = true;
 		return;
 	}
-	if ((sample.flags & FlickerProtocol::sample_saturated) != 0U)
+	if ((sample.flags & VoltageSampleProtocol::sample_saturated) != 0U)
 		arithmetic_overflow_ = true;
 	if (raw_count_ == 0U)
 		raw_valid_mask_ = 0x7U;
 	constexpr std::array<std::uint32_t, phases> valid_bits{
-		FlickerProtocol::sample_valid_a,
-		FlickerProtocol::sample_valid_b,
-		FlickerProtocol::sample_valid_c};
+		VoltageSampleProtocol::sample_valid_a,
+		VoltageSampleProtocol::sample_valid_b,
+		VoltageSampleProtocol::sample_valid_c};
 	for (std::size_t phase = 0U; phase < phases; ++phase) {
 		const bool valid =
 			(active_configuration_.flicker_phase_mask & (1U << phase)) != 0U &&
@@ -895,7 +886,7 @@ void FlickerEngine::complete_interval(std::uint64_t last_sample) noexcept
 	interval_classifier_overflow_ = false;
 }
 
-void FlickerEngine::process(const FlickerInputView &input) noexcept
+void FlickerEngine::process(const VoltageSampleInputView &input) noexcept
 {
 	if (!ready_ || !apply_matching_configuration(input)) {
 		note_transport_discontinuity();
@@ -906,16 +897,17 @@ void FlickerEngine::process(const FlickerInputView &input) noexcept
 	last_input_sequence_ = input.sequence;
 	have_input_sequence_ = true;
 	const bool batch_discontinuity =
-		(input.batch_status & FlickerProtocol::batch_discontinuity) != 0U;
+		(input.batch_status & VoltageSampleProtocol::batch_discontinuity) != 0U;
 	const bool source_drop =
-		(input.batch_status & FlickerProtocol::batch_source_drop) != 0U;
+		(input.batch_status & VoltageSampleProtocol::batch_source_drop) != 0U;
 	if (external_discontinuity_ || packet_sequence_gap || batch_discontinuity)
 		reset_signal_path(external_discontinuity_ || packet_sequence_gap ||
 			source_drop);
 	external_discontinuity_ = false;
 	for (std::size_t offset = 0U; offset < input.actual_count; ++offset)
 		process_sample(input, offset, input.first_sample + offset);
-	if (source_drop || input.actual_count != FlickerProtocol::batch_frames)
+	if (source_drop ||
+		input.actual_count != VoltageSampleProtocol::batch_frames)
 		reset_signal_path(true);
 }
 

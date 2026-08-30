@@ -22,13 +22,13 @@ public:
 	[[nodiscard]] bool configure(
 		const msap1_m18_config_payload &configuration) noexcept;
 	bool initialize() noexcept;
-	void process(const FlickerInputView &input) noexcept;
+	void process(const VoltageSampleInputView &input) noexcept;
 	void note_transport_discontinuity() noexcept;
 
 private:
 	friend struct FlickerEngineTestAccess;
-	static constexpr std::size_t phases = FlickerProtocol::phases;
-	static constexpr std::size_t bins = FlickerProtocol::classifier_bins;
+	static constexpr std::size_t phases = VoltageSampleProtocol::phases;
+	static constexpr std::size_t bins = VoltageSampleProtocol::classifier_bins;
 	static constexpr std::size_t filter_stages = 7U;
 	static constexpr std::size_t plt_periods = 12U;
 	static constexpr std::size_t configuration_words =
@@ -49,10 +49,10 @@ private:
 	[[nodiscard]] bool load_staged(
 		msap1_m18_config_payload &configuration) const noexcept;
 	[[nodiscard]] bool apply_matching_configuration(
-		const FlickerInputView &input) noexcept;
+		const VoltageSampleInputView &input) noexcept;
 	void reset_runtime(bool contaminated) noexcept;
 	void reset_signal_path(bool contaminated) noexcept;
-	void process_sample(const FlickerInputView &input, std::size_t offset,
+	void process_sample(const VoltageSampleInputView &input, std::size_t offset,
 		std::uint64_t sample_index) noexcept;
 	void process_decimated(std::uint64_t sample_index) noexcept;
 	void complete_live(std::uint64_t last_sample) noexcept;

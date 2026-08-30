@@ -13,9 +13,18 @@ from pathlib import Path
 
 
 MINIMUM_UNUSED_BYTES = 1 * 1024 * 1024
-MAXIMUM_M17_STACK_FRAME = 1024
+MAXIMUM_AGGREGATION_STACK_FRAME = 1024
 REQUIRED_DDR_SECTIONS = (".text", ".rodata", ".data", ".bss", ".heap", ".stack")
-M17_STACK_SOURCES = ("energy_demand_engine.cpp", "r5_session_id.cpp")
+AGGREGATION_STACK_SOURCES = (
+    # M17 energy and demand processing.
+    "energy_demand_engine.cpp",
+    "r5_session_id.cpp",
+    # M18 shared voltage transport and R5C1 power-quality processing.
+    "aggregation_shadow_service.cpp",
+    "voltage_sample_frame_decoder.cpp",
+    "flicker_engine.cpp",
+    "mains_signal_engine.cpp",
+)
 
 
 class GateError(RuntimeError):
@@ -78,7 +87,7 @@ def parse_stack_usage(paths: list[Path]) -> tuple[int, int, str]:
     maximum_name = ""
     for path in paths:
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            if not any(source in line for source in M17_STACK_SOURCES):
+            if not any(source in line for source in AGGREGATION_STACK_SOURCES):
                 continue
             fields = line.rsplit("\t", 2)
             if len(fields) < 2:
@@ -218,15 +227,18 @@ def main() -> int:
             count, maximum, function = parse_stack_usage(files)
             if count == 0:
                 raise GateError(
-                    "no M17 .su entries found; compile R5C1 with -fstack-usage"
+                    "no guarded aggregation .su entries found; "
+                    "compile R5C1 with -fstack-usage"
                 )
-            if maximum >= MAXIMUM_M17_STACK_FRAME:
+            if maximum >= MAXIMUM_AGGREGATION_STACK_FRAME:
                 raise GateError(
-                    f"M17 stack frame is {maximum} bytes in {function}; "
-                    f"must be below {MAXIMUM_M17_STACK_FRAME}"
+                    f"guarded aggregation stack frame is {maximum} bytes in "
+                    f"{function}; must be below "
+                    f"{MAXIMUM_AGGREGATION_STACK_FRAME}"
                 )
             print(
-                f"{args.core}: {count} M17 stack frames checked; maximum "
+                f"{args.core}: {count} guarded aggregation stack frames "
+                "checked; maximum "
                 f"{maximum} bytes ({function})"
             )
 

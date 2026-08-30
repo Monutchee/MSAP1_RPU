@@ -38,16 +38,15 @@ AggregationShadowService::AggregationShadowService(
 	HarmonicAggregationEngine &harmonic_engine,
 	const PqEventFrameDecoder &pq_event_decoder,
 	PqEventLifecycleEngine &pq_event_engine,
-	const FlickerFrameDecoder &flicker_decoder,
+	const VoltageSampleFrameDecoder &voltage_sample_decoder,
 	FlickerEngine &flicker_engine,
-	const MainsSignalFrameDecoder &mains_signal_decoder,
 	MainsSignalEngine &mains_signal_engine,
 	AggregationHealth &health) noexcept
 	: transport_(transport), ring_(ring), decoder_(decoder), engine_(engine),
 	  harmonic_decoder_(harmonic_decoder), harmonic_engine_(harmonic_engine),
 	  pq_event_decoder_(pq_event_decoder), pq_event_engine_(pq_event_engine),
-	  flicker_decoder_(flicker_decoder), flicker_engine_(flicker_engine),
-	  mains_signal_decoder_(mains_signal_decoder),
+	  voltage_sample_decoder_(voltage_sample_decoder),
+	  flicker_engine_(flicker_engine),
 	  mains_signal_engine_(mains_signal_engine),
 	  health_(health)
 {
@@ -205,8 +204,7 @@ void AggregationShadowService::notify_validator() noexcept
 	AggregationInputView input{};
 	HarmonicInputView harmonic_input{};
 	PqEventInputView pq_event_input{};
-	FlickerInputView flicker_input{};
-	MainsSignalInputView mains_signal_input{};
+	VoltageSampleInputView voltage_sample_input{};
 	for (;;) {
 		(void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 		const auto activation_start = monotonic_counter_ticks();
@@ -261,30 +259,18 @@ void AggregationShadowService::notify_validator() noexcept
 			}
 
 			if (validator_frame_.word_count != 0U &&
-				validator_frame_.words[0U] == FlickerProtocol::magic) {
-				const auto error = flicker_decoder_.decode(
-					validator_frame_, flicker_input);
+				validator_frame_.words[0U] == VoltageSampleProtocol::magic) {
+				const auto error = voltage_sample_decoder_.decode(
+					validator_frame_, voltage_sample_input);
 				if (error != FrameValidationError::none) {
 					health_.record_invalid(error);
 					flicker_engine_.note_transport_discontinuity();
-					continue;
-				}
-				health_.record_auxiliary_valid();
-				flicker_engine_.process(flicker_input);
-				continue;
-			}
-
-			if (validator_frame_.word_count != 0U &&
-				validator_frame_.words[0U] == MainsSignalProtocol::magic) {
-				const auto error = mains_signal_decoder_.decode(
-					validator_frame_, mains_signal_input);
-				if (error != FrameValidationError::none) {
-					health_.record_invalid(error);
 					mains_signal_engine_.note_transport_discontinuity();
 					continue;
 				}
 				health_.record_auxiliary_valid();
-				mains_signal_engine_.process(mains_signal_input);
+				flicker_engine_.process(voltage_sample_input);
+				mains_signal_engine_.process(voltage_sample_input);
 				continue;
 			}
 

@@ -41,18 +41,22 @@ class R5MemoryGateTests(unittest.TestCase):
         with self.assertRaises(gate.GateError):
             gate.verify_sections(sections, 0x40000000, 0x800000)
 
-    def test_parses_only_m17_stack_usage(self):
+    def test_parses_only_guarded_aggregation_stack_usage(self):
         with tempfile.TemporaryDirectory() as directory:
-            usage = Path(directory) / "m17.su"
+            usage = Path(directory) / "aggregation.su"
             usage.write_text(
                 "x/energy_demand_engine.cpp:10:1:observe\t160\tstatic\n"
                 "x/other.cpp:10:1:large\t4096\tstatic\n"
-                "x/r5_session_id.cpp:4:1:nonce\t32\tstatic\n",
+                "x/r5_session_id.cpp:4:1:nonce\t32\tstatic\n"
+                "x/flicker_engine.cpp:8:1:process\t312\tstatic\n"
+                "x/mains_signal_engine.cpp:9:1:process\t304\tstatic\n"
+                "x/voltage_sample_frame_decoder.cpp:10:1:decode\t56\tstatic\n"
+                "x/aggregation_shadow_service.cpp:11:1:validate\t336\tstatic\n",
                 encoding="utf-8",
             )
             count, maximum, function = gate.parse_stack_usage([usage])
-            self.assertEqual((count, maximum), (2, 160))
-            self.assertIn("observe", function)
+            self.assertEqual((count, maximum), (6, 336))
+            self.assertIn("validate", function)
 
 
 if __name__ == "__main__":

@@ -18,9 +18,7 @@
 #include "aggregation/harmonic_aggregation_engine.hpp"
 #include "aggregation/harmonic_frame_decoder.hpp"
 #include "aggregation/flicker_engine.hpp"
-#include "aggregation/flicker_frame_decoder.hpp"
 #include "aggregation/mains_signal_engine.hpp"
-#include "aggregation/mains_signal_frame_decoder.hpp"
 #include "aggregation/pq_event_frame_decoder.hpp"
 #include "aggregation/pq_event_lifecycle_engine.hpp"
 #include "aggregation/aggregation_output_service.hpp"
@@ -30,6 +28,7 @@
 #include "aggregation/r5_session_id.hpp"
 #include "aggregation/aggregation_shadow_service.hpp"
 #include "aggregation/axi_fifo_aggregation_transport.hpp"
+#include "aggregation/voltage_sample_frame_decoder.hpp"
 
 #ifndef MNC_R5_AGGREGATION_EMIT_OUTPUT
 #define MNC_R5_AGGREGATION_EMIT_OUTPUT 1
@@ -50,8 +49,7 @@ static msap1::aggregation::AggregationFrameRing aggregation_ring;
 static msap1::aggregation::AggregationFrameDecoder aggregation_decoder;
 static msap1::aggregation::HarmonicFrameDecoder harmonic_decoder;
 static msap1::aggregation::PqEventFrameDecoder pq_event_decoder;
-static msap1::aggregation::FlickerFrameDecoder flicker_decoder;
-static msap1::aggregation::MainsSignalFrameDecoder mains_signal_decoder;
+static msap1::aggregation::VoltageSampleFrameDecoder voltage_sample_decoder;
 static msap1::aggregation::AggregationRecordRing aggregation_output_ring;
 static msap1::aggregation::AggregationOutputService aggregation_output(
 	aggregation_transport, aggregation_output_ring, aggregation_health);
@@ -69,7 +67,7 @@ static msap1::aggregation::MainsSignalEngine mains_signal_engine(
 static msap1::aggregation::AggregationShadowService aggregation_shadow(
 	aggregation_transport, aggregation_ring, aggregation_decoder,
 	aggregation_engine, harmonic_decoder, harmonic_engine, pq_event_decoder,
-	pq_event_engine, flicker_decoder, flicker_engine, mains_signal_decoder,
+	pq_event_engine, voltage_sample_decoder, flicker_engine,
 	mains_signal_engine, aggregation_health);
 static msap1::aggregation::AggregationRuntime aggregation_runtime(
 	aggregation_shadow, aggregation_output, aggregation_health);

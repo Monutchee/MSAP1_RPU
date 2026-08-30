@@ -69,10 +69,9 @@ struct PqEventInputView final {
 	std::uint32_t apply_toggle{};
 };
 
-struct FlickerProtocol final : PowerQualityPacketHeader {
-	static constexpr std::uint32_t magic = 0x314B4C46U; // "FLK1"
-	static constexpr std::uint32_t contract_revision = 2U;
-	static constexpr std::size_t payload_words = 1294U;
+struct VoltageSampleProtocol final : PowerQualityPacketHeader {
+	static constexpr std::uint32_t magic = 0x31425356U; // "VSB1"
+	static constexpr std::size_t payload_words = 1038U;
 	static constexpr std::size_t frame_words =
 		header_words + payload_words + crc_words;
 	static constexpr std::size_t crc_index = frame_words - 1U;
@@ -87,10 +86,10 @@ struct FlickerProtocol final : PowerQualityPacketHeader {
 	static constexpr std::size_t first_sample_word = 8U;
 	static constexpr std::size_t sample_word = 10U;
 	static constexpr std::size_t batch_frames = 256U;
-	static constexpr std::size_t words_per_sample = 5U;
-	static constexpr std::size_t actual_count_word = 1290U;
-	static constexpr std::size_t batch_status_word = 1291U;
-	static constexpr std::size_t last_sample_word = 1292U;
+	static constexpr std::size_t words_per_sample = 4U;
+	static constexpr std::size_t actual_count_word = 1034U;
+	static constexpr std::size_t batch_status_word = 1035U;
+	static constexpr std::size_t last_sample_word = 1036U;
 	static constexpr std::size_t phases = 3U;
 	static constexpr std::size_t classifier_bins = 512U;
 	static constexpr std::uint32_t batch_status_mask = 0x3U;
@@ -104,13 +103,13 @@ struct FlickerProtocol final : PowerQualityPacketHeader {
 	static constexpr std::uint32_t sample_fallback = 1U << 5U;
 	static constexpr std::uint32_t sample_saturated = 1U << 6U;
 	static constexpr std::uint32_t sample_flags_mask = 0x7fU;
-	static constexpr std::uint32_t packed_reserved_mask = 0xff800000U;
+	static constexpr std::uint32_t packed_reserved_mask = 0xffffff80U;
 	static_assert(sample_word + batch_frames * words_per_sample ==
 		actual_count_word);
 	static_assert(last_sample_word + 2U == payload_words);
 };
 
-struct FlickerInputView final {
+struct VoltageSampleInputView final {
 	std::uint32_t sequence{};
 	std::uint32_t configuration_generation{};
 	std::uint32_t sample_rate_hz{};
@@ -127,54 +126,8 @@ struct FlickerInputView final {
 	const std::uint32_t *packed_sample_words{};
 };
 
-struct MainsSignalProtocol final : PowerQualityPacketHeader {
-	static constexpr std::uint32_t magic = 0x3153434DU; // "MCS1"
-	static constexpr std::size_t payload_words = 20U;
-	static constexpr std::size_t frame_words =
-		header_words + payload_words + crc_words;
-	static constexpr std::size_t crc_index = frame_words - 1U;
-	static constexpr std::size_t sequence_word = 0U;
-	static constexpr std::size_t generation_word = 1U;
-	static constexpr std::size_t sample_rate_word = 2U;
-	static constexpr std::size_t status_word = 3U;
-	static constexpr std::size_t phases_word = 4U;
-	static constexpr std::size_t configured_millihz_word = 5U;
-	static constexpr std::size_t measured_millihz_word = 6U;
-	static constexpr std::size_t bandwidth_millihz_word = 7U;
-	static constexpr std::size_t observation_ms_word = 8U;
-	static constexpr std::size_t first_sample_word = 9U;
-	static constexpr std::size_t last_sample_word = 11U;
-	static constexpr std::size_t magnitude_microvolts_word = 13U;
-	static constexpr std::size_t background_microvolts_word = 16U;
-	static constexpr std::size_t threshold_e4_word = 19U;
-	static constexpr std::size_t phases = 3U;
-	static constexpr std::uint32_t status_mask = 0x3fU;
-	static constexpr std::uint32_t phases_mask = 0x00000707U;
-};
-
-struct MainsSignalInputView final {
-	std::uint32_t sequence{};
-	std::uint32_t configuration_generation{};
-	std::uint32_t sample_rate_hz{};
-	std::uint32_t status{};
-	std::uint8_t valid_phase_mask{};
-	std::uint8_t detected_phase_mask{};
-	std::uint32_t configured_millihz{};
-	std::uint32_t measured_millihz{};
-	std::uint32_t bandwidth_millihz{};
-	std::uint32_t observation_ms{};
-	std::uint64_t first_sample{};
-	std::uint64_t last_sample{};
-	std::array<std::uint32_t, MainsSignalProtocol::phases>
-		magnitude_microvolts{};
-	std::array<std::uint32_t, MainsSignalProtocol::phases>
-		background_microvolts{};
-	std::uint32_t threshold_e4{};
-};
-
 static_assert(PqEventProtocol::frame_words <= maximum_transport_frame_words);
-static_assert(FlickerProtocol::frame_words <= maximum_transport_frame_words);
-static_assert(MainsSignalProtocol::frame_words <=
+static_assert(VoltageSampleProtocol::frame_words <=
 	maximum_transport_frame_words);
 
 } // namespace msap1::aggregation

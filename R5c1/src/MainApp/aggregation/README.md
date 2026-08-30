@@ -78,8 +78,7 @@ CRC32C word. The dispatcher accepts these exact co-release contracts:
 | --- | ---: | --- |
 | `AGG1` | 239 | 221-word SingleCycle result plus 13 context words |
 | `PQE1` | 69 | Half-cycle PQ-event sufficient statistics |
-| `FLK1` rev. 2 | 1,299 | 256 raw VA/VB/VC frames packed into five words each, plus metadata/trailer |
-| `MCS1` | 25 | Mains-signalling observation result |
+| `VSB1` rev. 1 | 1,043 | 256 signed-microvolt VA/VB/VC frames plus status, metadata, and trailer |
 | `HRM1` | 2,693 | One byte-exact 42-record base-harmonic family |
 
 The AGG1 frame is:
@@ -96,15 +95,18 @@ The AGG1 frame is:
 CRC32C uses reflected polynomial `0x82F63B78`, initial and final XOR
 `0xFFFFFFFF`. The required `123456789` vector is `0xE3069283`.
 
-FLK1 revision 2 deliberately transports raw converted voltage rather than a
-wide parallel result. At the default 128-kSPS rate it produces 500 bounded
-packets/s (about 2.60 MB/s). `FlickerFrameDecoder` validates sample rate,
+VSB1 deliberately transports one shared raw-voltage batch instead of separate
+engine-specific results. At the default 128-kSPS rate it produces 500 bounded
+packets/s (about 2.09 MB/s). `VoltageSampleFrameDecoder` validates sample rate,
 geometry, reserved bits, provenance, zero padding, and CRC without copying the
-1,280 sample words. `FlickerEngine` then owns reference normalization, 2 kHz
+1,024 sample words. The validator fans that same immutable view to both power-
+quality engines. `FlickerEngine` owns reference normalization, 2 kHz
 decimation, seven IEC lamp-model filter sections, the 512-bin classifier, Pst,
-Plt, and Flicker-v1 record serialization. Its filter, histogram, and rolling
-Pst state is statically allocated; no packet-sized object is placed on a task
-stack.
+Plt, and Flicker-v1 serialization. `MainsSignalEngine` owns the seven-probe
+200 ms correlation bank, magnitude/background discrimination, carrier
+centroid, and Mains-Signal-v1 serialization. Their filter, histogram, rolling
+Pst, and correlation state is statically allocated; no packet-sized object is
+placed on a task stack.
 
 ## Authority and failure behavior
 
@@ -147,3 +149,6 @@ known CRC vector, exact header/context decoding, every validation failure,
 ring ordering/capacity, sequence wrap, gaps, repeats, out-of-order health
 accounting, complete-record emission, FIFO-output retry behavior, fixed
 ten-minute demand, and sliding-demand warm-up/cadence/clean-refill recovery.
+It also checks strict VSB1 decoding, shared Flicker raw processing, and the
+mains-signalling estimator against an independent double-precision oracle at
+every supported carrier-compatible sample rate.
