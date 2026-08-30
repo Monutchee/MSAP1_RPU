@@ -1310,7 +1310,7 @@ void emit_demand(aggregation::EnergyDemandEngine &engine,
 		static_cast<std::uint64_t>(sequence) * 1000U - 1U);
 	write_record_u64(fundamental, TEN_MINUTE_TARGET_SAMPLE_LOW_WORD,
 		static_cast<std::uint64_t>(sequence) * 1000U);
-	fundamental.words[MTR2_SHAPE_WORD] = 1U;
+	fundamental.words[AGGREGATE_SHAPE_WORD] = 1U;
 	auto power = make_typed_record(MREC_FORMAT_TEN_MINUTE_POWER_V1,
 		sequence, status);
 	for (std::size_t phase = 0U; phase < 3U; ++phase) {
@@ -1378,18 +1378,18 @@ void emit_sliding_demand(aggregation::EnergyDemandEngine &engine,
 	constexpr std::uint32_t sample_count =
 		sample_rate_hz * DEMAND_SLIDING_UPDATE_SECONDS;
 	const std::uint32_t status = valid
-		? 1U << MTR2_STATUS_COMPLETE_BIT
-		: (1U << MTR2_STATUS_COMPLETE_BIT) |
+		? 1U << AGGREGATE_STATUS_COMPLETE_BIT
+		: (1U << AGGREGATE_STATUS_COMPLETE_BIT) |
 			(1U << MREC_STATUS_ARITHMETIC_BIT);
 	auto fundamental = make_typed_record(MREC_FORMAT_AGG_V3, sequence,
 		status, sample_rate_hz, sample_count);
 	write_record_u64(fundamental, AGG_LAST_SAMPLE_LOW_WORD,
 		static_cast<std::uint64_t>(sequence) * sample_count - 1U);
-	const std::uint32_t shape = 15U | (50U << MTR2_SHAPE_NOMINAL_LSB);
-	fundamental.words[MTR2_SHAPE_WORD] = shape;
+	const std::uint32_t shape = 15U | (50U << AGGREGATE_SHAPE_NOMINAL_LSB);
+	fundamental.words[AGGREGATE_SHAPE_WORD] = shape;
 	auto power = make_typed_record(MREC_FORMAT_AGG_POWER_V1, sequence,
 		status, sample_rate_hz, sample_count);
-	power.words[MTR2_SHAPE_WORD] = shape;
+	power.words[AGGREGATE_SHAPE_WORD] = shape;
 	for (std::size_t phase = 0U; phase < 3U; ++phase) {
 		const auto base = static_cast<std::size_t>(POWER_PHASE_BASE_WORD) +
 			phase * static_cast<std::size_t>(POWER_PHASE_STRIDE);
@@ -1398,10 +1398,10 @@ void emit_sliding_demand(aggregation::EnergyDemandEngine &engine,
 	write_record_s64(power, POWER_TOTAL_P_LOW_WORD, active[3U]);
 	auto phasor = make_typed_record(MREC_FORMAT_AGG_PHASOR_V2,
 		sequence, status, sample_rate_hz, sample_count);
-	phasor.words[MTR2_SHAPE_WORD] = shape;
+	phasor.words[AGGREGATE_SHAPE_WORD] = shape;
 	auto unbalance = make_typed_record(MREC_FORMAT_AGG_UNBAL_V2,
 		sequence, status, sample_rate_hz, sample_count);
-	unbalance.words[MTR2_SHAPE_WORD] = shape;
+	unbalance.words[AGGREGATE_SHAPE_WORD] = shape;
 	expect(engine.observe(fundamental, sink, true),
 		"sliding DEMAND accepts aggregate fundamental");
 	expect(engine.observe(power, sink, true),
