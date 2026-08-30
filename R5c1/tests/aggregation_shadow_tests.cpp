@@ -55,6 +55,13 @@ struct FlickerEngineTestAccess final {
 		engine.complete_interval(first_sample + 600U *
 			engine.sample_rate_hz_ - 1U);
 	}
+
+	static std::int64_t normalize(std::int32_t sample,
+		std::uint64_t reciprocal_q46, bool &overflow) noexcept
+	{
+		return FlickerEngine::normalize_microvolts_q16(
+			sample, reciprocal_q46, overflow);
+	}
 };
 
 } // namespace msap1::aggregation
@@ -2058,17 +2065,18 @@ void feed_flicker_interval(aggregation::FlickerEngine &engine,
 
 void process_flicker_standard_batch(aggregation::FlickerEngine &engine,
 	aggregation::VoltageSampleFrameDecoder &decoder, std::uint32_t sequence,
-	std::uint64_t first_sample, std::uint32_t batch_status)
+	std::uint64_t first_sample, std::uint32_t batch_status,
+	std::uint32_t sample_rate_hz = 2000U)
 {
 	constexpr double pi = 3.14159265358979323846;
-	constexpr double sample_rate = 2000.0;
+	const auto sample_rate = static_cast<double>(sample_rate_hz);
 	constexpr double modulation_hz = 8.8;
 	constexpr double modulation_depth = 0.00321;
 	constexpr double reference_microvolts = 120000000.0;
 	auto frame = make_voltage_sample_frame(sequence);
 	const auto payload = aggregation::VoltageSampleProtocol::payload_index;
 	frame.words[payload + aggregation::VoltageSampleProtocol::sample_rate_word] =
-		2000U;
+		sample_rate_hz;
 	frame.words[payload + aggregation::VoltageSampleProtocol::batch_status_word] =
 		batch_status;
 	write_u64(frame.words,
@@ -2141,7 +2149,7 @@ void test_flicker_engine_raw_frontend()
 	expect(settled >= 3U,
 		"raw fixed-point frontend produces multiple settled IEC intervals");
 	const auto before_drop = sink.count;
-	for (std::size_t batch = 0U; batch < 8U; ++batch) {
+	for (std::size_t batch = 0U; batch < 9U; ++batch) {
 		process_flicker_standard_batch(engine, decoder, ++sequence,
 			first_sample, batch == 0U
 				? aggregation::VoltageSampleProtocol::batch_discontinuity |
@@ -2152,7 +2160,83 @@ void test_flicker_engine_raw_frontend()
 		((sink.records[before_drop].words[13U] >> 8U) & 0x7U) == 0U &&
 		(sink.records[before_drop].words[31U] & ((1U << 3U) | (1U << 6U))) ==
 			((1U << 3U) | (1U << 6U)),
-		"source-drop marker resets filters and invalidates the next live record");
+		"source-drop marker aborts the partial interval and invalidates recovery");
+}
+
+void test_flicker_normalization_and_gap_recovery()
+{
+	constexpr auto limit = std::uint64_t{8U} << 16U;
+	constexpr auto divisor = std::uint64_t{1U} << 30U;
+	constexpr std::array<std::uint64_t, 4U> reciprocals{
+		1U, 586406U, std::numeric_limits<std::uint32_t>::max(),
+		std::uint64_t{1U} << 46U};
+	constexpr std::array<std::int32_t, 13U> samples{
+		0, 1, -1, 7, -7, 8, -8, 9, -9, 123456789, -123456789,
+		std::numeric_limits<std::int32_t>::max(),
+		std::numeric_limits<std::int32_t>::min()};
+	for (const auto reciprocal : reciprocals) {
+		for (const auto sample : samples) {
+			const auto magnitude = sample < 0
+				? static_cast<std::uint64_t>(-static_cast<std::int64_t>(sample))
+				: static_cast<std::uint64_t>(sample);
+			const bool reference_fits = magnitude == 0U ||
+				reciprocal <= (std::numeric_limits<std::uint64_t>::max() -
+					(divisor - 1U)) / magnitude;
+			if (!reference_fits)
+				continue;
+			const auto product = magnitude * reciprocal;
+			const auto quotient = sample < 0
+				? (product + divisor - 1U) / divisor
+				: product / divisor;
+			const auto expected_magnitude = std::min(quotient, limit);
+			const auto expected = sample < 0
+				? -static_cast<std::int64_t>(expected_magnitude)
+				: static_cast<std::int64_t>(expected_magnitude);
+			bool overflow = false;
+			const auto actual = aggregation::FlickerEngineTestAccess::normalize(
+				sample, reciprocal, overflow);
+			expect(actual == expected && overflow == (quotient > limit),
+				"optimized flicker normalization preserves exact Q16 semantics");
+		}
+	}
+
+	CapturingRecordSink sink;
+	aggregation::AggregationHealth health;
+	aggregation::FlickerEngine engine(sink, health);
+	aggregation::VoltageSampleFrameDecoder decoder;
+	expect(engine.initialize(), "gap-recovery flicker engine initializes");
+	auto configuration = make_event_configuration(7U);
+	configuration.flicker_flags = MSAP1_M18_ENGINE_ENABLED;
+	expect(engine.configure(configuration),
+		"gap-recovery flicker profile stages");
+	std::uint32_t sequence = 0U;
+	std::uint64_t first_sample = 0U;
+	for (std::size_t batch = 0U; batch < 4U; ++batch) {
+		process_flicker_standard_batch(engine, decoder, ++sequence,
+			first_sample, batch == 0U
+				? aggregation::VoltageSampleProtocol::batch_discontinuity : 0U,
+			128000U);
+		first_sample += aggregation::VoltageSampleProtocol::batch_frames;
+	}
+	expect(sink.count == 0U,
+		"partial pre-gap flicker interval has not emitted a record");
+	++sequence;
+	first_sample += 1024U;
+	for (std::size_t batch = 0U; batch < 500U; ++batch) {
+		process_flicker_standard_batch(engine, decoder, ++sequence,
+			first_sample, 0U, 128000U);
+		first_sample += aggregation::VoltageSampleProtocol::batch_frames;
+	}
+	expect(sink.count == 1U,
+		"a complete post-gap interval emits without stitching pre-gap samples");
+	const auto &record = sink.records[0U];
+	const auto record_first = read_record_u64(record, 9U);
+	const auto record_last = read_record_u64(record, 14U);
+	expect(record.words[5U] == 128000U && record.words[6U] == 128000U &&
+		record_last - record_first + 1U == 128000U &&
+		(record.words[8U] & (1U << 2U)) != 0U &&
+		((record.words[13U] >> 8U) & 0x7U) == 0U,
+		"post-gap FLICKER-v1 provenance is exact and recovery is marked invalid");
 }
 
 void test_flicker_engine_pst_and_plt()
@@ -2842,6 +2926,7 @@ int main()
 	test_pq_event_threshold_matrix_50_60();
 	test_voltage_sample_frame_decoder();
 	test_flicker_engine_raw_frontend();
+	test_flicker_normalization_and_gap_recovery();
 	test_flicker_engine_pst_and_plt();
 	test_mains_signal_engine();
 	std::cout << "aggregation shadow tests passed\n";

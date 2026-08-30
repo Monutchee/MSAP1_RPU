@@ -145,20 +145,50 @@ std::uint64_t multiply_shift_saturating(std::uint64_t lhs,
 	std::uint64_t rhs, unsigned shift, std::uint64_t limit,
 	bool &overflow, std::uint64_t rounding = 0U) noexcept
 {
+	constexpr auto narrow_limit = static_cast<std::uint64_t>(
+		std::numeric_limits<std::uint32_t>::max());
+	if (lhs <= narrow_limit && rhs <= narrow_limit) {
+		const auto product = lhs * rhs;
+		if (product <= std::numeric_limits<std::uint64_t>::max() - rounding) {
+			const auto shifted = (product + rounding) >> shift;
+			if (shifted > limit) {
+				overflow = true;
+				return limit;
+			}
+			return shifted;
+		}
+	}
 	auto product = multiply_wide(lhs, rhs);
 	add_wide(product, rounding);
 	return shift_wide_saturating(product, shift, limit, overflow);
 }
 
-std::int64_t normalize_q16(std::int64_t sample,
+inline __attribute__((always_inline)) std::int64_t
+normalize_microvolts_q16_fast(std::int32_t sample,
 	std::uint64_t reciprocal_q46, bool &overflow) noexcept
 {
 	constexpr std::uint64_t limit = std::uint64_t{8U} << 16U;
-	auto product = multiply_wide(magnitude(sample), reciprocal_q46);
-	if (sample < 0)
-		add_wide(product, (std::uint64_t{1U} << 46U) - 1U);
-	const auto normalized = shift_wide_saturating(
-		product, 46U, limit, overflow);
+	constexpr std::uint64_t divisor = std::uint64_t{1U} << 30U;
+	const auto absolute = magnitude(sample);
+	std::uint64_t normalized{};
+	if (reciprocal_q46 <= std::numeric_limits<std::uint32_t>::max()) {
+		/* The wire sample is an integer number of microvolts. Multiplying it
+		 * by 2^16 before applying the Q46 reciprocal and shifting by 46 is
+		 * exactly equivalent to shifting the unscaled sample by 30. Normal
+		 * 120/230 V references therefore need one UMULL, not a four-limb
+		 * 64x64 multiply, for every phase of every 128 kSPS input sample. */
+		auto product = absolute * reciprocal_q46;
+		if (sample < 0)
+			product += divisor - 1U;
+		normalized = product >> 30U;
+		if (normalized > limit) {
+			normalized = limit;
+			overflow = true;
+		}
+	} else {
+		normalized = multiply_shift_saturating(absolute, reciprocal_q46,
+			30U, limit, overflow, sample < 0 ? divisor - 1U : 0U);
+	}
 	return sample < 0 ? -static_cast<std::int64_t>(normalized)
 		: static_cast<std::int64_t>(normalized);
 }
@@ -208,8 +238,22 @@ std::int64_t multiply_q30(std::int64_t lhs, std::int64_t rhs,
 	const auto limit = negative ? std::uint64_t{1U} << 63U
 		: static_cast<std::uint64_t>(
 			std::numeric_limits<std::int64_t>::max());
-	const auto rounded = multiply_shift_saturating(magnitude(lhs),
-		magnitude(rhs), 30U, limit, overflow, std::uint64_t{1U} << 29U);
+	const auto absolute_lhs = magnitude(lhs);
+	const auto absolute_rhs = magnitude(rhs);
+	std::uint64_t rounded{};
+	if (absolute_lhs <= std::numeric_limits<std::uint32_t>::max() &&
+		absolute_rhs <= std::numeric_limits<std::uint32_t>::max()) {
+		const auto product = absolute_lhs * absolute_rhs +
+			(std::uint64_t{1U} << 29U);
+		rounded = product >> 30U;
+		if (rounded > limit) {
+			rounded = limit;
+			overflow = true;
+		}
+	} else {
+		rounded = multiply_shift_saturating(absolute_lhs, absolute_rhs,
+			30U, limit, overflow, std::uint64_t{1U} << 29U);
+	}
 	if (!negative)
 		return static_cast<std::int64_t>(rounded);
 	if (rounded == (std::uint64_t{1U} << 63U))
@@ -238,20 +282,17 @@ std::int64_t run_biquad(std::int64_t input,
 }
 
 struct PackedSample final {
-	std::array<std::int64_t, 3U> voltage_q16{};
+	std::array<std::int32_t, 3U> voltage_microvolts{};
 	std::uint8_t flags{};
 };
 
 PackedSample unpack_sample(const std::uint32_t *words) noexcept
 {
 	PackedSample sample{};
-	sample.voltage_q16 = {
-		static_cast<std::int64_t>(static_cast<std::int32_t>(words[0U])) *
-			65536LL,
-		static_cast<std::int64_t>(static_cast<std::int32_t>(words[1U])) *
-			65536LL,
-		static_cast<std::int64_t>(static_cast<std::int32_t>(words[2U])) *
-			65536LL};
+	sample.voltage_microvolts = {
+		static_cast<std::int32_t>(words[0U]),
+		static_cast<std::int32_t>(words[1U]),
+		static_cast<std::int32_t>(words[2U])};
 	sample.flags = static_cast<std::uint8_t>(words[3U] &
 		VoltageSampleProtocol::sample_flags_mask);
 	return sample;
@@ -314,6 +355,12 @@ std::uint32_t average(std::initializer_list<std::uint32_t> values) noexcept
 FlickerEngine::FlickerEngine(AggregationRecordSink &sink,
 	AggregationHealth &health) noexcept : sink_(sink), health_(health)
 {
+}
+
+std::int64_t FlickerEngine::normalize_microvolts_q16(std::int32_t sample,
+	std::uint64_t reciprocal_q46, bool &overflow) noexcept
+{
+	return normalize_microvolts_q16_fast(sample, reciprocal_q46, overflow);
 }
 
 bool FlickerEngine::configure(
@@ -517,11 +564,11 @@ void FlickerEngine::process_sample(const VoltageSampleInputView &input,
 	const bool sequence_gap = have_last_input_sample_ &&
 		sample_index != last_input_sample_ + 1U;
 	if (sequence_gap)
-		reset_signal_path(true);
+		reset_runtime(true);
 	last_input_sample_ = sample_index;
 	have_last_input_sample_ = true;
 	if ((sample.flags & VoltageSampleProtocol::sample_malformed) != 0U) {
-		reset_signal_path(true);
+		reset_runtime(true);
 		last_input_sample_ = sample_index;
 		have_last_input_sample_ = true;
 		return;
@@ -542,7 +589,8 @@ void FlickerEngine::process_sample(const VoltageSampleInputView &input,
 			raw_valid_mask_ &= static_cast<std::uint8_t>(~(1U << phase));
 			continue;
 		}
-		const auto value = normalize_q16(sample.voltage_q16[phase],
+		const auto value = normalize_microvolts_q16_fast(
+			sample.voltage_microvolts[phase],
 			reference_reciprocal_q46_, arithmetic_overflow_);
 		const auto magnitude = static_cast<std::uint64_t>(
 			value < 0 ? -value : value);
@@ -901,14 +949,14 @@ void FlickerEngine::process(const VoltageSampleInputView &input) noexcept
 	const bool source_drop =
 		(input.batch_status & VoltageSampleProtocol::batch_source_drop) != 0U;
 	if (external_discontinuity_ || packet_sequence_gap || batch_discontinuity)
-		reset_signal_path(external_discontinuity_ || packet_sequence_gap ||
+		reset_runtime(external_discontinuity_ || packet_sequence_gap ||
 			source_drop);
 	external_discontinuity_ = false;
 	for (std::size_t offset = 0U; offset < input.actual_count; ++offset)
 		process_sample(input, offset, input.first_sample + offset);
 	if (source_drop ||
 		input.actual_count != VoltageSampleProtocol::batch_frames)
-		reset_signal_path(true);
+		reset_runtime(true);
 }
 
 } // namespace msap1::aggregation

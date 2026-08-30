@@ -77,6 +77,9 @@ private:
 		std::uint32_t total) noexcept;
 	[[nodiscard]] static std::uint32_t plt_q16(
 		const std::array<std::uint32_t, plt_periods> &pst) noexcept;
+	[[nodiscard]] static std::int64_t normalize_microvolts_q16(
+		std::int32_t sample, std::uint64_t reciprocal_q46,
+		bool &overflow) noexcept;
 
 	AggregationRecordSink &sink_;
 	AggregationHealth &health_;
