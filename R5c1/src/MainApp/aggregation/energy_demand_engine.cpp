@@ -608,7 +608,7 @@ void EnergyDemandEngine::begin_demand(
 		? read_unsigned64(record, TEN_MINUTE_TARGET_SAMPLE_LOW_WORD)
 		: demand_identity_.first_sample;
 	demand_source_interval_count_ = demand_method_ == DemandMethod::fixed_block
-		? record.words[MTR2_SHAPE_WORD] & 0xffffU : 1U;
+		? record.words[AGGREGATE_SHAPE_WORD] & 0xffffU : 1U;
 	demand_source_status_ = record.words[MREC_STATUS_WORD];
 	demand_seen_ = true;
 }
@@ -876,12 +876,12 @@ bool EnergyDemandEngine::finish_sliding_demand(
 	const bool family_complete = demand_seen_ &&
 		same_family(record, demand_identity_) && demand_power_seen_ &&
 		demand_phasor_seen_;
-	const auto shape = demand_seen_ ? record.words[MTR2_SHAPE_WORD] : 0U;
-	const auto nominal = (shape >> MTR2_SHAPE_NOMINAL_LSB) & 0xffU;
+	const auto shape = demand_seen_ ? record.words[AGGREGATE_SHAPE_WORD] : 0U;
+	const auto nominal = (shape >> AGGREGATE_SHAPE_NOMINAL_LSB) & 0xffU;
 	const bool valid_interval = family_complete &&
 		demand_identity_.sample_count != 0U &&
 		(shape & 0xffU) == 15U && (nominal == 50U || nominal == 60U) &&
-		(demand_identity_.status & (1U << MTR2_STATUS_COMPLETE_BIT)) != 0U &&
+		(demand_identity_.status & (1U << AGGREGATE_STATUS_COMPLETE_BIT)) != 0U &&
 		(demand_identity_.status & (1U << MREC_STATUS_ARITHMETIC_BIT)) == 0U &&
 		record.words[MREC_EMIT_DROPS_WORD] == 0U &&
 		record.words[MREC_RESULT_DROPS_WORD] == 0U &&

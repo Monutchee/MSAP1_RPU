@@ -1,18 +1,28 @@
 #include "r5c1_service.hpp"
 
-static_assert(sizeof(msap1_aggregation_health_payload) == 200U,
+#include "power_quality_configuration.hpp"
+
+#include <cstring>
+
+static_assert(sizeof(msap1_aggregation_health_payload) == 216U,
 	"R5C1 aggregation-health wire payload changed unexpectedly");
 static_assert(sizeof(msap1_demand_config_payload) == 12U,
 	"R5C1 demand-configuration wire payload changed unexpectedly");
 static_assert(sizeof(msap1_demand_config_ack_payload) == 16U,
 	"R5C1 demand-configuration ACK changed unexpectedly");
+static_assert(sizeof(msap1_m18_config_payload) == 316U,
+	"R5C1 M18-configuration wire payload changed unexpectedly");
 
 R5c1Service::R5c1Service(const msap1::CoreConfig &config,
 	msap1::aggregation::AggregationHealth &health,
 	msap1::aggregation::AggregationRuntime &runtime,
-	msap1::aggregation::R5AggregationEngine &engine) noexcept
+	msap1::aggregation::R5AggregationEngine &engine,
+	msap1::aggregation::PqEventLifecycleEngine &pq_event_engine,
+	msap1::aggregation::FlickerEngine &flicker_engine,
+	msap1::aggregation::MainsSignalEngine &mains_signal_engine) noexcept
 	: msap1::ControlService(config), health_(health), runtime_(runtime),
-	  engine_(engine)
+	  engine_(engine), pq_event_engine_(pq_event_engine),
+	  flicker_engine_(flicker_engine), mains_signal_engine_(mains_signal_engine)
 {
 }
 
@@ -25,6 +35,32 @@ void R5c1Service::on_endpoint_ready()
 bool R5c1Service::handle_custom(const msap1_rpu_msg_header &request,
 	const void *payload, std::uint16_t payload_len, std::uint32_t src)
 {
+	if (request.type == MSAP1_RPU_MSG_M18_CONFIG_SET) {
+		if (payload_len != sizeof(msap1_m18_config_payload)) {
+			(void)send_response(&request, src, MSAP1_RPU_MSG_ERROR,
+				MSAP1_RPU_STATUS_BAD_PAYLOAD, nullptr, 0U);
+			return true;
+		}
+		msap1_m18_config_payload configuration{};
+		std::memcpy(&configuration, payload, sizeof(configuration));
+		if (!msap1::power_quality::valid_configuration(configuration)) {
+			(void)send_response(&request, src, MSAP1_RPU_MSG_ERROR,
+				MSAP1_RPU_STATUS_BAD_PAYLOAD, nullptr, 0U);
+			return true;
+		}
+		if (!pq_event_engine_.configure(configuration) ||
+			!flicker_engine_.configure(configuration) ||
+			!mains_signal_engine_.configure(configuration)) {
+			(void)send_response(&request, src, MSAP1_RPU_MSG_ERROR,
+				MSAP1_RPU_STATUS_BAD_PAYLOAD, nullptr, 0U);
+			return true;
+		}
+		const msap1_m18_config_ack_payload response{
+			configuration.generation, 0U};
+		(void)send_response(&request, src, MSAP1_RPU_MSG_M18_CONFIG,
+			MSAP1_RPU_STATUS_OK, &response, sizeof(response));
+		return true;
+	}
 	if (request.type == MSAP1_RPU_MSG_DEMAND_CONFIG_SET) {
 		if (payload_len != sizeof(msap1_demand_config_payload)) {
 			(void)send_response(&request, src, MSAP1_RPU_MSG_ERROR,
@@ -140,6 +176,11 @@ bool R5c1Service::handle_custom(const msap1_rpu_msg_header &request,
 	response.validator_max_runtime_us = value.validator_max_runtime_us;
 	response.validator_max_schedule_gap_us =
 		value.validator_max_schedule_gap_us;
+	const auto stacks = runtime_.stack_high_water(xTaskGetCurrentTaskHandle());
+	response.control_stack_high_water_bytes = stacks.control_bytes;
+	response.input_stack_high_water_bytes = stacks.input_bytes;
+	response.output_stack_high_water_bytes = stacks.output_bytes;
+	response.validator_stack_high_water_bytes = stacks.validator_bytes;
 
 	(void)send_response(&request, src, MSAP1_RPU_MSG_AGGREGATION_HEALTH,
 		MSAP1_RPU_STATUS_OK, &response, sizeof(response));

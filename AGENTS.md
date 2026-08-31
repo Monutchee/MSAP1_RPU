@@ -34,17 +34,24 @@
   existing apply toggle, and verifies `GRID_ACTIVE_CONFIG` readback. The RMS
   window register `0x18` remains the PL's free-run fallback window.
 - PL aggregate health registers `0x78`-`0x8C` remain read-only status inputs.
-  One AXI FIFO MM-S carries two exact PL-to-R5C1 packet contracts: the 239-word
-  AGG1 packet (234-word SingleCycle input plus framing/CRC) and the 2,693-word
-  HRM1 packet (one byte-exact 42-record base-harmonic family plus
-  framing/CRC). AGG1 has priority only at whole-packet boundaries. The
+  One AXI FIFO MM-S carries four exact PL-to-R5C1 packet contracts: 239-word
+  AGG1, 69-word PQE1, 1,043-word VSB1 revision 1, and 2,693-word HRM1. VSB1
+  contains ten metadata words, 256 consecutive converted VA/VB/VC samples as
+  signed 32-bit microvolts plus one frame-status word, and four trailer words.
+  Flicker and mains signalling share this one voltage batch; do not duplicate
+  the raw stream or restore a PL-side mains observation packet. Arbitration
+  occurs only at whole-packet boundaries. The
   dedicated validator dispatches by magic and must reject a mixed-image
   contract, malformed family geometry, inconsistent provenance, or CRC error.
   These are exact co-release interfaces, not negotiated protocol versions;
   no legacy decoder is maintained. R5C1 owns Basic, 150/180-cycle,
   10-minute, and 2-hour aggregation for ordinary measurements, plus
   RMS-magnitude plus magnitude-weighted circular-phase 150/180-cycle, UTC
-  10-minute, and 2-hour harmonic aggregation.
+  10-minute, and 2-hour harmonic aggregation. R5C1 also owns Flicker reference
+  normalization, 2 kHz decimation, IEC 61000-4-15 filtering and
+  classification, Pst, Plt, and the unchanged `0x000E0001` public record. It
+  also owns the seven-probe 200 ms mains-signalling estimator and unchanged
+  `0x000F0001` public record; do not restore either retired PL HLS engine.
   It writes complete 256-byte records into the same FIFO's TX side. Aggregate
   measurement data never travels over RPMsg; the FIFO return stream joins the
   existing meter AXIS switch and Linux DMA path. The PL direct harmonic output
@@ -109,7 +116,17 @@
   software input storage. Production firmware must require the FIFO interrupt
   rather than silently falling back to polling. The static transport frame is
   sized to the 2,693-word HRM1 maximum, while the AXI FIFO must hold at least
-  one complete HRM1 packet. Keep large frames out of the worker-task stacks.
+  one complete HRM1 packet. VSB1 arrives at 500 packets/s for the default
+  128-kSPS profile, so retain the bounded four-packet drain and one-tick
+  validator handoff and configure R5C1 for a 1 kHz FreeRTOS tick. The scheduler
+  rate-budget guard must cover all 685 packets/s of coincident private traffic
+  with at least ten percent margin; the default 100 Hz tick is insufficient.
+  Keep large frames, Flicker classifier state, and mains
+  correlation banks out of worker-task stacks; all power-quality state is
+  static `.bss`/`.data` and must not allocate dynamically. Mains signalling
+  validates the full raw stream but bounds its seven-probe correlation at
+  32 kSPS, which preserves the characterized sub-12.5-kHz analogue band and
+  must remain fast enough to run concurrently with Flicker at 128 kSPS.
 - ADC health reports both the measured DCLK rate and the physical
   `ADC_DRDY_N` falling-edge rate. Keep these fields coordinated with the APU
   wire-ABI copy when extending capture diagnostics. Health is not valid until
@@ -117,9 +134,12 @@
 - Runtime sample-rate changes arrive in `METER_CONFIG_SET` while capture is
   stopped. Apply ADC PGA/SRC and PL window configuration as one coordinated
   operating-point transaction; the packaged boot default is 128 kSPS.
-  The 276-byte version-4 config payload ends with `nominal_frequency_hz`
-  (50 or 60 only), which drives the grid-timing registers above; keep the
-  wire header byte-identical with the APU copy when it changes.
+  The RPMsg-v10 meter payload is 352 bytes and includes simulator-v1.5 AM and
+  carrier controls; the separate fixed M18 policy payload is 316 bytes. Both
+  remain below the 384-byte control-frame bound and share one coordinated,
+  nonzero configuration generation. `nominal_frequency_hz` remains 50 or 60
+  only and drives the grid-timing registers above; keep the wire header
+  byte-identical with the APU copy when it changes.
 - Linux and the RPU share a physical UART. Leave `RSPMSG_DEBUG` disabled and do
   not add routine or per-packet UART output. Prefer RPMsg health/status queries.
 
@@ -163,11 +183,11 @@ vitis -s scripts/create_platform_from_xsa.py -- --force
 ```
 
 - Do not hand-edit generated `platform/`, BSP, export, or workspace metadata.
-- Keep `-fstack-usage` enabled for R5C1. Every M17 frame must remain below
-  1 KiB, the post-link gate must leave at least 1 MiB in each firmware
-  reservation, and named accumulator objects must resolve to `.bss` or
-  `.data`. Target acceptance additionally requires at least 2 KiB measured
-  task-stack high-water headroom.
+- Keep `-fstack-usage` enabled for R5C1. Every guarded M17/M18 aggregation
+  frame must remain below 1 KiB, the post-link gate must leave at least 1 MiB
+  in each firmware reservation, and named accumulator objects must resolve to
+  `.bss` or `.data`. Target acceptance additionally requires at least 2 KiB
+  measured task-stack high-water headroom.
 - After ADC/RPMsg changes, build R5c0 and execute the target procedure in the
   APU repository. Confirm SPI health, meter DMA progress, matching
   configuration generations, zero overflow, a responsive control endpoint,

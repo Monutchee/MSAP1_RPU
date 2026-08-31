@@ -17,6 +17,10 @@
 #include "aggregation/aggregation_health.hpp"
 #include "aggregation/harmonic_aggregation_engine.hpp"
 #include "aggregation/harmonic_frame_decoder.hpp"
+#include "aggregation/flicker_engine.hpp"
+#include "aggregation/mains_signal_engine.hpp"
+#include "aggregation/pq_event_frame_decoder.hpp"
+#include "aggregation/pq_event_lifecycle_engine.hpp"
 #include "aggregation/aggregation_output_service.hpp"
 #include "aggregation/aggregation_record_ring.hpp"
 #include "aggregation/aggregation_runtime.hpp"
@@ -24,6 +28,7 @@
 #include "aggregation/r5_session_id.hpp"
 #include "aggregation/aggregation_shadow_service.hpp"
 #include "aggregation/axi_fifo_aggregation_transport.hpp"
+#include "aggregation/voltage_sample_frame_decoder.hpp"
 
 #ifndef MNC_R5_AGGREGATION_EMIT_OUTPUT
 #define MNC_R5_AGGREGATION_EMIT_OUTPUT 1
@@ -43,6 +48,8 @@ static msap1::aggregation::AxiFifoAggregationTransport aggregation_transport;
 static msap1::aggregation::AggregationFrameRing aggregation_ring;
 static msap1::aggregation::AggregationFrameDecoder aggregation_decoder;
 static msap1::aggregation::HarmonicFrameDecoder harmonic_decoder;
+static msap1::aggregation::PqEventFrameDecoder pq_event_decoder;
+static msap1::aggregation::VoltageSampleFrameDecoder voltage_sample_decoder;
 static msap1::aggregation::AggregationRecordRing aggregation_output_ring;
 static msap1::aggregation::AggregationOutputService aggregation_output(
 	aggregation_transport, aggregation_output_ring, aggregation_health);
@@ -51,13 +58,22 @@ static msap1::aggregation::R5AggregationEngine aggregation_engine(
 	aggregation_output_mode);
 static msap1::aggregation::HarmonicAggregationEngine harmonic_engine(
 	aggregation_output, aggregation_health);
+static msap1::aggregation::PqEventLifecycleEngine pq_event_engine(
+	aggregation_output, aggregation_health);
+static msap1::aggregation::FlickerEngine flicker_engine(
+	aggregation_output, aggregation_health);
+static msap1::aggregation::MainsSignalEngine mains_signal_engine(
+	aggregation_output, aggregation_health);
 static msap1::aggregation::AggregationShadowService aggregation_shadow(
 	aggregation_transport, aggregation_ring, aggregation_decoder,
-	aggregation_engine, harmonic_decoder, harmonic_engine, aggregation_health);
+	aggregation_engine, harmonic_decoder, harmonic_engine, pq_event_decoder,
+	pq_event_engine, voltage_sample_decoder, flicker_engine,
+	mains_signal_engine, aggregation_health);
 static msap1::aggregation::AggregationRuntime aggregation_runtime(
 	aggregation_shadow, aggregation_output, aggregation_health);
 static R5c1Service service(msap1::CoreConfig::current(), aggregation_health,
-	aggregation_runtime, aggregation_engine);
+	aggregation_runtime, aggregation_engine, pq_event_engine, flicker_engine,
+	mains_signal_engine);
 
 static TaskHandle_t comm_task_handle;
 
@@ -84,8 +100,9 @@ int main(void)
 	/* All BSP constructors, including timer setup, have completed by main().
 	 * Generating this from another global constructor made its inputs
 	 * deterministic and repeated the session across full device reboots. */
-	if (!aggregation_engine.configure_session_id(
-		msap1::aggregation::generate_r5_session_id()))
+	const auto session_id = msap1::aggregation::generate_r5_session_id();
+	if (!aggregation_engine.configure_session_id(session_id) ||
+		!pq_event_engine.configure_session_id(session_id))
 		return -1;
 
 	/* Keep the control plane independent so FIFO failure cannot remove Linux

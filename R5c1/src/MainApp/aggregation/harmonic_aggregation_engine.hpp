@@ -25,7 +25,13 @@ public:
 	[[nodiscard]] bool ready() const noexcept { return ready_; }
 
 private:
+	friend struct HarmonicAggregationEngineTestAccess;
+
 	struct WideUnsigned final {
+		std::uint64_t high{};
+		std::uint64_t low{};
+	};
+	struct WideSigned final {
 		std::uint64_t high{};
 		std::uint64_t low{};
 	};
@@ -35,7 +41,6 @@ private:
 		bool magnitude_valid{};
 		bool angle_valid{};
 	};
-	using PhaseSum = ap_int<128>;
 	static constexpr std::size_t point_count =
 		HarmonicProtocol::channels * HarmonicProtocol::maximum_order;
 
@@ -54,8 +59,8 @@ private:
 
 		std::array<WideUnsigned, point_count> square_sum{};
 		std::array<std::uint8_t, point_count> valid{};
-		std::array<PhaseSum, point_count> phase_real{};
-		std::array<PhaseSum, point_count> phase_imag{};
+		std::array<WideSigned, point_count> phase_real{};
+		std::array<WideSigned, point_count> phase_imag{};
 		std::array<std::uint8_t, point_count> angle_valid{};
 		std::uint32_t contributors{};
 		std::uint32_t configuration_generation{};
@@ -99,13 +104,24 @@ private:
 		std::uint32_t divisor) noexcept;
 	[[nodiscard]] static bool less_equal(WideUnsigned left,
 		WideUnsigned right) noexcept;
+	[[nodiscard]] static std::uint32_t atan2_millidegrees(
+		std::int64_t imaginary, std::int64_t real) noexcept;
+	[[nodiscard]] static std::int64_t sine_q37(std::uint32_t phase) noexcept;
+	static void add_phase_product(WideSigned &sum, std::uint64_t magnitude,
+		std::int64_t component) noexcept;
+	static void add_phase_sum(WideSigned &sum,
+		const WideSigned &source) noexcept;
+	[[nodiscard]] static WideUnsigned phase_absolute(
+		const WideSigned &value) noexcept;
+	[[nodiscard]] static std::int64_t shifted_phase(
+		const WideSigned &value, unsigned shift) noexcept;
 	[[nodiscard]] static HarmonicPoint base_point(
 		const HarmonicInputView &input, std::size_t channel,
 		std::size_t order_index) noexcept;
 	static void accumulate_phase(TierAccumulator &tier, std::size_t point,
 		std::uint64_t magnitude, std::uint32_t angle_millidegrees) noexcept;
-	[[nodiscard]] static bool finalize_phase(const PhaseSum &real,
-		const PhaseSum &imag, std::uint32_t &angle_millidegrees) noexcept;
+	[[nodiscard]] static bool finalize_phase(const WideSigned &real,
+		const WideSigned &imag, std::uint32_t &angle_millidegrees) noexcept;
 	[[nodiscard]] bool accept_sequence(const HarmonicInputView &input) noexcept;
 
 	AggregationRecordSink &sink_;

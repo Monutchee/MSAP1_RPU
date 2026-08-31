@@ -60,7 +60,9 @@ private:
 			       std::uint16_t payload_len, std::uint32_t src);
 	bool handle_meter_config(const msap1_rpu_msg_header &request,
 				 const void *payload,
-				 std::uint16_t payload_len, std::uint32_t src);
+		std::uint16_t payload_len, std::uint32_t src);
+	bool handle_m18_config(const msap1_rpu_msg_header &request,
+		const void *payload, std::uint16_t payload_len, std::uint32_t src);
 	bool handle_adc_diagnostic(const msap1_rpu_msg_header &request,
 				   const void *payload,
 				   std::uint16_t payload_len,

@@ -6,17 +6,17 @@
 //
 // The bench synthesizes whole grid cycles the way the single-cycle engine
 // would emit them (per-cycle sufficient statistics packed into SCYC-v5
-// result beats), tracks the SAME per-sample accumulation a Mtr1Engine
+// result beats), tracks the same per-sample Basic accumulation
 // block would have built, and checks the finalized record and basic beat
-// EXACTLY against an integer golden model implementing the retired Mtr1
+// exactly against an integer golden model implementing the Basic
 // arithmetic (trunc-toward-zero mean, floor variance, restoring integer
 // root). Values agreeing exactly here — same accumulators in, same
-// primitives through — is the Mtr1 retirement proof.
+// primitives through — proves exact Basic-record compatibility.
 //
 // Block rules covered: 12 @ 60 Hz and 10 @ 50 Hz, APPLY commit and mark,
 // upstream first-after-gap restart, result/cycle sequence breaks, stale
 // generation, nominal change, lock/fallback flag reduction, sticky
-// arithmetic flag, VLL merge, Mtr2-contract beat fields.
+// arithmetic flag, VLL merge, and aggregate-contract beat fields.
 //
 // M9: the bench synthesizes fundamental phasors per lane (amplitude +
 // phase, llround'd once to exact integer mean-phasor components) and
@@ -59,6 +59,21 @@
 #ifndef MNC_REQUIRE_M15_INVALIDATION_MATRIX
 #define MNC_REQUIRE_M15_INVALIDATION_MATRIX 0
 #endif
+
+// M18 reserves 0x000E/0x000F for finalized flicker/mains records, so the
+// pre-production M15 previews must remain on their migrated identities in the
+// exact R5C1 build contract consumed from the PL common header.
+static_assert(MREC_FORMAT_OPEN_TEN_MINUTE_V1 == 0x00200001u &&
+                  MREC_FORMAT_OPEN_TEN_MINUTE_POWER_V1 == 0x00210001u &&
+                  MREC_FORMAT_OPEN_TEN_MINUTE_PHASOR_V2 == 0x00220002u &&
+                  MREC_FORMAT_OPEN_TEN_MINUTE_UNBAL_V2 == 0x00230002u);
+static_assert(MREC_FORMAT_OPEN_TWO_HOUR_V1 == 0x00240001u &&
+                  MREC_FORMAT_OPEN_TWO_HOUR_POWER_V1 == 0x00250001u &&
+                  MREC_FORMAT_OPEN_TWO_HOUR_PHASOR_V2 == 0x00260002u &&
+                  MREC_FORMAT_OPEN_TWO_HOUR_UNBAL_V2 == 0x00270002u);
+static_assert(MREC_FORMAT_PQ_EVENT_V1 == 0x00060001u &&
+                  MREC_FORMAT_FLICKER_V1 == 0x000E0001u &&
+                  MREC_FORMAT_MAINS_SIGNAL_V1 == 0x000F0001u);
 
 static int failures = 0;
 static std::FILE *completed_trace = nullptr;
@@ -112,7 +127,7 @@ static void trace_completed_record(unsigned char stream,
 }
 
 // ---------------------------------------------------------------------------
-// Integer golden model of the retired Mtr1 finalize (exact).
+// Integer golden model of the Basic interval finalize (exact).
 // ---------------------------------------------------------------------------
 static unsigned __int128 golden_isqrt(unsigned __int128 value) {
   unsigned __int128 root = 0;
@@ -694,7 +709,7 @@ int main() {
   ap_uint<32> words[MREC_WORDS];
   CycleSpec c;
 
-  // --- 12 @ 60 Hz: exact Mtr1-equivalence over a full block. -------------
+  // --- 12 @ 60 Hz: exact Basic-record equivalence over a full block. -----
   {
     GoldenBlock g;
     run_block(b, c, 12, g, /*apply_on_first=*/true);
@@ -709,11 +724,11 @@ int main() {
           "block first-sample anchor");
     CHECK(words[BASIC_LAST_SAMPLE_LOW_WORD] == 1000 + g.count - 1,
           "block last-sample anchor");
-    CHECK(words[MTR1_TIMING_WORD] ==
-              (60u | (12u << MTR1_TIMING_CYCLES_LSB) |
-               (0x5u << MTR1_TIMING_FLAGS_LSB)),
+    CHECK(words[BASIC_TIMING_WORD] ==
+              (60u | (12u << BASIC_TIMING_CYCLES_LSB) |
+               (0x5u << BASIC_TIMING_FLAGS_LSB)),
           "timing word: nominal 60, 12 cycles, locked+first, got 0x%08x",
-          (unsigned)words[MTR1_TIMING_WORD]);
+          (unsigned)words[BASIC_TIMING_WORD]);
     CHECK((words[MREC_STATUS_WORD] & 0x5u) == 0x4u,
           "first block: gap mark set, no overflow, got 0x%x",
           (unsigned)words[MREC_STATUS_WORD]);
@@ -728,18 +743,18 @@ int main() {
           golden_rms_q16(g.square[lane], g.sum[lane], g.count, true);
       const unsigned long long raw_rms =
           golden_rms_q16(g.raw_square[lane], g.raw_sum[lane], g.count, true);
-      const int base = MTR1_CH_BASE_WORD + lane * MTR1_CH_STRIDE_WORDS;
+      const int base = BASIC_CH_BASE_WORD + lane * BASIC_CH_STRIDE_WORDS;
       const long long got_mean =
-          (long long)((unsigned long long)words[base + MTR1_CH_MEAN_LOW] |
-                      ((unsigned long long)words[base + MTR1_CH_MEAN_HIGH]
+          (long long)((unsigned long long)words[base + BASIC_CH_MEAN_LOW] |
+                      ((unsigned long long)words[base + BASIC_CH_MEAN_HIGH]
                        << 32));
       const unsigned long long got_rms =
-          (unsigned long long)words[base + MTR1_CH_RMS_LOW] |
-          ((unsigned long long)words[base + MTR1_CH_RMS_HIGH] << 32);
+          (unsigned long long)words[base + BASIC_CH_RMS_LOW] |
+          ((unsigned long long)words[base + BASIC_CH_RMS_HIGH] << 32);
       CHECK(got_mean == mean_units, "lane %d mean exact", lane);
-      CHECK(got_rms == (rms_q16 >> 16), "lane %d RMS exact (Mtr1 proof)",
+      CHECK(got_rms == (rms_q16 >> 16), "lane %d Basic RMS exact",
             lane);
-      CHECK((unsigned long long)words[base + MTR1_CH_RMS_COUNT] ==
+      CHECK((unsigned long long)words[base + BASIC_CH_RMS_COUNT] ==
                 (raw_rms & 0xFFFFFFFFull),
             "lane %d raw RMS counts exact", lane);
       /* retired with the block-result beat: acc128_equal(ap_uint<128>(r.sum[lane]), (unsigned __int128)g */ (void)0;
@@ -751,15 +766,15 @@ int main() {
                 (vll_q16 >> 16),
             "pair %d VLL RMS exact", pair);
     }
-    CHECK(words[MTR1_FREQUENCY_VALUE_WORD] == c.freq_mhz &&
-              words[MTR1_FREQUENCY_STATUS_WORD] == 0x2 &&
-              words[MTR1_FREQUENCY_PERIOD_WORD] == 0x00010000 &&
-              words[MTR1_FREQUENCY_SEQUENCE_WORD] == 42,
+    CHECK(words[BASIC_FREQUENCY_VALUE_WORD] == c.freq_mhz &&
+              words[BASIC_FREQUENCY_STATUS_WORD] == 0x2 &&
+              words[BASIC_FREQUENCY_PERIOD_WORD] == 0x00010000 &&
+              words[BASIC_FREQUENCY_SEQUENCE_WORD] == 42,
           "frequency context words");
-    CHECK(words[MTR1_CAPTURE_FRAMES_WORD] == 111 &&
-              words[MTR1_HEADER_ERRORS_WORD] == 1 &&
-              words[MTR1_FIFO_OVERFLOWS_WORD] == 2 &&
-              words[MTR1_ADC_ALERTS_WORD] == 3,
+    CHECK(words[BASIC_CAPTURE_FRAMES_WORD] == 111 &&
+              words[BASIC_HEADER_ERRORS_WORD] == 1 &&
+              words[BASIC_FIFO_OVERFLOWS_WORD] == 2 &&
+              words[BASIC_ADC_ALERTS_WORD] == 3,
           "capture context words");
 
     // ---- POWER-v1 companion record: exact goldens. ----------------------
@@ -768,7 +783,7 @@ int main() {
     CHECK(pw[MREC_SEQUENCE_WORD] == 1 && pw[MREC_SAMPLE_COUNT_WORD] == g.count &&
               pw[MREC_FIRST_SAMPLE_LOW_WORD] == 1000 &&
               pw[MREC_STATUS_WORD] == words[MREC_STATUS_WORD] &&
-              pw[MTR1_TIMING_WORD] == words[MTR1_TIMING_WORD] &&
+              pw[BASIC_TIMING_WORD] == words[BASIC_TIMING_WORD] &&
               pw[BASIC_LAST_SAMPLE_LOW_WORD] ==
                   words[BASIC_LAST_SAMPLE_LOW_WORD],
           "power record shares the block's envelope");
@@ -826,7 +841,7 @@ int main() {
     CHECK(ph[MREC_SEQUENCE_WORD] == 1 &&
               ph[MREC_SAMPLE_COUNT_WORD] == g.count &&
               ph[MREC_FIRST_SAMPLE_LOW_WORD] == 1000 &&
-              ph[MTR1_TIMING_WORD] == words[MTR1_TIMING_WORD] &&
+              ph[BASIC_TIMING_WORD] == words[BASIC_TIMING_WORD] &&
               ph[BASIC_LAST_SAMPLE_LOW_WORD] ==
                   words[BASIC_LAST_SAMPLE_LOW_WORD],
           "phasor record shares the block's envelope");
@@ -930,7 +945,7 @@ int main() {
     take_unbalance_record(b, ub);
     CHECK(ub[MREC_SEQUENCE_WORD] == 1 &&
               ub[MREC_STATUS_WORD] == ph[MREC_STATUS_WORD] &&
-              ub[MTR1_TIMING_WORD] == words[MTR1_TIMING_WORD] &&
+              ub[BASIC_TIMING_WORD] == words[BASIC_TIMING_WORD] &&
               ub[BASIC_LAST_SAMPLE_LOW_WORD] ==
                   words[BASIC_LAST_SAMPLE_LOW_WORD],
           "unbalance record shares the block's envelope");
@@ -1409,30 +1424,30 @@ int main() {
     CHECK(aw[MREC_SAMPLE_COUNT_WORD] == ga.count,
           "interval sample count %u, golden %u",
           (unsigned)aw[MREC_SAMPLE_COUNT_WORD], ga.count);
-    CHECK(aw[MTR2_SHAPE_WORD] ==
-              (ap_uint<32>(MET_BASIC_BLOCKS_PER_AGGREGATE) << MTR2_SHAPE_BLOCKS_LSB |
-               ap_uint<32>(60) << MTR2_SHAPE_NOMINAL_LSB |
-               ap_uint<32>(ga.cycles) << MTR2_SHAPE_CYCLES_LSB),
+    CHECK(aw[AGGREGATE_SHAPE_WORD] ==
+              (ap_uint<32>(MET_BASIC_BLOCKS_PER_AGGREGATE) << AGGREGATE_SHAPE_BLOCKS_LSB |
+               ap_uint<32>(60) << AGGREGATE_SHAPE_NOMINAL_LSB |
+               ap_uint<32>(ga.cycles) << AGGREGATE_SHAPE_CYCLES_LSB),
           "interval shape word 0x%08x (blocks/nominal/cycles)",
-          (unsigned)aw[MTR2_SHAPE_WORD]);
+          (unsigned)aw[AGGREGATE_SHAPE_WORD]);
 
     // Folded basic-sequence range (words 14/15). This check exists because
     // its ABSENCE let a real bug through: when A1 deferred the interval
     // pass to the next invocation, `a3s_agg_last_seq` was a non-static
     // local and re-initialised to 0 in between, so every aggregate record
-    // carried MTR2_LAST_BASIC_SEQ_WORD = 0. The differential harness caught
+    // carried AGGREGATE_LAST_BASIC_SEQ_WORD = 0. The differential harness caught
     // it; this bench had no opinion. Provenance words need assertions too,
     // not just values.
-    CHECK(aw[MTR2_FIRST_BASIC_SEQ_WORD] != 0 &&
-              aw[MTR2_LAST_BASIC_SEQ_WORD] != 0,
+    CHECK(aw[AGGREGATE_FIRST_BASIC_SEQ_WORD] != 0 &&
+              aw[AGGREGATE_LAST_BASIC_SEQ_WORD] != 0,
           "interval must carry both folded basic sequences, got %u..%u",
-          (unsigned)aw[MTR2_FIRST_BASIC_SEQ_WORD],
-          (unsigned)aw[MTR2_LAST_BASIC_SEQ_WORD]);
-    CHECK(aw[MTR2_LAST_BASIC_SEQ_WORD] - aw[MTR2_FIRST_BASIC_SEQ_WORD] ==
+          (unsigned)aw[AGGREGATE_FIRST_BASIC_SEQ_WORD],
+          (unsigned)aw[AGGREGATE_LAST_BASIC_SEQ_WORD]);
+    CHECK(aw[AGGREGATE_LAST_BASIC_SEQ_WORD] - aw[AGGREGATE_FIRST_BASIC_SEQ_WORD] ==
               MET_BASIC_BLOCKS_PER_AGGREGATE - 1,
           "folded basic range must span exactly 15 blocks: %u..%u",
-          (unsigned)aw[MTR2_FIRST_BASIC_SEQ_WORD],
-          (unsigned)aw[MTR2_LAST_BASIC_SEQ_WORD]);
+          (unsigned)aw[AGGREGATE_FIRST_BASIC_SEQ_WORD],
+          (unsigned)aw[AGGREGATE_LAST_BASIC_SEQ_WORD]);
 
     // Per-lane interval RMS: the whole-interval finalize of the summed
     // accumulators, mean-corrected under the committed dc_remove.
@@ -1440,7 +1455,7 @@ int main() {
       const unsigned long long rms_q16 =
           golden_rms_q16(ga.square[lane], ga.sum[lane], ga.count, true);
       const unsigned long long got =
-          (unsigned long long)aw[MTR2_CH_BASE_WORD + lane * MTR2_CH_STRIDE_WORDS];
+          (unsigned long long)aw[AGGREGATE_CH_BASE_WORD + lane * AGGREGATE_CH_STRIDE_WORDS];
       CHECK(got == (rms_q16 >> 16),
             "interval lane %d RMS %llu, golden %llu", lane, got, rms_q16 >> 16);
     }
@@ -1473,7 +1488,7 @@ int main() {
                    MREC_FORMAT_OPEN_TEN_MINUTE_POWER_V1,
                    MREC_FORMAT_OPEN_TEN_MINUTE_PHASOR_V2,
                    MREC_FORMAT_OPEN_TEN_MINUTE_UNBAL_V2);
-    CHECK((aw[MTR2_SHAPE_WORD] & 0xFFFFu) >=
+    CHECK((aw[AGGREGATE_SHAPE_WORD] & 0xFFFFu) >=
               MET_BASIC_BLOCKS_PER_AGGREGATE,
           "open ten-minute preview reports accumulated Basic blocks");
     CHECK(b.m_agg.empty(), "open ten-minute preview emits one record quad");
@@ -1560,12 +1575,12 @@ int main() {
     CHECK(tw[MREC_SAMPLE_COUNT_WORD] == ten_minute_golden.count,
           "ten-minute sample count %u, golden %u",
           (unsigned)tw[MREC_SAMPLE_COUNT_WORD], ten_minute_golden.count);
-    CHECK((tw[MTR2_SHAPE_WORD] & 0xFFFFu) == 2u,
+    CHECK((tw[AGGREGATE_SHAPE_WORD] & 0xFFFFu) == 2u,
           "ten-minute shape carries two folded blocks");
-    CHECK(((tw[MTR2_SHAPE_WORD] >> TEN_MINUTE_SHAPE_NOMINAL_LSB) & 0xFFu) ==
+    CHECK(((tw[AGGREGATE_SHAPE_WORD] >> TEN_MINUTE_SHAPE_NOMINAL_LSB) & 0xFFu) ==
               60u,
           "ten-minute shape carries nominal frequency");
-    CHECK(((tw[MTR2_SHAPE_WORD] >> TEN_MINUTE_SHAPE_FLAGS_LSB) &
+    CHECK(((tw[AGGREGATE_SHAPE_WORD] >> TEN_MINUTE_SHAPE_FLAGS_LSB) &
            (1u << TEN_MINUTE_FLAG_CONTAMINATED_BIT)) != 0,
           "first programmed interval is marked contaminated");
     CHECK((tw[MREC_STATUS_WORD] &
@@ -1577,7 +1592,7 @@ int main() {
     CHECK((tw[MREC_STATUS_WORD] &
            (1u << TEN_MINUTE_STATUS_BOUNDARY_VALID_BIT)) != 0,
           "ten-minute record carries a valid UTC boundary");
-    CHECK(tw[MTR2_FREQUENCY_WORD] == 0,
+    CHECK(tw[AGGREGATE_FREQUENCY_WORD] == 0,
           "ten-minute frequency is unavailable by definition");
     CHECK(tw[TEN_MINUTE_TOTAL_CYCLES_WORD] == 24u,
           "ten-minute record carries complete cycle count");
@@ -1715,7 +1730,7 @@ int main() {
                        MREC_FORMAT_OPEN_TWO_HOUR_POWER_V1,
                        MREC_FORMAT_OPEN_TWO_HOUR_PHASOR_V2,
                        MREC_FORMAT_OPEN_TWO_HOUR_UNBAL_V2);
-        CHECK((hw[MTR2_SHAPE_WORD] & 0xFFFFu) == interval,
+        CHECK((hw[AGGREGATE_SHAPE_WORD] & 0xFFFFu) == interval,
               "open two-hour preview reports %u completed inputs", interval);
         CHECK(b.m_agg.empty(),
               "open two-hour preview emits one record quad");
@@ -1735,10 +1750,10 @@ int main() {
     CHECK(hw[MREC_SAMPLE_COUNT_WORD] == two_hour_golden.count,
           "two-hour sample count %u, golden %u",
           (unsigned)hw[MREC_SAMPLE_COUNT_WORD], two_hour_golden.count);
-    CHECK((hw[MTR2_SHAPE_WORD] & 0xFFFFu) == 12u,
+    CHECK((hw[AGGREGATE_SHAPE_WORD] & 0xFFFFu) == 12u,
           "two-hour shape carries twelve ten-minute inputs");
-    CHECK(hw[MTR2_FIRST_BASIC_SEQ_WORD] == first_clean_t10m_sequence &&
-              hw[MTR2_LAST_BASIC_SEQ_WORD] == last_clean_t10m_sequence,
+    CHECK(hw[AGGREGATE_FIRST_BASIC_SEQ_WORD] == first_clean_t10m_sequence &&
+              hw[AGGREGATE_LAST_BASIC_SEQ_WORD] == last_clean_t10m_sequence,
           "two-hour provenance spans ten-minute sequences %u..%u",
           first_clean_t10m_sequence, last_clean_t10m_sequence);
     const unsigned long long got_first_sample =
@@ -1751,7 +1766,7 @@ int main() {
               got_last_sample == last_clean_sample,
           "two-hour sample domain is contiguous %llu..%llu",
           first_clean_sample, last_clean_sample);
-    CHECK(hw[MTR2_FREQUENCY_WORD] == 0,
+    CHECK(hw[AGGREGATE_FREQUENCY_WORD] == 0,
           "two-hour frequency is unavailable by definition");
     CHECK(hw[TEN_MINUTE_TOTAL_CYCLES_WORD] == 12u * 12u,
           "two-hour record carries 144 contributing cycles");
@@ -1760,8 +1775,8 @@ int main() {
           two_hour_golden.square[lane], two_hour_golden.sum[lane],
           two_hour_golden.count, true);
       const unsigned long long got =
-          (unsigned long long)hw[MTR2_CH_BASE_WORD +
-                                 lane * MTR2_CH_STRIDE_WORDS];
+          (unsigned long long)hw[AGGREGATE_CH_BASE_WORD +
+                                 lane * AGGREGATE_CH_STRIDE_WORDS];
       CHECK(got == (rms_q16 >> 16),
             "two-hour lane %d RMS %llu, golden %llu", lane, got,
             rms_q16 >> 16);
@@ -2052,15 +2067,15 @@ int main() {
         sample_counts[aggregate_count] =
             (unsigned)words[MREC_SAMPLE_COUNT_WORD];
         first_sequences[aggregate_count] =
-            (unsigned)words[MTR2_FIRST_BASIC_SEQ_WORD];
+            (unsigned)words[AGGREGATE_FIRST_BASIC_SEQ_WORD];
         last_sequences[aggregate_count] =
-            (unsigned)words[MTR2_LAST_BASIC_SEQ_WORD];
+            (unsigned)words[AGGREGATE_LAST_BASIC_SEQ_WORD];
         for (int lane = 0; lane < MET_ACTIVE_CHANNELS; ++lane) {
           rms_values[aggregate_count * MET_ACTIVE_CHANNELS + lane] =
               (unsigned long long)
-                  words[MTR2_CH_BASE_WORD + lane * MTR2_CH_STRIDE_WORDS] |
+                  words[AGGREGATE_CH_BASE_WORD + lane * AGGREGATE_CH_STRIDE_WORDS] |
               ((unsigned long long)
-                   words[MTR2_CH_BASE_WORD + lane * MTR2_CH_STRIDE_WORDS + 1]
+                   words[AGGREGATE_CH_BASE_WORD + lane * AGGREGATE_CH_STRIDE_WORDS + 1]
                << 32);
         }
       }
@@ -2124,8 +2139,8 @@ int main() {
               (unsigned long long)words[BASIC_LAST_SAMPLE_LOW_WORD] |
               ((unsigned long long)words[BASIC_LAST_SAMPLE_HIGH_WORD] << 32);
         }
-        if (words[MTR1_TIMING_WORD].bit(
-                MTR1_TIMING_UTC_RESYNCHRONIZED_BIT)) {
+        if (words[BASIC_TIMING_WORD].bit(
+                BASIC_TIMING_UTC_RESYNCHRONIZED_BIT)) {
           ++synchronized_count;
         }
         ++basic_count;
@@ -2265,15 +2280,15 @@ int main() {
         "UTC-spanning 150/180-cycle aggregate ranges must overlap");
   CHECK(aggregate_count >= 2u &&
             (aggregate_status[0] &
-             (1u << MTR2_STATUS_UTC_OVERLAP_BIT)) != 0u &&
+             (1u << AGGREGATE_STATUS_UTC_OVERLAP_BIT)) != 0u &&
             (aggregate_status[0] &
-             (1u << MTR2_STATUS_UTC_RESYNCHRONIZED_BIT)) == 0u,
+             (1u << AGGREGATE_STATUS_UTC_RESYNCHRONIZED_BIT)) == 0u,
         "continuing 150/180-cycle aggregate must carry UTC-overlap provenance");
   CHECK(aggregate_count >= 2u &&
             (aggregate_status[1] &
-             (1u << MTR2_STATUS_UTC_RESYNCHRONIZED_BIT)) != 0u &&
+             (1u << AGGREGATE_STATUS_UTC_RESYNCHRONIZED_BIT)) != 0u &&
             (aggregate_status[1] &
-             (1u << MTR2_STATUS_UTC_OVERLAP_BIT)) == 0u,
+             (1u << AGGREGATE_STATUS_UTC_OVERLAP_BIT)) == 0u,
         "new 150/180-cycle aggregate must carry UTC-resynchronized provenance");
   CHECK(aggregate_count >= 2u &&
             aggregate_last_sequence[0] - aggregate_first_sequence[0] ==

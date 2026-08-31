@@ -4,7 +4,23 @@ namespace msap1::aggregation {
 
 namespace {
 
-constexpr configSTACK_DEPTH_TYPE worker_stack_depth = 2048U;
+constexpr configSTACK_DEPTH_TYPE io_worker_stack_depth = 2048U;
+/* The validator owns the M18 fixed-point engines and needs a measured 2 KiB
+ * guard after their deepest call path, not merely after the I/O workers. */
+constexpr configSTACK_DEPTH_TYPE validator_stack_depth = 2560U;
+
+static_assert(configUSE_TRACE_FACILITY == 1,
+	"runtime stack telemetry requires FreeRTOS trace task snapshots");
+
+std::uint32_t stack_high_water_bytes(TaskHandle_t task) noexcept
+{
+	if (task == nullptr)
+		return 0U;
+	TaskStatus_t status{};
+	vTaskGetInfo(task, &status, pdTRUE, eInvalid);
+	return static_cast<std::uint32_t>(status.usStackHighWaterMark) *
+		sizeof(StackType_t);
+}
 
 /*
  * The hardware receiver is highest so CPU-heavy aggregation can never prevent
@@ -42,11 +58,11 @@ bool AggregationRuntime::start() noexcept
 	 * transaction completes (or deletes every partial task) before a new worker
 	 * can consume shared state.
 	 */
-	if (xTaskCreate(input_task_entry, "AGG_RX", worker_stack_depth, this,
+	if (xTaskCreate(input_task_entry, "AGG_RX", io_worker_stack_depth, this,
 			input_priority, &input_task_) != pdPASS ||
-		xTaskCreate(output_task_entry, "AGG_TX", worker_stack_depth, this,
+		xTaskCreate(output_task_entry, "AGG_TX", io_worker_stack_depth, this,
 			output_priority, &output_task_) != pdPASS ||
-		xTaskCreate(validator_task_entry, "AGG_VAL", worker_stack_depth, this,
+		xTaskCreate(validator_task_entry, "AGG_VAL", validator_stack_depth, this,
 			validator_priority, &validator_task_) != pdPASS) {
 		discard_partial_start();
 		health_.set_transport_initialized(false);
@@ -60,6 +76,17 @@ bool AggregationRuntime::start() noexcept
 	started_ = true;
 	xTaskNotifyGive(input_task_);
 	return true;
+}
+
+AggregationStackHighWater AggregationRuntime::stack_high_water(
+	TaskHandle_t control_task) const noexcept
+{
+	return {
+		stack_high_water_bytes(control_task),
+		stack_high_water_bytes(input_task_),
+		stack_high_water_bytes(output_task_),
+		stack_high_water_bytes(validator_task_),
+	};
 }
 
 void AggregationRuntime::discard_partial_start() noexcept

@@ -64,6 +64,24 @@ std::uint32_t apply_meter_config(
 	     word < simulator_configuration.harmonic_words.size(); ++word)
 		simulator_configuration.harmonic_words[word] =
 			wire.simulator_harmonics[word];
+	simulator_configuration.am_frequency_millihz =
+		wire.simulator_am_frequency_millihz;
+	simulator_configuration.am_depth_q16 = wire.simulator_am_depth_q16;
+	simulator_configuration.am_channel_mask = wire.simulator_am_channel_mask;
+	simulator_configuration.carrier_frequency_millihz =
+		wire.simulator_carrier_frequency_millihz;
+	simulator_configuration.carrier_fraction_q16 =
+		wire.simulator_carrier_fraction_q16;
+	simulator_configuration.carrier_phase_mask =
+		wire.simulator_carrier_phase_mask;
+	simulator_configuration.carrier_phase_q32 =
+		wire.simulator_carrier_phase_q32;
+	simulator_configuration.adjacent_frequency_millihz =
+		wire.simulator_adjacent_frequency_millihz;
+	simulator_configuration.adjacent_fraction_q16 =
+		wire.simulator_adjacent_fraction_q16;
+	simulator_configuration.adjacent_phase_q32 =
+		wire.simulator_adjacent_phase_q32;
 	const auto source = wire.adc_source == MSAP1_ADC_SOURCE_SIMULATOR ?
 		msap1::adc::Source::Simulator : msap1::adc::Source::Physical;
 	const auto adc_error = adc.configure(source, adc_configuration,

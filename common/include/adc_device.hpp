@@ -52,6 +52,16 @@ struct SimulatorConfiguration {
 	 * register layout: ratio Q16.16; mask | fraction_q16<<16; phase
 	 * Q0.32). All-zero slots are disabled. */
 	std::array<std::uint32_t, 12> harmonic_words{};
+	std::uint32_t am_frequency_millihz = 0;
+	std::uint32_t am_depth_q16 = 0;
+	std::uint32_t am_channel_mask = 0;
+	std::uint32_t carrier_frequency_millihz = 0;
+	std::uint32_t carrier_fraction_q16 = 0;
+	std::uint32_t carrier_phase_mask = 0;
+	std::uint32_t carrier_phase_q32 = 0;
+	std::uint32_t adjacent_frequency_millihz = 0;
+	std::uint32_t adjacent_fraction_q16 = 0;
+	std::uint32_t adjacent_phase_q32 = 0;
 };
 
 /*

@@ -33,6 +33,7 @@ DEFAULT_XSA = PROJECT_ROOT.parent / "runtime-generated" / "bin_file" / "MSAP1_PL
 PLATFORM_NAME = "platform"
 
 OS_CONFIG_PARAMS = (
+    "freertos_tick_rate",
     "freertos_timer_select",
     "freertos_timer_select_counter",
 )
@@ -53,6 +54,7 @@ DOMAINS = {
     },
     "freertos_psu_cortexr5_1": {
         "cpu": "psu_cortexr5_1",
+        "freertos_tick_rate": "1000",
         "XILTIMER_sleep_timer": "Default",
         "XILTIMER_tick_timer": "psu_ttc_3",
         "tick_base": "0xff120000",
@@ -179,7 +181,7 @@ def configure_domain(domain_name: str, domain, libs: dict[str, Path], config: di
 
 
 def require_define(text: str, header: Path, symbol: str, expected_value: str) -> None:
-    pattern = rf"^\s*#define\s+{re.escape(symbol)}\s+{re.escape(expected_value)}\b"
+    pattern = rf"^\s*#define\s+{re.escape(symbol)}\s+{re.escape(expected_value)}(?=\s|$)"
     if not re.search(pattern, text, flags=re.MULTILINE | re.IGNORECASE):
         raise ValueError(f"expected #define {symbol} {expected_value} in {header}")
 
@@ -221,9 +223,21 @@ def verify_timer_headers(workspace: Path) -> None:
                 "configTIMER_SELECT_CNTR",
                 config["freertos_timer_select_counter"],
             )
+            if "freertos_tick_rate" in config:
+                require_define(
+                    text,
+                    freertos_header,
+                    "configTICK_RATE_HZ",
+                    f"({config['freertos_tick_rate']})",
+                )
             print(
                 f"Verified {domain_name}: configTIMER_BASEADDR {config['freertos_base']}, "
                 f"configTIMER_SELECT_CNTR {config['freertos_timer_select_counter']}"
+                + (
+                    f", configTICK_RATE_HZ ({config['freertos_tick_rate']})"
+                    if "freertos_tick_rate" in config
+                    else ""
+                )
             )
         except ValueError as exc:
             failures.append(f"{domain_name}: {exc}")
