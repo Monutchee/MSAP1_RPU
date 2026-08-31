@@ -16,10 +16,12 @@
 #include "handlers/meter/power_quality_config.hpp"
 
 /* The wire ABI must stay byte-identical with the APU copy. */
-static_assert(sizeof(msap1_adc_health_payload) == 238,
+static_assert(sizeof(msap1_adc_health_payload) == 262,
 	      "ADC health wire layout must match the APU");
-static_assert(sizeof(msap1_meter_config_payload) == 352,
+static_assert(sizeof(msap1_meter_config_payload) == 360,
 	      "meter configuration wire layout must match the APU");
+static_assert(sizeof(msap1_meter_config_ack_payload) == 36,
+	      "meter configuration acknowledgement must match the APU");
 static_assert(sizeof(msap1_m18_config_payload) == 316,
 	      "M18 configuration wire layout must match the APU");
 static_assert(sizeof(msap1_simulator_event_payload) == 24,

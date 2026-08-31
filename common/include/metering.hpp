@@ -10,6 +10,14 @@
 namespace msap1::meter {
 
 inline constexpr std::size_t channel_count = 8;
+inline constexpr std::size_t current_channel_count = 4;
+
+enum class CurrentPhase : std::uint8_t {
+	A = MSAP1_CURRENT_PHASE_A,
+	B = MSAP1_CURRENT_PHASE_B,
+	C = MSAP1_CURRENT_PHASE_C,
+	N = MSAP1_CURRENT_PHASE_N,
+};
 
 struct Hardware {
 	std::uintptr_t conversion_base;
@@ -51,6 +59,9 @@ struct Configuration {
 	std::uint32_t nominal_frequency_hz = 60;
 	std::uint8_t valid_mask = 0;
 	std::array<std::uint32_t, channel_count> scale_micro_units_q16{};
+	std::array<CurrentPhase, current_channel_count> current_phase_by_adc{
+		CurrentPhase::A, CurrentPhase::B, CurrentPhase::C, CurrentPhase::N};
+	std::uint8_t current_invert_mask = 0;
 	bool enable = true;
 	bool remove_dc = true;
 	Frequency frequency{};
@@ -61,6 +72,7 @@ struct Status {
 	bool cores_present = false;
 	bool configured = false;
 	bool generation_matches = false;
+	bool current_wiring_matches = false;
 	bool enabled = false;
 	bool remove_dc = false;
 	std::uint32_t generation = 0;
@@ -70,6 +82,12 @@ struct Status {
 	std::uint32_t processing_status = 0;
 	std::uint32_t frequency_status = 0;
 	std::uint32_t grid_status = 0;
+	std::uint32_t requested_current_phase_map = 0xE4u;
+	std::uint32_t requested_current_invert_mask = 0;
+	std::uint32_t active_current_phase_map = 0xE4u;
+	std::uint32_t active_current_invert_mask = 0;
+	std::uint32_t wiring_apply_status = MSAP1_METER_WIRING_APPLY_NONE;
+	std::uint32_t wiring_readback_mismatch_count = 0;
 	// 150/180-cycle aggregation health (read-only PL counters). The RPU
 	// never consumes Basic results or aggregate data; these are health
 	// readbacks only and aggregate measurements stay on the DMA path.
@@ -101,6 +119,13 @@ public:
 
 	const Configuration &configuration() const { return configuration_; }
 	bool configured() const { return configured_; }
+	const msap1_m18_config_payload &active_power_quality_configuration() const
+	{
+		return active_power_quality_configuration_;
+	}
+	bool active_power_quality_configured() const { return m18_active_; }
+	void restore_staged_power_quality_configuration();
+	void record_transaction_rollback(bool succeeded);
 
 	MeteringPipeline(const MeteringPipeline &) = delete;
 	MeteringPipeline &operator=(const MeteringPipeline &) = delete;
@@ -117,6 +142,10 @@ private:
 	bool configured_ = false;
 	msap1_m18_config_payload power_quality_configuration_{};
 	bool m18_staged_ = false;
+	msap1_m18_config_payload active_power_quality_configuration_{};
+	bool m18_active_ = false;
+	std::uint32_t wiring_apply_status_ = MSAP1_METER_WIRING_APPLY_NONE;
+	std::uint32_t wiring_readback_mismatch_count_ = 0;
 };
 
 } // namespace msap1::meter
