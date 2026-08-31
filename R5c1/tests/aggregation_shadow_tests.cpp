@@ -2823,6 +2823,61 @@ void test_pq_event_threshold_matrix_50_60()
 					sample_rate_hz);
 }
 
+void test_rapid_voltage_change_uses_one_cycle_delta()
+{
+	constexpr auto rvc_type = MSAP1_M18_EVENT_RAPID_VOLTAGE_CHANGE;
+	constexpr std::uint32_t start_lifecycle = 0U;
+	constexpr std::uint32_t end_lifecycle = 2U;
+	CapturingRecordSink sink;
+	aggregation::AggregationHealth health;
+	aggregation::PqEventLifecycleEngine engine(sink, health);
+	expect(engine.initialize(), "RVC lifecycle engine initializes");
+	auto configuration = make_event_configuration(44U);
+	for (auto &profile : configuration.event)
+		profile.flags &= ~(MSAP1_M18_EVENT_ENABLED |
+			MSAP1_M18_EVENT_WAVEFORM_ENABLED | MSAP1_M18_EVENT_PER_PHASE);
+	auto &profile = configuration.event[rvc_type];
+	profile.flags |= MSAP1_M18_EVENT_ENABLED | MSAP1_M18_EVENT_PER_PHASE |
+		MSAP1_M18_EVENT_WAVEFORM_ENABLED;
+	profile.threshold_e4 = 300U;
+	profile.hysteresis_e4 = 50U;
+	profile.phase_mask = 0x1U;
+	expect(engine.configure(configuration), "RVC profile stages");
+
+	auto process = [&](std::uint32_t sequence, std::uint64_t last_sample,
+		std::uint32_t phase_a, std::uint32_t status = 0U) {
+		engine.process(make_pq_input_full(sequence, configuration.generation,
+			128000U, last_sample, 2133U,
+			{phase_a, 120000000U, 120000000U},
+			{5000000U, 5000000U, 5000000U}, status));
+	};
+
+	/* A physical 5 % step traverses two overlapping Urms(1/2) updates:
+	 * nominal -> half-settled -> settled. Comparing adjacent updates would see
+	 * only 2.5 % twice and miss the configured 3 % RVC threshold. */
+	process(1U, 2132U, 120000000U, 1U << 2U);
+	process(2U, 3199U, 117000000U);
+	process(3U, 4265U, 114000000U);
+	expect(sink.count == 1U &&
+		(sink.records[0U].words[13U] & 0x3U) == start_lifecycle &&
+		((sink.records[0U].words[13U] >> 4U) & 0xfU) == rvc_type &&
+		((sink.records[0U].words[13U] >> 16U) & 0xffU) == 1U,
+		"one-cycle 5 percent step emits an RVC START");
+	process(4U, 5332U, 114000000U);
+	expect(sink.count == 2U &&
+		(sink.records[1U].words[13U] & 0x3U) == end_lifecycle,
+		"settled RVC emits END at the inclusive hysteresis boundary");
+
+	process(5U, 6399U, 117000000U);
+	process(6U, 7465U, 120000000U);
+	process(7U, 8532U, 120000000U);
+	expect(sink.count == 4U &&
+		(sink.records[2U].words[13U] & 0x3U) == start_lifecycle &&
+		(sink.records[3U].words[13U] & 0x3U) == end_lifecycle &&
+		sink.records[0U].words[18U] != sink.records[2U].words[18U],
+		"the return step emits a distinct RVC lifecycle");
+}
+
 void test_pq_event_lifecycle_engine()
 {
 	constexpr std::uint32_t start_lifecycle = 0U;
@@ -2937,6 +2992,7 @@ int main()
 	test_pq_event_frame_decoder();
 	test_pq_event_lifecycle_engine();
 	test_pq_event_threshold_matrix_50_60();
+	test_rapid_voltage_change_uses_one_cycle_delta();
 	test_voltage_sample_frame_decoder();
 	test_flicker_engine_raw_frontend();
 	test_flicker_normalization_and_gap_recovery();

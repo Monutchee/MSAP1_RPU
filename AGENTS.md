@@ -123,7 +123,10 @@
   with at least ten percent margin; the default 100 Hz tick is insufficient.
   Keep large frames, Flicker classifier state, and mains
   correlation banks out of worker-task stacks; all power-quality state is
-  static `.bss`/`.data` and must not allocate dynamically.
+  static `.bss`/`.data` and must not allocate dynamically. Mains signalling
+  validates the full raw stream but bounds its seven-probe correlation at
+  32 kSPS, which preserves the characterized sub-12.5-kHz analogue band and
+  must remain fast enough to run concurrently with Flicker at 128 kSPS.
 - ADC health reports both the measured DCLK rate and the physical
   `ADC_DRDY_N` falling-edge rate. Keep these fields coordinated with the APU
   wire-ABI copy when extending capture diagnostics. Health is not valid until

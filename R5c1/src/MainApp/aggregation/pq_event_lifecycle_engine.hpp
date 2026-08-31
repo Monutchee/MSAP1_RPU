@@ -87,8 +87,12 @@ private:
 	msap1_m18_config_payload candidate_configuration_{};
 	msap1_m18_config_payload active_configuration_{};
 	std::array<std::array<EventState, phases>, event_types> state_{};
-	std::array<std::uint32_t, phases> previous_voltage_{};
-	std::array<std::uint8_t, phases> previous_voltage_valid_{};
+	/* Urms(1/2) is refreshed every half-cycle, so a full step settles over two
+	 * updates. RVC compares values one complete cycle apart. */
+	std::array<std::uint32_t, phases> previous_half_cycle_voltage_{};
+	std::array<std::uint8_t, phases> previous_half_cycle_voltage_valid_{};
+	std::array<std::uint32_t, phases> one_cycle_ago_voltage_{};
+	std::array<std::uint8_t, phases> one_cycle_ago_voltage_valid_{};
 	std::uint32_t output_sequence_{};
 	std::uint32_t last_input_sequence_{};
 	std::uint64_t event_counter_{};

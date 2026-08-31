@@ -60,10 +60,14 @@ private:
 	std::uint64_t window_first_sample_{};
 	std::uint64_t last_input_sample_{};
 	std::uint32_t sample_rate_hz_{};
+	std::uint32_t analysis_rate_hz_{};
 	std::uint32_t observation_samples_{};
+	std::uint32_t window_span_count_{};
 	std::uint32_t window_count_{};
 	std::uint32_t output_sequence_{};
 	std::uint32_t last_input_sequence_{};
+	std::uint16_t decimation_divisor_{1U};
+	std::uint16_t decimation_phase_{};
 	std::uint8_t window_valid_mask_{};
 	bool have_active_configuration_{};
 	bool have_input_sequence_{};

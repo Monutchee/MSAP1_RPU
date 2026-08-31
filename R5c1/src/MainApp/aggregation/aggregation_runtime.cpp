@@ -4,7 +4,10 @@ namespace msap1::aggregation {
 
 namespace {
 
-constexpr configSTACK_DEPTH_TYPE worker_stack_depth = 2048U;
+constexpr configSTACK_DEPTH_TYPE io_worker_stack_depth = 2048U;
+/* The validator owns the M18 fixed-point engines and needs a measured 2 KiB
+ * guard after their deepest call path, not merely after the I/O workers. */
+constexpr configSTACK_DEPTH_TYPE validator_stack_depth = 2560U;
 
 static_assert(configUSE_TRACE_FACILITY == 1,
 	"runtime stack telemetry requires FreeRTOS trace task snapshots");
@@ -55,11 +58,11 @@ bool AggregationRuntime::start() noexcept
 	 * transaction completes (or deletes every partial task) before a new worker
 	 * can consume shared state.
 	 */
-	if (xTaskCreate(input_task_entry, "AGG_RX", worker_stack_depth, this,
+	if (xTaskCreate(input_task_entry, "AGG_RX", io_worker_stack_depth, this,
 			input_priority, &input_task_) != pdPASS ||
-		xTaskCreate(output_task_entry, "AGG_TX", worker_stack_depth, this,
+		xTaskCreate(output_task_entry, "AGG_TX", io_worker_stack_depth, this,
 			output_priority, &output_task_) != pdPASS ||
-		xTaskCreate(validator_task_entry, "AGG_VAL", worker_stack_depth, this,
+		xTaskCreate(validator_task_entry, "AGG_VAL", validator_stack_depth, this,
 			validator_priority, &validator_task_) != pdPASS) {
 		discard_partial_start();
 		health_.set_transport_initialized(false);

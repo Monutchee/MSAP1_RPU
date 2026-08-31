@@ -125,8 +125,10 @@ bool PqEventLifecycleEngine::initialize() noexcept
 	for (auto &type : state_)
 		for (auto &state : type)
 			state = {};
-	previous_voltage_.fill(0U);
-	previous_voltage_valid_.fill(0U);
+	previous_half_cycle_voltage_.fill(0U);
+	previous_half_cycle_voltage_valid_.fill(0U);
+	one_cycle_ago_voltage_.fill(0U);
+	one_cycle_ago_voltage_valid_.fill(0U);
 	output_sequence_ = 0U;
 	last_input_sequence_ = 0U;
 	event_counter_ = 0U;
@@ -273,7 +275,8 @@ void PqEventLifecycleEngine::apply_matching_configuration(
 		abort_all(input);
 	active_configuration_ = candidate_configuration_;
 	have_active_configuration_ = true;
-	previous_voltage_valid_.fill(0U);
+	previous_half_cycle_voltage_valid_.fill(0U);
+	one_cycle_ago_voltage_valid_.fill(0U);
 	first_after_discontinuity_ = true;
 }
 
@@ -328,12 +331,12 @@ PqEventLifecycleEngine::Evaluation PqEventLifecycleEngine::evaluate(
 		metric = maximum_deviation * 10000U / average;
 		reference = 10000U;
 	} else if (type == MSAP1_M18_EVENT_RAPID_VOLTAGE_CHANGE) {
-		if (previous_voltage_valid_[slot] == 0U || reference == 0U)
+		if (one_cycle_ago_voltage_valid_[slot] == 0U || reference == 0U)
 			return result;
-		const auto previous = previous_voltage_[slot];
+		const auto previous = one_cycle_ago_voltage_[slot];
 		const auto value = result.values[slot];
 		const auto delta = value > previous ? value - previous : previous - value;
-		metric = delta * 10000U / reference;
+		metric = static_cast<std::uint64_t>(delta) * 10000U / reference;
 		reference = 10000U;
 	}
 	if (reference == 0U)
@@ -452,7 +455,8 @@ void PqEventLifecycleEngine::process(const PqEventInputView &input) noexcept
 	last_input_sequence_ = input.sequence;
 	if (discontinuity) {
 		abort_all(input);
-		previous_voltage_valid_.fill(0U);
+		previous_half_cycle_voltage_valid_.fill(0U);
+		one_cycle_ago_voltage_valid_.fill(0U);
 	}
 
 	for (std::size_t type = 0U; type < event_types; ++type) {
@@ -469,8 +473,12 @@ void PqEventLifecycleEngine::process(const PqEventInputView &input) noexcept
 	}
 
 	for (std::size_t phase = 0U; phase < phases; ++phase) {
-		previous_voltage_[phase] = clamp_u32(input.urms_q16[phase] >> 16U);
-		previous_voltage_valid_[phase] = static_cast<std::uint8_t>(
+		one_cycle_ago_voltage_[phase] = previous_half_cycle_voltage_[phase];
+		one_cycle_ago_voltage_valid_[phase] =
+			previous_half_cycle_voltage_valid_[phase];
+		previous_half_cycle_voltage_[phase] =
+			clamp_u32(input.urms_q16[phase] >> 16U);
+		previous_half_cycle_voltage_valid_[phase] = static_cast<std::uint8_t>(
 			(input.voltage_valid_mask >> phase) & 1U);
 	}
 }

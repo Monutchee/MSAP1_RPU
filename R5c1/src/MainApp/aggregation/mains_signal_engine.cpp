@@ -13,6 +13,12 @@ constexpr std::uint32_t meter_record_magic = 0x3152544DU;
 constexpr std::uint32_t mains_signal_record_format = 0x000F0001U;
 constexpr std::uint32_t record_bytes = 256U;
 constexpr std::uint32_t observation_ms = 200U;
+/*
+ * The analogue frontend is band-limited below 12.5 kHz.  A 32 kSPS analysis
+ * rate therefore retains every supported mains-signalling frequency while
+ * avoiding seven-probe correlation at the 128 kSPS transport rate.
+ */
+constexpr std::uint32_t maximum_analysis_rate_hz = 32000U;
 constexpr std::array<int, 7U> probe_offset_quarters{
 	-4, -2, -1, 0, 1, 2, 4};
 constexpr std::array<std::uint32_t, 3U> valid_bits{
@@ -208,7 +214,10 @@ bool MainsSignalEngine::initialize() noexcept
 	output_sequence_ = 0U;
 	last_input_sequence_ = 0U;
 	sample_rate_hz_ = 0U;
+	analysis_rate_hz_ = 0U;
 	observation_samples_ = 0U;
+	decimation_divisor_ = 1U;
+	decimation_phase_ = 0U;
 	clear_window();
 	probe_phase_.fill(0U);
 	probe_step_.fill(0U);
@@ -233,6 +242,7 @@ void MainsSignalEngine::clear_window() noexcept
 		phase.fill(0);
 	for (auto &phase : imaginary_sum_)
 		phase.fill(0);
+	window_span_count_ = 0U;
 	window_count_ = 0U;
 	window_valid_mask_ = have_active_configuration_
 		? static_cast<std::uint8_t>(
@@ -247,6 +257,7 @@ void MainsSignalEngine::reset_signal_path(bool contaminated) noexcept
 {
 	clear_window();
 	probe_phase_.fill(0U);
+	decimation_phase_ = 0U;
 	have_last_input_sample_ = false;
 	if (contaminated)
 		pending_discontinuity_ = true;
@@ -295,10 +306,13 @@ bool MainsSignalEngine::apply_matching_configuration(
 	active_configuration_ = candidate_configuration_;
 	have_active_configuration_ = true;
 	sample_rate_hz_ = input.sample_rate_hz;
+	analysis_rate_hz_ = std::min(sample_rate_hz_, maximum_analysis_rate_hz);
+	decimation_divisor_ = static_cast<std::uint16_t>(
+		sample_rate_hz_ / analysis_rate_hz_);
 	observation_samples_ = sample_rate_hz_ / 5U;
 	for (std::size_t probe = 0U; probe < probes; ++probe)
 		probe_step_[probe] = phase_step_q32(carrier, bandwidth,
-			probe_offset_quarters[probe], sample_rate_hz_);
+			probe_offset_quarters[probe], analysis_rate_hz_);
 	have_input_sequence_ = false;
 	reset_signal_path(true);
 	return true;
@@ -328,36 +342,44 @@ void MainsSignalEngine::process_sample(const VoltageSampleInputView &input,
 	}
 	if ((flags & VoltageSampleProtocol::sample_saturated) != 0U)
 		arithmetic_overflow_ = true;
-	if (window_count_ == 0U)
+	if (window_span_count_ == 0U)
 		window_first_sample_ = sample_index;
 	window_locked_ = window_locked_ &&
 		(flags & VoltageSampleProtocol::sample_locked) != 0U;
 	window_fallback_ = window_fallback_ ||
 		(flags & VoltageSampleProtocol::sample_fallback) != 0U;
 
-	for (std::size_t probe = 0U; probe < probes; ++probe) {
-		const auto cosine = cosine_q17(probe_phase_[probe]);
-		const auto sine = sine_q17(probe_phase_[probe]);
-		for (std::size_t phase = 0U; phase < phases; ++phase) {
-			const bool valid =
-				(active_configuration_.mains_phase_mask & (1U << phase)) != 0U &&
-				(flags & valid_bits[phase]) != 0U;
-			if (!valid) {
-				window_valid_mask_ &=
-					static_cast<std::uint8_t>(~(1U << phase));
-				continue;
-			}
-			if (!add_saturating(real_sum_[phase][probe],
-				static_cast<std::int64_t>(voltage[phase]) * cosine) ||
-				!add_saturating(imaginary_sum_[phase][probe],
-				-static_cast<std::int64_t>(voltage[phase]) * sine))
-				arithmetic_overflow_ = true;
-		}
-		probe_phase_[probe] += probe_step_[probe];
+	for (std::size_t phase = 0U; phase < phases; ++phase) {
+		const bool valid =
+			(active_configuration_.mains_phase_mask & (1U << phase)) != 0U &&
+			(flags & valid_bits[phase]) != 0U;
+		if (!valid)
+			window_valid_mask_ &= static_cast<std::uint8_t>(~(1U << phase));
 	}
 
-	++window_count_;
-	if (window_count_ >= observation_samples_)
+	const bool analyse = decimation_phase_ == 0U;
+	if (++decimation_phase_ >= decimation_divisor_)
+		decimation_phase_ = 0U;
+	if (analyse) {
+		for (std::size_t probe = 0U; probe < probes; ++probe) {
+			const auto cosine = cosine_q17(probe_phase_[probe]);
+			const auto sine = sine_q17(probe_phase_[probe]);
+			for (std::size_t phase = 0U; phase < phases; ++phase) {
+				if ((window_valid_mask_ & (1U << phase)) == 0U)
+					continue;
+				if (!add_saturating(real_sum_[phase][probe],
+					static_cast<std::int64_t>(voltage[phase]) * cosine) ||
+					!add_saturating(imaginary_sum_[phase][probe],
+					-static_cast<std::int64_t>(voltage[phase]) * sine))
+					arithmetic_overflow_ = true;
+			}
+			probe_phase_[probe] += probe_step_[probe];
+		}
+		++window_count_;
+	}
+
+	++window_span_count_;
+	if (window_span_count_ >= observation_samples_)
 		complete_window(sample_index);
 }
 

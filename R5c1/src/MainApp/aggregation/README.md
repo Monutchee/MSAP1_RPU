@@ -107,9 +107,15 @@ quality engines. `FlickerEngine` owns reference normalization, 2 kHz
 decimation, seven IEC lamp-model filter sections, the 512-bin classifier, Pst,
 Plt, and Flicker-v1 serialization. `MainsSignalEngine` owns the seven-probe
 200 ms correlation bank, magnitude/background discrimination, carrier
-centroid, and Mains-Signal-v1 serialization. Their filter, histogram, rolling
-Pst, and correlation state is statically allocated; no packet-sized object is
-placed on a task stack.
+centroid, and Mains-Signal-v1 serialization. It validates every raw sample but
+bounds correlation arithmetic at 32 kSPS; that rate preserves the complete
+characterized sub-12.5-kHz analogue band while allowing Flicker and mains
+signalling to run together at the 128-kSPS ADC default. Their filter,
+histogram, rolling Pst, and correlation state is statically allocated; no
+packet-sized object is placed on a task stack. Rapid-voltage-change lifecycle
+evaluation compares Urms(1/2) values one complete cycle apart because the
+overlapping one-cycle RMS window settles a physical step over two half-cycle
+updates.
 
 ## Authority and failure behavior
 
@@ -154,4 +160,7 @@ accounting, complete-record emission, FIFO-output retry behavior, fixed
 ten-minute demand, and sliding-demand warm-up/cadence/clean-refill recovery.
 It also checks strict VSB1 decoding, shared Flicker raw processing, and the
 mains-signalling estimator against an independent double-precision oracle at
-every supported carrier-compatible sample rate.
+every supported carrier-compatible sample rate. The event matrix includes a
+physical 5% step reconstructed across consecutive Urms(1/2) updates so the
+default 3% rapid-voltage-change profile cannot regress to adjacent-update
+comparison.
