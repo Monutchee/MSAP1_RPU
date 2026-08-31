@@ -25,6 +25,8 @@ public:
 	[[nodiscard]] bool ready() const noexcept { return ready_; }
 
 private:
+	friend struct HarmonicAggregationEngineTestAccess;
+
 	struct WideUnsigned final {
 		std::uint64_t high{};
 		std::uint64_t low{};

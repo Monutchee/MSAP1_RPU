@@ -356,12 +356,27 @@ bool HarmonicAggregationEngine::less_equal(WideUnsigned left,
 std::uint64_t HarmonicAggregationEngine::integer_sqrt(
 	WideUnsigned value) noexcept
 {
+	WideUnsigned remainder{};
 	std::uint64_t result = 0U;
-	for (int bit = 63; bit >= 0; --bit) {
-		const auto candidate = result |
-			(std::uint64_t{1} << static_cast<unsigned>(bit));
-		if (less_equal(multiply_u64(candidate, candidate), value))
-			result = candidate;
+	for (std::uint32_t digit = 0U; digit < 64U; ++digit) {
+		const auto input_pair = value.high >> 62U;
+		value.high = (value.high << 2U) | (value.low >> 62U);
+		value.low <<= 2U;
+
+		remainder.high = (remainder.high << 2U) |
+			(remainder.low >> 62U);
+		remainder.low = (remainder.low << 2U) | input_pair;
+		result <<= 1U;
+
+		const WideUnsigned trial{
+			result >> 63U,
+			(result << 1U) | 1U};
+		if (less_equal(trial, remainder)) {
+			const auto borrow = remainder.low < trial.low ? 1U : 0U;
+			remainder.low -= trial.low;
+			remainder.high -= trial.high + borrow;
+			++result;
+		}
 	}
 	return result;
 }

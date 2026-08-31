@@ -64,6 +64,14 @@ struct FlickerEngineTestAccess final {
 	}
 };
 
+struct HarmonicAggregationEngineTestAccess final {
+	static std::uint64_t integer_sqrt(std::uint64_t high,
+		std::uint64_t low) noexcept
+	{
+		return HarmonicAggregationEngine::integer_sqrt({high, low});
+	}
+};
+
 } // namespace msap1::aggregation
 
 static_assert(!std::is_copy_constructible_v<aggregation::EnergyDemandEngine>);
@@ -477,6 +485,49 @@ void test_harmonic_frame_decoder()
 	expect(decoder.decode(frame, input) ==
 		aggregation::FrameValidationError::provenance_mismatch,
 		"HRM1 cross-record provenance guard");
+}
+
+void test_harmonic_integer_sqrt_is_exact()
+{
+	using Wide = unsigned __int128;
+	const auto reference = [](Wide value) noexcept {
+		std::uint64_t result = 0U;
+		for (int bit = 63; bit >= 0; --bit) {
+			const auto candidate = result |
+				(std::uint64_t{1} << static_cast<unsigned>(bit));
+			if (candidate <= value / candidate)
+				result = candidate;
+		}
+		return result;
+	};
+	const auto check = [&](Wide value) {
+		const auto actual = aggregation::HarmonicAggregationEngineTestAccess::
+			integer_sqrt(static_cast<std::uint64_t>(value >> 64U),
+				static_cast<std::uint64_t>(value));
+		expect(actual == reference(value),
+			"harmonic integer square root remains exact");
+	};
+
+	for (const auto value : std::array<Wide, 13U>{
+		Wide{0U}, Wide{1U}, Wide{2U}, Wide{3U}, Wide{4U}, Wide{8U},
+		Wide{9U}, (Wide{1U} << 64U) - 1U, Wide{1U} << 64U,
+		(Wide{1U} << 127U) - 1U, Wide{1U} << 127U,
+		static_cast<Wide>(~std::uint64_t{0U}) *
+			static_cast<Wide>(~std::uint64_t{0U}),
+		~Wide{0U}})
+		check(value);
+
+	std::uint64_t state = 0x9e3779b97f4a7c15ULL;
+	for (std::size_t iteration = 0U; iteration < 4096U; ++iteration) {
+		state ^= state << 13U;
+		state ^= state >> 7U;
+		state ^= state << 17U;
+		const auto high = state;
+		state ^= state << 13U;
+		state ^= state >> 7U;
+		state ^= state << 17U;
+		check((static_cast<Wide>(high) << 64U) | state);
+	}
 }
 
 void test_harmonic_engine_emits_complete_three_second_family()
@@ -2969,6 +3020,7 @@ int main()
 	test_valid_frame();
 	test_invalid_frames();
 	test_harmonic_frame_decoder();
+	test_harmonic_integer_sqrt_is_exact();
 	test_harmonic_engine_emits_complete_three_second_family();
 	test_harmonic_engine_uses_circular_angles_and_propagates_validity();
 	test_harmonic_engine_resets_partial_tiers_in_place();
