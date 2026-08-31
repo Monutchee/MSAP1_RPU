@@ -3,7 +3,7 @@
 #include "metrology_sine_lut.hpp"
 
 #include <algorithm>
-#include <bit>
+#include <cstring>
 #include <limits>
 
 namespace msap1::aggregation {
@@ -35,6 +35,14 @@ std::int64_t arithmetic_shift_right(std::int64_t value,
 		return value;
 	return value >= 0 ? value >> shift :
 		-1 - ((-1 - value) >> shift);
+}
+
+std::int64_t signed_word(std::uint64_t value) noexcept
+{
+	std::int64_t result{};
+	static_assert(sizeof(result) == sizeof(value));
+	std::memcpy(&result, &value, sizeof(result));
+	return result;
 }
 
 std::uint32_t low(std::uint64_t value) noexcept
@@ -292,11 +300,11 @@ std::int64_t HarmonicAggregationEngine::shifted_phase(
 		word = (value.low >> shift) | (value.high << (64U - shift));
 	else if (shift >= 64U && shift < 128U)
 		word = static_cast<std::uint64_t>(arithmetic_shift_right(
-			std::bit_cast<std::int64_t>(value.high), shift - 64U));
+			signed_word(value.high), shift - 64U));
 	else if (shift >= 128U)
 		word = (value.high & (std::uint64_t{1} << 63U)) != 0U ?
 			std::numeric_limits<std::uint64_t>::max() : 0U;
-	return std::bit_cast<std::int64_t>(word);
+	return signed_word(word);
 }
 
 bool HarmonicAggregationEngine::finalize_phase(const WideSigned &real,
