@@ -1,8 +1,9 @@
 #include "harmonic_aggregation_engine.hpp"
 
-#include "metrology_trig.hpp"
+#include "metrology_sine_lut.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <limits>
 
 namespace msap1::aggregation {
@@ -100,9 +101,9 @@ void HarmonicAggregationEngine::clear_tier(TierAccumulator &tier,
 	}
 	tier.valid.fill(0U);
 	for (auto &sum : tier.phase_real)
-		sum = 0;
+		sum = {};
 	for (auto &sum : tier.phase_imag)
-		sum = 0;
+		sum = {};
 	tier.angle_valid.fill(0U);
 	tier.contributors = 0U;
 	tier.configuration_generation = 0U;
@@ -216,25 +217,96 @@ void HarmonicAggregationEngine::accumulate_phase(TierAccumulator &tier,
 	 * numbers, which would turn 359 and 1 degrees into 180 degrees. The input
 	 * magnitude is 40 bits and Q1.37 trig is 39 bits; even UINT32_MAX base
 	 * contributors remain safely inside the signed 128-bit accumulator. */
-	const auto turns = ap_uint<32>((
+	const auto turns = static_cast<std::uint32_t>((
 		static_cast<std::uint64_t>(angle_millidegrees) << 32U) / 360000U);
-	const auto weight = ap_int<41>(ap_uint<40>(magnitude));
-	const ap_int<80> real = weight * met_cos_q32(turns);
-	const ap_int<80> imag = weight * met_sin_q32(turns);
-	tier.phase_real[point] += PhaseSum(real);
-	tier.phase_imag[point] += PhaseSum(imag);
+	add_phase_product(tier.phase_real[point], magnitude,
+		sine_q37(turns + 0x40000000U));
+	add_phase_product(tier.phase_imag[point], magnitude, sine_q37(turns));
 }
 
-bool HarmonicAggregationEngine::finalize_phase(const PhaseSum &real,
-	const PhaseSum &imag, std::uint32_t &angle_millidegrees) noexcept
+std::int64_t HarmonicAggregationEngine::sine_q37(
+	std::uint32_t phase) noexcept
 {
-	const auto absolute = [](const PhaseSum &value) noexcept {
-		return value < 0 ? ap_uint<128>(-value) : ap_uint<128>(value);
+	const auto point = phase >> 20U;
+	const auto fraction = phase & 0xFFFFFU;
+	const auto sample = [](std::uint32_t index) noexcept {
+		const auto quadrant = index >> 10U;
+		const auto offset = index & 0x3FFU;
+		const auto table_index = (quadrant & 1U) == 0U ?
+			offset : 1024U - offset;
+		const auto value = static_cast<std::int64_t>(
+			MET_SINE_QLUT[table_index]);
+		return (quadrant & 2U) == 0U ? value : -value;
 	};
-	const auto real_abs = absolute(real);
-	const auto imag_abs = absolute(imag);
-	const auto dominant = real_abs > imag_abs ? real_abs : imag_abs;
-	if (dominant == 0) {
+	const auto first = sample(point);
+	const auto second = sample((point + 1U) & 0xFFFU);
+	return first * (std::int64_t{1} << 20U) +
+		(second - first) * fraction;
+}
+
+void HarmonicAggregationEngine::add_phase_product(WideSigned &sum,
+	std::uint64_t magnitude, std::int64_t component) noexcept
+{
+	const auto absolute = component < 0 ?
+		static_cast<std::uint64_t>(-component) :
+		static_cast<std::uint64_t>(component);
+	const auto product = multiply_u64(magnitude, absolute);
+	if (component >= 0) {
+		const auto previous = sum.low;
+		sum.low += product.low;
+		const auto carry = sum.low < previous ? 1U : 0U;
+		sum.high += product.high;
+		sum.high += carry;
+	} else {
+		const auto borrow = sum.low < product.low ? 1U : 0U;
+		sum.low -= product.low;
+		sum.high -= product.high;
+		sum.high -= borrow;
+	}
+}
+
+void HarmonicAggregationEngine::add_phase_sum(WideSigned &sum,
+	const WideSigned &source) noexcept
+{
+	const auto previous = sum.low;
+	sum.low += source.low;
+	const auto carry = sum.low < previous ? 1U : 0U;
+	sum.high += source.high;
+	sum.high += carry;
+}
+
+HarmonicAggregationEngine::WideUnsigned
+HarmonicAggregationEngine::phase_absolute(const WideSigned &value) noexcept
+{
+	if ((value.high & (std::uint64_t{1} << 63U)) == 0U)
+		return {value.high, value.low};
+	const auto low = ~value.low + 1U;
+	return {~value.high + (low == 0U ? 1U : 0U), low};
+}
+
+std::int64_t HarmonicAggregationEngine::shifted_phase(
+	const WideSigned &value, unsigned shift) noexcept
+{
+	std::uint64_t word = value.low;
+	if (shift != 0U && shift < 64U)
+		word = (value.low >> shift) | (value.high << (64U - shift));
+	else if (shift >= 64U && shift < 128U)
+		word = static_cast<std::uint64_t>(arithmetic_shift_right(
+			std::bit_cast<std::int64_t>(value.high), shift - 64U));
+	else if (shift >= 128U)
+		word = (value.high & (std::uint64_t{1} << 63U)) != 0U ?
+			std::numeric_limits<std::uint64_t>::max() : 0U;
+	return std::bit_cast<std::int64_t>(word);
+}
+
+bool HarmonicAggregationEngine::finalize_phase(const WideSigned &real,
+	const WideSigned &imag, std::uint32_t &angle_millidegrees) noexcept
+{
+	const auto real_abs = phase_absolute(real);
+	const auto imag_abs = phase_absolute(imag);
+	const auto imag_dominant = less_equal(real_abs, imag_abs);
+	const auto dominant = imag_dominant ? imag_abs : real_abs;
+	if (dominant.high == 0U && dominant.low == 0U) {
 		angle_millidegrees = 0U;
 		return false;
 	}
@@ -243,22 +315,32 @@ bool HarmonicAggregationEngine::finalize_phase(const PhaseSum &real,
 	 * by one common power of two so their ratio and quadrant are unchanged
 	 * while the dominant magnitude fits below the sign bit. */
 	unsigned most_significant_bit = 0U;
-	for (int bit = 127; bit >= 0; --bit) {
-		if (dominant[bit]) {
-			most_significant_bit = static_cast<unsigned>(bit);
-			break;
+	if (dominant.high != 0U) {
+		for (int bit = 63; bit >= 0; --bit) {
+			if ((dominant.high &
+				(std::uint64_t{1} << static_cast<unsigned>(bit))) != 0U) {
+				most_significant_bit = 64U + static_cast<unsigned>(bit);
+				break;
+			}
+		}
+	} else {
+		for (int bit = 63; bit >= 0; --bit) {
+			if ((dominant.low &
+				(std::uint64_t{1} << static_cast<unsigned>(bit))) != 0U) {
+				most_significant_bit = static_cast<unsigned>(bit);
+				break;
+			}
 		}
 	}
 	const auto shift = most_significant_bit > 61U ?
 		most_significant_bit - 61U : 0U;
-	const ap_int<64> scaled_real = ap_int<64>(real >> shift);
-	const ap_int<64> scaled_imag = ap_int<64>(imag >> shift);
+	const auto scaled_real = shifted_phase(real, shift);
+	const auto scaled_imag = shifted_phase(imag, shift);
 	if (scaled_real == 0 && scaled_imag == 0) {
 		angle_millidegrees = 0U;
 		return false;
 	}
-	angle_millidegrees = atan2_millidegrees(
-		scaled_imag.to_int64(), scaled_real.to_int64());
+	angle_millidegrees = atan2_millidegrees(scaled_imag, scaled_real);
 	return true;
 }
 
@@ -512,8 +594,8 @@ void HarmonicAggregationEngine::accumulate_finalized(
 		 * it directly makes the 2-hour angle exactly the circular aggregate of
 		 * all base families, without quantizing through each 10-minute angle. */
 		if (source_angle_valid && tier.angle_valid[point] != 0U) {
-			tier.phase_real[point] += source.phase_real[point];
-			tier.phase_imag[point] += source.phase_imag[point];
+			add_phase_sum(tier.phase_real[point], source.phase_real[point]);
+			add_phase_sum(tier.phase_imag[point], source.phase_imag[point]);
 		}
 	}
 }
