@@ -19,6 +19,12 @@ constexpr std::uint32_t observation_ms = 200U;
  * avoiding seven-probe correlation at the 128 kSPS transport rate.
  */
 constexpr std::uint32_t maximum_analysis_rate_hz = 32000U;
+constexpr std::uint32_t maximum_analysis_window_samples =
+	maximum_analysis_rate_hz / 5U;
+constexpr std::uint64_t maximum_correlation_term =
+	std::uint64_t{1U} << 48U;
+static_assert(maximum_correlation_term * maximum_analysis_window_samples <
+	static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()));
 constexpr std::array<int, 7U> probe_offset_quarters{
 	-4, -2, -1, 0, 1, 2, 4};
 constexpr std::array<std::uint32_t, 3U> valid_bits{
@@ -367,11 +373,17 @@ void MainsSignalEngine::process_sample(const VoltageSampleInputView &input,
 			for (std::size_t phase = 0U; phase < phases; ++phase) {
 				if ((window_valid_mask_ & (1U << phase)) == 0U)
 					continue;
-				if (!add_saturating(real_sum_[phase][probe],
-					static_cast<std::int64_t>(voltage[phase]) * cosine) ||
-					!add_saturating(imaginary_sum_[phase][probe],
-					-static_cast<std::int64_t>(voltage[phase]) * sine))
-					arithmetic_overflow_ = true;
+				/*
+				 * A 200 ms window contains at most 6,400 analysed samples.
+				 * Signed 32-bit microvolts multiplied by a Q17 oscillator are
+				 * bounded by 2^48 per term, so the complete correlation is
+				 * provably inside int64_t. Avoid two saturating branch trees per
+				 * phase/probe/sample on this dominant 32 kSPS target path.
+				 */
+				real_sum_[phase][probe] +=
+					static_cast<std::int64_t>(voltage[phase]) * cosine;
+				imaginary_sum_[phase][probe] -=
+					static_cast<std::int64_t>(voltage[phase]) * sine;
 			}
 			probe_phase_[probe] += probe_step_[probe];
 		}
