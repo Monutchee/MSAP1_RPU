@@ -101,6 +101,8 @@ private:
 		std::uint32_t divisor) noexcept;
 	[[nodiscard]] static bool less_equal(WideUnsigned left,
 		WideUnsigned right) noexcept;
+	[[nodiscard]] static std::uint32_t atan2_millidegrees(
+		std::int64_t imaginary, std::int64_t real) noexcept;
 	[[nodiscard]] static HarmonicPoint base_point(
 		const HarmonicInputView &input, std::size_t channel,
 		std::size_t order_index) noexcept;

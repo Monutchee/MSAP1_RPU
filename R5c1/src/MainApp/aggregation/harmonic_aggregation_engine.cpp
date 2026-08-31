@@ -20,6 +20,21 @@ constexpr std::uint32_t status_first_after_discontinuity = 1U << 6U;
 constexpr std::uint32_t status_rate_limited = 1U << 7U;
 constexpr std::uint64_t magnitude_mask = (std::uint64_t{1} << 40U) - 1U;
 constexpr std::uint64_t angle_mask = (std::uint64_t{1} << 20U) - 1U;
+constexpr std::array<std::uint32_t, 30U> cordic_atan_turns{
+	536870912U, 316933406U, 167458907U, 85004756U, 42667331U,
+	21354465U, 10679838U, 5340245U, 2670163U, 1335087U,
+	667544U, 333772U, 166886U, 83443U, 41722U, 20861U, 10430U,
+	5215U, 2608U, 1304U, 652U, 326U, 163U, 81U, 41U, 20U, 10U,
+	5U, 3U, 1U};
+
+std::int64_t arithmetic_shift_right(std::int64_t value,
+	unsigned shift) noexcept
+{
+	if (shift == 0U)
+		return value;
+	return value >= 0 ? value >> shift :
+		-1 - ((-1 - value) >> shift);
+}
 
 std::uint32_t low(std::uint64_t value) noexcept
 {
@@ -242,10 +257,61 @@ bool HarmonicAggregationEngine::finalize_phase(const PhaseSum &real,
 		angle_millidegrees = 0U;
 		return false;
 	}
-	angle_millidegrees = static_cast<std::uint32_t>(
-		met_turns_to_millidegrees(
-			met_atan2_turns(scaled_imag, scaled_real)));
+	angle_millidegrees = atan2_millidegrees(
+		scaled_imag.to_int64(), scaled_real.to_int64());
 	return true;
+}
+
+std::uint32_t HarmonicAggregationEngine::atan2_millidegrees(
+	std::int64_t imaginary, std::int64_t real) noexcept
+{
+	if (imaginary == 0 && real == 0)
+		return 0U;
+
+	/* This is the R5-native equivalent of met_atan2_turns.  The shared
+	 * ap_int implementation is appropriate for HLS, but synthesizes hundreds
+	 * of software helper operations on Arm for every published harmonic. */
+	auto x = real;
+	auto y = imaginary;
+	std::uint32_t angle = 0U;
+	if (x < 0) {
+		x = -x;
+		y = -y;
+		angle = 0x80000000U;
+	}
+	const auto absolute = [](std::int64_t value) noexcept {
+		return value < 0 ?
+			static_cast<std::uint64_t>(-(value + 1)) + 1U :
+			static_cast<std::uint64_t>(value);
+	};
+	auto magnitude = std::max(absolute(x), absolute(y));
+	while (magnitude < (std::uint64_t{1} << 44U)) {
+		magnitude <<= 1U;
+		x *= 2;
+		y *= 2;
+	}
+	while (magnitude >= (std::uint64_t{1} << 45U)) {
+		magnitude >>= 1U;
+		x = arithmetic_shift_right(x, 1U);
+		y = arithmetic_shift_right(y, 1U);
+	}
+
+	for (unsigned iteration = 0U; iteration < cordic_atan_turns.size();
+		++iteration) {
+		const auto shifted_x = arithmetic_shift_right(x, iteration);
+		const auto shifted_y = arithmetic_shift_right(y, iteration);
+		if (y >= 0) {
+			x += shifted_y;
+			y -= shifted_x;
+			angle += cordic_atan_turns[iteration];
+		} else {
+			x -= shifted_y;
+			y += shifted_x;
+			angle -= cordic_atan_turns[iteration];
+		}
+	}
+	return static_cast<std::uint32_t>(
+		(static_cast<std::uint64_t>(angle) * 360000U) >> 32U);
 }
 
 void HarmonicAggregationEngine::accumulate_base(TierAccumulator &tier,
