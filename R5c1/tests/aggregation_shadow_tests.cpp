@@ -897,32 +897,64 @@ void test_harmonic_engine_resets_partial_tiers_in_place()
 		"post-discontinuity harmonic family lost its boundary marker");
 }
 
-void test_harmonic_engine_accepts_one_sample_endpoint_quantization()
+void test_harmonic_engine_bounds_endpoint_quantization()
 {
-	CapturingRecordSink sink;
-	aggregation::AggregationHealth health;
-	aggregation::HarmonicFrameDecoder decoder;
-	aggregation::HarmonicAggregationEngine engine(sink, health);
-	expect(engine.initialize(), "harmonic endpoint test initialization");
+	{
+		CapturingRecordSink sink;
+		aggregation::AggregationHealth health;
+		aggregation::HarmonicFrameDecoder decoder;
+		aggregation::HarmonicAggregationEngine engine(sink, health);
+		expect(engine.initialize(), "harmonic endpoint test initialization");
 
-	std::uint64_t first_sample = 0U;
-	for (std::uint32_t index = 0U; index < 15U; ++index) {
-		const auto frame = make_harmonic_frame(index + 1U, first_sample,
-			32000U, 6400U);
-		aggregation::HarmonicInputView input{};
-		expect(decoder.decode(frame, input) ==
-			aggregation::FrameValidationError::none,
-			"endpoint-quantized harmonic family decode");
-		engine.process(input);
-		/* The record keeps the exact nominal 6,400-sample lattice while
-		 * successive detected cycle boundaries alternate by one frame. */
-		first_sample += (index & 1U) == 0U ? 6399U : 6401U;
+		std::uint64_t first_sample = 0U;
+		for (std::uint32_t index = 0U; index < 15U; ++index) {
+			const auto frame = make_harmonic_frame(index + 1U, first_sample,
+				32000U, 6400U);
+			aggregation::HarmonicInputView input{};
+			expect(decoder.decode(frame, input) ==
+				aggregation::FrameValidationError::none,
+				"endpoint-quantized harmonic family decode");
+			engine.process(input);
+			/* The record keeps the exact nominal 6,400-sample lattice while
+			 * successive independently detected endpoints alternate by two
+			 * frames around the expected boundary. */
+			first_sample += (index & 1U) == 0U ? 6398U : 6402U;
+		}
+
+		expect(sink.count == aggregation::HarmonicProtocol::records_per_family,
+			"two-sample endpoint quantization reset the three-second tier");
+		expect((sink.records.front().words[8U] & (1U << 6U)) != 0U,
+			"endpoint-quantized startup family lost its boundary marker");
 	}
 
-	expect(sink.count == aggregation::HarmonicProtocol::records_per_family,
-		"one-sample endpoint quantization reset the three-second tier");
-	expect((sink.records.front().words[8U] & (1U << 6U)) != 0U,
-		"endpoint-quantized startup family lost its boundary marker");
+	for (const auto displacement : {-3, 3}) {
+		CapturingRecordSink sink;
+		aggregation::AggregationHealth health;
+		aggregation::HarmonicFrameDecoder decoder;
+		aggregation::HarmonicAggregationEngine engine(sink, health);
+		expect(engine.initialize(), "harmonic endpoint rejection initialization");
+
+		std::uint64_t first_sample = 0U;
+		for (std::uint32_t index = 0U; index < 16U; ++index) {
+			if (index == 1U)
+				first_sample = static_cast<std::uint64_t>(6400 + displacement);
+			const auto frame = make_harmonic_frame(index + 1U, first_sample,
+				32000U, 6400U);
+			aggregation::HarmonicInputView input{};
+			expect(decoder.decode(frame, input) ==
+				aggregation::FrameValidationError::none,
+				"out-of-range endpoint harmonic family decode");
+			engine.process(input);
+			first_sample += 6400U;
+		}
+
+		expect(sink.count == aggregation::HarmonicProtocol::records_per_family &&
+			sink.records.front().words[62U] == 2U &&
+			sink.records[sink.count - 1U].words[63U] == 16U,
+			"three-sample endpoint displacement did not reset the partial tier");
+		expect((sink.records.front().words[8U] & (1U << 6U)) != 0U,
+			"recovered endpoint family lost its discontinuity marker");
+	}
 }
 
 void test_harmonic_engine_emits_clean_ten_minute_and_two_hour_families()
@@ -3258,7 +3290,7 @@ int main()
 	test_harmonic_engine_emits_complete_three_second_family();
 	test_harmonic_engine_uses_circular_angles_and_propagates_validity();
 	test_harmonic_engine_resets_partial_tiers_in_place();
-	test_harmonic_engine_accepts_one_sample_endpoint_quantization();
+	test_harmonic_engine_bounds_endpoint_quantization();
 	test_harmonic_engine_emits_clean_ten_minute_and_two_hour_families();
 	test_ring();
 	test_output_ring();
