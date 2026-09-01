@@ -160,6 +160,17 @@ void build_adc_health(msap1::adc::AdcController &adc,
 	health.meter_generation = meter.generation;
 	health.conversion_status = meter.conversion_status;
 	health.processing_status = meter.processing_status;
+	health.meter_requested_current_adc_phase_map =
+		meter.requested_current_phase_map;
+	health.meter_requested_current_adc_invert_mask =
+		meter.requested_current_invert_mask;
+	health.meter_active_current_adc_phase_map =
+		meter.active_current_phase_map;
+	health.meter_active_current_adc_invert_mask =
+		meter.active_current_invert_mask;
+	health.meter_wiring_apply_status = meter.wiring_apply_status;
+	health.meter_wiring_readback_mismatch_count =
+		meter.wiring_readback_mismatch_count;
 	if (meter.cores_present)
 		health.meter_health_flags |= MSAP1_METER_HEALTH_CORES_PRESENT;
 	if (meter.configured)
@@ -171,6 +182,9 @@ void build_adc_health(msap1::adc::AdcController &adc,
 		health.meter_health_flags |= MSAP1_METER_HEALTH_ENABLED;
 	if (meter.remove_dc)
 		health.meter_health_flags |= MSAP1_METER_HEALTH_REMOVE_DC;
+	if (meter.current_wiring_matches)
+		health.meter_health_flags |=
+			MSAP1_METER_HEALTH_CURRENT_WIRING_MATCH;
 }
 
 } // namespace msap1::r5c0

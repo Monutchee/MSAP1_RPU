@@ -36,6 +36,19 @@ inline constexpr std::uint32_t minimum_input_capacity_per_second =
 	(maximum_input_packets_per_second *
 		(100U + scheduling_margin_percent) + 99U) / 100U;
 
+/*
+ * Arithmetic occasionally completes a large interval or power-quality
+ * window in the same activation that validates the incoming frame.  Target
+ * telemetry bounds that burst at 80 ms.  Size the software ring for that
+ * complete interval at the already margin-adjusted private-link rate so the
+ * higher-priority receiver can continue emptying the hardware FIFO without
+ * turning a bounded arithmetic burst into backpressure.
+ */
+inline constexpr std::uint32_t validator_burst_budget_microseconds = 80000U;
+inline constexpr std::size_t minimum_software_ring_capacity =
+	(static_cast<std::uint64_t>(minimum_input_capacity_per_second) *
+		validator_burst_budget_microseconds + 999999ULL) / 1000000ULL;
+
 [[nodiscard]] inline constexpr std::uint32_t input_capacity_per_second(
 	std::uint32_t tick_rate_hz) noexcept
 {

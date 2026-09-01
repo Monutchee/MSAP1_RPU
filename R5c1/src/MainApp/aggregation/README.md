@@ -55,6 +55,8 @@ per activation, notifies `AGG_VAL`, and then blocks for at least one RTOS tick.
 R5C1 uses a 1 kHz FreeRTOS tick, so the bounded handoff has a 4,000-packet/s
 ceiling. A compile-time rate budget requires at least 754 packets/s: the
 685-packet/s worst case at 128 kSPS plus ten percent scheduling margin.
+The 64-frame software ring also covers one 80 ms validator arithmetic burst at
+that margin-adjusted rate; reducing it below 61 frames is a compile-time error.
 That bounded handoff is required because `taskYIELD()` cannot schedule a
 lower-priority task. `AGG_TX` preempts `AGG_VAL` whenever a completed record is
 ready, while `AGG_VAL` performs arithmetic only while both I/O owners are

@@ -968,7 +968,7 @@ void test_scheduler_timing_survives_pmu_counter_wrap()
 void test_bounded_input_handoff_preserves_validator_progress()
 {
 	constexpr std::uint32_t backlog = 256U;
-	constexpr std::uint32_t ring_capacity = 64U;
+	constexpr auto ring_capacity = aggregation::AggregationFrameRing::capacity;
 	static_assert(
 		aggregation::scheduler_policy::maximum_input_batch == 4U,
 		"production input drain must remain bounded to four packets");
@@ -978,6 +978,12 @@ void test_bounded_input_handoff_preserves_validator_progress()
 	static_assert(
 		aggregation::scheduler_policy::minimum_input_capacity_per_second == 754U,
 		"scheduler must retain at least ten percent packet-rate margin");
+	static_assert(
+		aggregation::scheduler_policy::minimum_software_ring_capacity == 61U,
+		"80 ms validator burst budget changed unexpectedly");
+	static_assert(ring_capacity >=
+		aggregation::scheduler_policy::minimum_software_ring_capacity,
+		"production software ring must absorb one bounded validator burst");
 
 	expect(!aggregation::scheduler_policy::supports_maximum_input_rate(100U),
 		"100 Hz RTOS tick exposes the former 400-packet/s ceiling");

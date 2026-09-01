@@ -7,6 +7,7 @@
 
 #include <array>
 #include <cstring>
+#include <limits>
 
 namespace msap1::meter {
 namespace {
@@ -21,6 +22,8 @@ constexpr std::uint32_t conversion_shadow_valid_mask = 0x14;
 constexpr std::uint32_t conversion_shadow_scale = 0x18;
 constexpr std::uint32_t conversion_active_generation = 0x38;
 constexpr std::uint32_t conversion_active_valid_mask = 0x3c;
+constexpr std::uint32_t conversion_shadow_current_wiring = 0x44;
+constexpr std::uint32_t conversion_active_current_wiring = 0x48;
 
 constexpr std::uint32_t processing_shadow_generation = 0x10;
 constexpr std::uint32_t processing_shadow_sample_rate = 0x14;
@@ -72,6 +75,35 @@ constexpr std::uint32_t control_enable = 1u << 1;
 constexpr std::uint32_t control_remove_dc = 1u << 2;
 constexpr unsigned int readback_attempts = 1000;
 
+std::uint32_t current_phase_map(const Configuration &configuration)
+{
+	std::uint32_t result = 0;
+	for (std::size_t channel = 0; channel < current_channel_count; ++channel)
+		result |= static_cast<std::uint32_t>(
+			configuration.current_phase_by_adc[channel]) << (channel * 2u);
+	return result;
+}
+
+std::uint32_t current_wiring(const Configuration &configuration)
+{
+	return current_phase_map(configuration) |
+		(static_cast<std::uint32_t>(configuration.current_invert_mask) << 8u);
+}
+
+bool valid_current_wiring(const Configuration &configuration)
+{
+	if ((configuration.current_invert_mask & ~0x0fu) != 0u)
+		return false;
+	std::array<bool, current_channel_count> seen{};
+	for (const auto phase : configuration.current_phase_by_adc) {
+		const auto code = static_cast<std::size_t>(phase);
+		if (code >= seen.size() || seen[code])
+			return false;
+		seen[code] = true;
+	}
+	return true;
+}
+
 bool valid_configuration(const Configuration &configuration)
 {
 	if (configuration.generation == 0u ||
@@ -95,7 +127,8 @@ bool valid_configuration(const Configuration &configuration)
 	    configuration.frequency.minimum_millihz >=
 		configuration.frequency.maximum_millihz ||
 	    configuration.frequency.hysteresis_microvolts == 0u ||
-	    configuration.frequency.hysteresis_microvolts > 100000000u)
+	    configuration.frequency.hysteresis_microvolts > 100000000u ||
+	    !valid_current_wiring(configuration))
 		return false;
 
 	// Event detection: a zero reference is the documented DISARMED
@@ -227,6 +260,13 @@ bool MeteringPipeline::cores_present() const
 
 Error MeteringPipeline::configure(const Configuration &configuration)
 {
+	const auto previous_apply_status = wiring_apply_status_;
+	const bool verifying_rolled_back_configuration = configured_ &&
+		configuration.generation == configuration_.generation &&
+		(previous_apply_status == MSAP1_METER_WIRING_APPLY_ROLLED_BACK ||
+		 previous_apply_status ==
+			 MSAP1_METER_WIRING_APPLY_ROLLBACK_FAILED);
+	wiring_apply_status_ = MSAP1_METER_WIRING_APPLY_FAILED;
 	if (!valid_configuration(configuration))
 		return Error::InvalidConfiguration;
 	if (m18_staged_ &&
@@ -242,6 +282,9 @@ Error MeteringPipeline::configure(const Configuration &configuration)
 			 configuration.generation);
 	conversion_write(conversion_shadow_valid_mask,
 			 configuration.valid_mask);
+	const auto expected_current_wiring = current_wiring(configuration);
+	conversion_write(conversion_shadow_current_wiring,
+			 expected_current_wiring);
 	for (std::size_t channel = 0; channel < channel_count; ++channel)
 		conversion_write(conversion_shadow_scale + channel * 4u,
 				 configuration.scale_micro_units_q16[channel]);
@@ -323,6 +366,9 @@ Error MeteringPipeline::configure(const Configuration &configuration)
 	const bool mask_matches =
 		(conversion_read(conversion_active_valid_mask) & 0xffu) ==
 			configuration.valid_mask;
+	const bool current_wiring_matches =
+		conversion_read(conversion_active_current_wiring) ==
+			expected_current_wiring;
 	const bool conversion_enabled =
 		(conversion_read(status_register) & 1u) != 0u;
 	const bool processing_enabled =
@@ -343,20 +389,65 @@ Error MeteringPipeline::configure(const Configuration &configuration)
 	const bool grid_matches =
 		processing_read(processing_grid_active_config) ==
 			expected_grid_config;
-	if (!generation_matches || !mask_matches ||
+	if (!generation_matches || !mask_matches || !current_wiring_matches ||
 	    conversion_enabled != configuration.enable ||
 	    processing_enabled != configuration.enable || !frequency_matches ||
-	    !grid_matches)
+	    !grid_matches) {
+		if (!current_wiring_matches &&
+		    wiring_readback_mismatch_count_ !=
+			std::numeric_limits<std::uint32_t>::max())
+			++wiring_readback_mismatch_count_;
 		return Error::ReadbackMismatch;
+	}
 
 	configuration_ = configuration;
+	if (m18_staged_) {
+		active_power_quality_configuration_ = power_quality_configuration_;
+		m18_active_ = true;
+	}
 	configured_ = true;
+	/* The APU deliberately reapplies the previous snapshot to verify a
+	 * rollback. Keep that transaction outcome visible until a different
+	 * configuration generation succeeds. */
+	wiring_apply_status_ = verifying_rolled_back_configuration ?
+		MSAP1_METER_WIRING_APPLY_ROLLED_BACK :
+		MSAP1_METER_WIRING_APPLY_SUCCESS;
 	return Error::None;
+}
+
+void MeteringPipeline::record_transaction_rollback(bool succeeded)
+{
+	wiring_apply_status_ = succeeded ?
+		MSAP1_METER_WIRING_APPLY_ROLLED_BACK :
+		MSAP1_METER_WIRING_APPLY_ROLLBACK_FAILED;
+}
+
+void MeteringPipeline::restore_staged_power_quality_configuration()
+{
+	/* M18 is delivered before METER_CONFIG_SET. Restore the pending image as
+	 * part of the same transaction even when the failure occurred before the
+	 * PL meter APPLY was reached. */
+	if (m18_active_) {
+		power_quality_configuration_ = active_power_quality_configuration_;
+		m18_staged_ = true;
+	} else {
+		power_quality_configuration_ = {};
+		m18_staged_ = false;
+	}
 }
 
 Status MeteringPipeline::status() const
 {
 	Status result;
+	/* Requested state and the last transaction outcome remain diagnostic even
+	 * when the PL cores disappear or have not been mapped yet. */
+	result.generation = configuration_.generation;
+	result.requested_current_phase_map = current_phase_map(configuration_);
+	result.requested_current_invert_mask = configuration_.current_invert_mask;
+	result.wiring_apply_status = wiring_apply_status_;
+	result.wiring_readback_mismatch_count = wiring_readback_mismatch_count_;
+	result.configured = configured_;
+	result.remove_dc = configuration_.remove_dc;
 	result.cores_present = cores_present();
 	if (!result.cores_present)
 		return result;
@@ -369,6 +460,9 @@ Status MeteringPipeline::status() const
 	result.processing_status = processing_read(status_register);
 	result.frequency_status = processing_read(processing_frequency_status);
 	result.grid_status = processing_read(processing_grid_status);
+	const auto active_wiring = conversion_read(conversion_active_current_wiring);
+	result.active_current_phase_map = active_wiring & 0xffu;
+	result.active_current_invert_mask = (active_wiring >> 8u) & 0x0fu;
 	result.aggregate_status = processing_read(processing_agg_status);
 	result.aggregate_records = processing_read(processing_agg_record_count);
 	result.aggregate_resets = processing_read(processing_agg_reset_count);
@@ -377,14 +471,15 @@ Status MeteringPipeline::status() const
 	result.aggregate_continuity_errors =
 		processing_read(processing_agg_continuity_count);
 	result.aggregate_drops = processing_read(processing_agg_drop_count);
-	result.generation = configuration_.generation;
-	result.configured = configured_;
 	result.generation_matches = configured_ &&
 		result.conversion_active_generation == configuration_.generation &&
 		result.processing_active_generation == configuration_.generation;
+	result.current_wiring_matches = configured_ &&
+		result.active_current_phase_map == result.requested_current_phase_map &&
+		result.active_current_invert_mask ==
+			result.requested_current_invert_mask;
 	result.enabled = (result.conversion_status & 1u) != 0u &&
 		(result.processing_status & 1u) != 0u;
-	result.remove_dc = configuration_.remove_dc;
 	return result;
 }
 
