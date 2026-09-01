@@ -9,6 +9,13 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/UserConfig.cmake)
 set(APP_NAME R5c1)
 project(${APP_NAME})
 
+# Keep both R5 firmware images on one explicit language contract.  Requiring
+# the standard prevents CMake from silently falling back when the toolchain is
+# changed.
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 find_package(common)
 enable_language(C ASM CXX)
 collect(PROJECT_LIB_DEPS xilstandalone;xiltimer;metal;open_amp;xilmailbox;freertos;m)
