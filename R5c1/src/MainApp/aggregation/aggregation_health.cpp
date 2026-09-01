@@ -228,6 +228,28 @@ void AggregationHealth::record_two_hour_completed() noexcept
 	increment(two_hour_completed_);
 }
 
+void AggregationHealth::record_frequency_completed(std::uint32_t sequence,
+	bool valid) noexcept
+{
+	increment(frequency_completed_);
+	if (valid)
+		increment(frequency_valid_);
+	else
+		increment(frequency_invalid_);
+	store(frequency_last_sequence_, sequence);
+}
+
+void AggregationHealth::record_frequency_transport_gap(
+	std::uint32_t count) noexcept
+{
+	increment(frequency_transport_gaps_, count);
+}
+
+void AggregationHealth::record_frequency_placeholder() noexcept
+{
+	increment(frequency_placeholders_);
+}
+
 void AggregationHealth::observe_software_ring(std::uint32_t used,
 	std::uint32_t capacity) noexcept
 {
@@ -320,6 +342,12 @@ AggregationHealthSnapshot AggregationHealth::snapshot() const noexcept
 	result.aggregate_completed = load(aggregate_completed_);
 	result.ten_minute_completed = load(ten_minute_completed_);
 	result.two_hour_completed = load(two_hour_completed_);
+	result.frequency_completed = load(frequency_completed_);
+	result.frequency_valid = load(frequency_valid_);
+	result.frequency_invalid = load(frequency_invalid_);
+	result.frequency_transport_gaps = load(frequency_transport_gaps_);
+	result.frequency_placeholders = load(frequency_placeholders_);
+	result.frequency_last_sequence = load(frequency_last_sequence_);
 	result.last_sequence = load(last_sequence_);
 	result.expected_sequence = load(expected_sequence_);
 	result.last_fifo_error = load(last_fifo_error_);

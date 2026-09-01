@@ -45,6 +45,8 @@ AggregationShadowService::AggregationShadowService(
 	const VoltageSampleFrameDecoder &voltage_sample_decoder,
 	FlickerEngine &flicker_engine,
 	MainsSignalEngine &mains_signal_engine,
+	const Frequency10sFrameDecoder &frequency_decoder,
+	Frequency10sEngine &frequency_engine,
 	AggregationHealth &health) noexcept
 	: transport_(transport), ring_(ring), decoder_(decoder), engine_(engine),
 	  harmonic_decoder_(harmonic_decoder), harmonic_engine_(harmonic_engine),
@@ -52,6 +54,8 @@ AggregationShadowService::AggregationShadowService(
 	  voltage_sample_decoder_(voltage_sample_decoder),
 	  flicker_engine_(flicker_engine),
 	  mains_signal_engine_(mains_signal_engine),
+	  frequency_decoder_(frequency_decoder),
+	  frequency_engine_(frequency_engine),
 	  health_(health)
 {
 }
@@ -74,7 +78,7 @@ bool AggregationShadowService::initialize(TaskHandle_t input_task,
 	health_.observe_hardware_fifo(transport_.input_occupancy_words());
 	return engine_.initialize() && harmonic_engine_.initialize() &&
 		pq_event_engine_.initialize() && flicker_engine_.initialize() &&
-		mains_signal_engine_.initialize();
+		mains_signal_engine_.initialize() && frequency_engine_.initialize();
 }
 
 void AggregationShadowService::record_transport_errors() noexcept
@@ -87,6 +91,7 @@ void AggregationShadowService::record_transport_errors() noexcept
 		pq_event_engine_.note_transport_discontinuity();
 		flicker_engine_.note_transport_discontinuity();
 		mains_signal_engine_.note_transport_discontinuity();
+		frequency_engine_.note_transport_discontinuity();
 	}
 	const auto full_events = transport_.take_input_full_events();
 	if (full_events != 0U)
@@ -149,6 +154,7 @@ void AggregationShadowService::notify_validator() noexcept
 					pq_event_engine_.note_transport_discontinuity();
 					flicker_engine_.note_transport_discontinuity();
 					mains_signal_engine_.note_transport_discontinuity();
+					frequency_engine_.note_transport_discontinuity();
 					break;
 				}
 				++queued;
@@ -161,6 +167,7 @@ void AggregationShadowService::notify_validator() noexcept
 				pq_event_engine_.note_transport_discontinuity();
 				flicker_engine_.note_transport_discontinuity();
 				mains_signal_engine_.note_transport_discontinuity();
+				frequency_engine_.note_transport_discontinuity();
 				break;
 			case TransportReadResult::hardware_error:
 				{
@@ -174,6 +181,7 @@ void AggregationShadowService::notify_validator() noexcept
 					pq_event_engine_.note_transport_discontinuity();
 					flicker_engine_.note_transport_discontinuity();
 					mains_signal_engine_.note_transport_discontinuity();
+					frequency_engine_.note_transport_discontinuity();
 				}
 				break;
 			case TransportReadResult::no_frame:
@@ -209,6 +217,7 @@ void AggregationShadowService::notify_validator() noexcept
 	HarmonicInputView harmonic_input{};
 	PqEventInputView pq_event_input{};
 	VoltageSampleInputView voltage_sample_input{};
+	Frequency10sInputView frequency_input{};
 	for (;;) {
 		(void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 		const auto activation_start = monotonic_counter_ticks();
@@ -275,6 +284,20 @@ void AggregationShadowService::notify_validator() noexcept
 				health_.record_auxiliary_valid();
 				flicker_engine_.process(voltage_sample_input);
 				mains_signal_engine_.process(voltage_sample_input);
+				continue;
+			}
+
+			if (validator_frame_.word_count != 0U &&
+				validator_frame_.words[0U] == Frequency10sProtocol::magic) {
+				const auto error = frequency_decoder_.decode(
+					validator_frame_, frequency_input);
+				if (error != FrameValidationError::none) {
+					health_.record_invalid(error);
+					frequency_engine_.note_transport_discontinuity();
+					continue;
+				}
+				health_.record_auxiliary_valid();
+				frequency_engine_.process(frequency_input);
 				continue;
 			}
 

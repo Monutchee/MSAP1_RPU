@@ -85,6 +85,7 @@ CRC32C word. The dispatcher accepts these exact co-release contracts:
 | `PQE1` | 69 | Half-cycle PQ-event sufficient statistics |
 | `VSB1` rev. 1 | 1,043 | 256 signed-microvolt VA/VB/VC frames plus status, metadata, and trailer |
 | `HRM1` | 2,693 | One byte-exact 42-record base-harmonic family |
+| `FRQ1` | 2,077 | Ten-second boundary metadata plus up to 1,024 signed Q16 crossing observations |
 
 The AGG1 frame is:
 
@@ -118,6 +119,18 @@ packet-sized object is placed on a task stack. Rapid-voltage-change lifecycle
 evaluation compares Urms(1/2) values one complete cycle apart because the
 overlapping one-cycle RMS window settles a physical step over two half-cycle
 updates.
+
+FRQ1 is an observation contract, not a measurement record. PL conditions the
+configured factory reference, linearly interpolates positive-going crossings,
+and attaches UTC boundary provenance. `Frequency10sFrameDecoder` rejects mixed
+revisions, malformed geometry, unordered crossings, nonzero padding, and bad
+CRC before exposing an immutable view. `Frequency10sEngine` on R5C1 is the sole
+interval authority: it selects only crossing pairs wholly inside the exact
+ten-second boundary, computes one cycle-weighted frequency, and emits the
+fixed `FREQUENCY-10S-v1` record (`0x00280001`). A missing interval, unsupported
+profile, discontinuity, lost observation, uncertain time, or invalid cycle
+geometry still produces a zero-valued record with explicit status and reason
+bits; measurement payloads never use RPMsg.
 
 ## Authority and failure behavior
 
@@ -165,4 +178,6 @@ mains-signalling estimator against an independent double-precision oracle at
 every supported carrier-compatible sample rate. The event matrix includes a
 physical 5% step reconstructed across consecutive Urms(1/2) updates so the
 default 3% rapid-voltage-change profile cannot regress to adjacent-update
-comparison.
+comparison. FRQ1 vectors cover guarded boundary crossings, exact 10-second UTC
+geometry, complete-cycle selection, invalid-profile records, and deterministic
+gap placeholders.

@@ -5,6 +5,8 @@
 #include "aggregation_scheduler_policy.hpp"
 #include "crc32c.hpp"
 #include "flicker_engine.hpp"
+#include "frequency_10s_engine.hpp"
+#include "frequency_10s_frame_decoder.hpp"
 #include "voltage_sample_frame_decoder.hpp"
 #include "harmonic_aggregation_engine.hpp"
 #include "harmonic_frame_decoder.hpp"
@@ -308,6 +310,219 @@ void test_invalid_frames()
 	expect(decoder.decode(frame, input) ==
 		aggregation::FrameValidationError::reserved_bits_nonzero,
 		"target reserved-bit guard");
+}
+
+void set_frequency_u64(std::uint32_t *words, std::size_t low_word,
+	std::uint64_t value)
+{
+	words[low_word] = static_cast<std::uint32_t>(value);
+	words[low_word + 1U] = static_cast<std::uint32_t>(value >> 32U);
+}
+
+void set_frequency_s64(std::uint32_t *words, std::size_t low_word,
+	std::int64_t value)
+{
+	set_frequency_u64(words, low_word, std::bit_cast<std::uint64_t>(value));
+}
+
+aggregation::AggregationFrame make_frequency_10s_frame(
+	std::uint32_t sequence = 42U, bool guards = false)
+{
+	using Protocol = aggregation::Frequency10sProtocol;
+	constexpr std::uint64_t start_sample = 1000000ULL;
+	constexpr std::uint64_t interval_samples = 1280000ULL;
+	constexpr std::int64_t period_q16 = 2560LL << 16U;
+	aggregation::AggregationFrame frame{};
+	frame.word_count = Protocol::frame_words;
+	frame.words[Protocol::magic_index] = Protocol::magic;
+	frame.words[Protocol::contract_revision_index] =
+		Protocol::contract_revision;
+	frame.words[Protocol::payload_count_index] = Protocol::payload_words;
+	frame.words[Protocol::transport_sequence_index] = sequence;
+	auto *payload = frame.words.data() + Protocol::payload_index;
+	payload[Protocol::sequence_word] = sequence;
+	payload[Protocol::generation_word] = 7U;
+	payload[Protocol::sample_rate_hz_word] = 128000U;
+	payload[Protocol::measured_sample_rate_millihz_word] = 128000000U;
+	payload[Protocol::nominal_frequency_hz_word] = 50U;
+	payload[Protocol::profile_word] = 6U | (1U << 8U) | (1U << 16U);
+	payload[Protocol::status_word] = Protocol::status_boundary_valid |
+		Protocol::status_time_synchronized |
+		Protocol::status_sample_rate_valid |
+		Protocol::status_filter_ready |
+		Protocol::status_reference_valid |
+		Protocol::status_calibration_valid |
+		Protocol::status_profile_supported;
+	set_frequency_u64(payload, Protocol::interval_start_sample_word,
+		start_sample);
+	set_frequency_u64(payload, Protocol::interval_end_sample_word,
+		start_sample + interval_samples);
+	set_frequency_u64(payload, Protocol::utc_start_nanoseconds_word,
+		20000000000ULL);
+	set_frequency_u64(payload, Protocol::utc_end_nanoseconds_word,
+		30000000000ULL);
+	set_frequency_u64(payload, Protocol::utc_uncertainty_nanoseconds_word,
+		100000ULL);
+	payload[Protocol::boundary_generation_word] = 9U;
+	payload[Protocol::crossing_count_word] = guards ? 503U : 501U;
+	payload[Protocol::guard_flags_word] = guards
+		? Protocol::guard_before_start | Protocol::guard_after_end |
+			Protocol::guard_exact_start | Protocol::guard_exact_end
+		: Protocol::guard_exact_start | Protocol::guard_exact_end;
+	auto *crossings = payload + Protocol::crossing_base_word;
+	if (guards)
+		set_frequency_s64(crossings, 0U, -period_q16);
+	for (std::size_t index = 0U; index <= 500U; ++index) {
+		const auto target = guards ? index + 1U : index;
+		set_frequency_s64(crossings, target * 2U,
+			static_cast<std::int64_t>(index) * period_q16);
+	}
+	if (guards)
+		set_frequency_s64(crossings, 502U * 2U, 501LL * period_q16);
+	frame.words[Protocol::crc_index] = aggregation::crc32c_words(
+		frame.words.data(), Protocol::crc_index);
+	return frame;
+}
+
+void refresh_frequency_10s_crc(aggregation::AggregationFrame &frame)
+{
+	frame.words[aggregation::Frequency10sProtocol::crc_index] =
+		aggregation::crc32c_words(frame.words.data(),
+			aggregation::Frequency10sProtocol::crc_index);
+}
+
+void test_frequency_10s_frame_decoder()
+{
+	using Error = aggregation::FrameValidationError;
+	using Protocol = aggregation::Frequency10sProtocol;
+	aggregation::Frequency10sFrameDecoder decoder;
+	aggregation::Frequency10sInputView input{};
+	auto frame = make_frequency_10s_frame(17U, true);
+	expect(decoder.decode(frame, input) == Error::none,
+		"FRQ1 valid guarded frame rejected");
+	expect(input.sequence == 17U && input.crossing_count == 503U &&
+		input.crossing_q16(0U) == -(2560LL << 16U) &&
+		input.crossing_q16(502U) == (501LL * (2560LL << 16U)),
+		"FRQ1 metadata and signed crossing decode");
+
+	frame.words[Protocol::payload_index + Protocol::profile_word] ^= 1U;
+	expect(decoder.decode(frame, input) == Error::crc_mismatch,
+		"FRQ1 CRC guard");
+
+	frame = make_frequency_10s_frame();
+	auto *payload = frame.words.data() + Protocol::payload_index;
+	payload[Protocol::crossing_base_word + 1002U] = 1U;
+	refresh_frequency_10s_crc(frame);
+	expect(decoder.decode(frame, input) == Error::reserved_bits_nonzero,
+		"FRQ1 zero-padding guard");
+
+	frame = make_frequency_10s_frame();
+	payload = frame.words.data() + Protocol::payload_index;
+	set_frequency_s64(payload + Protocol::crossing_base_word, 2U, 0);
+	refresh_frequency_10s_crc(frame);
+	expect(decoder.decode(frame, input) == Error::invalid_record_geometry,
+		"FRQ1 ordered crossing guard");
+
+	frame = make_frequency_10s_frame();
+	payload = frame.words.data() + Protocol::payload_index;
+	payload[Protocol::crossing_count_word] =
+		static_cast<std::uint32_t>(Protocol::crossing_capacity + 1U);
+	refresh_frequency_10s_crc(frame);
+	expect(decoder.decode(frame, input) == Error::reserved_bits_nonzero,
+		"FRQ1 bounded crossing-count guard");
+
+	frame = make_frequency_10s_frame();
+	payload = frame.words.data() + Protocol::payload_index;
+	set_frequency_u64(payload, Protocol::utc_end_nanoseconds_word,
+		30000000001ULL);
+	refresh_frequency_10s_crc(frame);
+	expect(decoder.decode(frame, input) == Error::invalid_record_geometry,
+		"FRQ1 exact ten-second UTC geometry guard");
+}
+
+void test_frequency_10s_engine()
+{
+	using Protocol = aggregation::Frequency10sProtocol;
+	using Record = aggregation::Frequency10sRecord;
+	aggregation::Frequency10sFrameDecoder decoder;
+	aggregation::Frequency10sInputView input{};
+	aggregation::AggregationHealth health;
+	CapturingRecordSink sink;
+	aggregation::Frequency10sEngine engine(sink, health, true);
+	expect(engine.initialize(), "frequency 10-second engine initialization");
+
+	const auto guarded = make_frequency_10s_frame(40U, true);
+	expect(decoder.decode(guarded, input) ==
+		aggregation::FrameValidationError::none,
+		"guarded frequency input decode");
+	engine.process(input);
+	expect(sink.count == 1U, "frequency engine emits one record per interval");
+	const auto &record = sink.records[0U];
+	expect(record.words[0U] == Record::magic &&
+		record.words[1U] == Record::format &&
+		record.words[2U] == Record::bytes,
+		"frequency public record identity");
+	expect(record.words[Record::frequency_millihz_word] == 50000U &&
+		record.words[Record::cycle_count_word] == 500U,
+		"frequency uses complete in-boundary cycles");
+	expect(record.words[Record::included_crossing_count_word] == 501U &&
+		record.words[Record::observed_crossing_count_word] == 503U,
+		"frequency excludes guard crossings from arithmetic");
+	expect((record.words[8U] & Record::status_result_valid) != 0U &&
+		record.words[Record::reason_word] == 0U,
+		"factory-profile 50 Hz interval is valid");
+
+	auto unsupported = make_frequency_10s_frame(41U);
+	auto *payload = unsupported.words.data() + Protocol::payload_index;
+	payload[Protocol::profile_word] = 5U | (1U << 8U) | (1U << 16U);
+	refresh_frequency_10s_crc(unsupported);
+	expect(decoder.decode(unsupported, input) ==
+		aggregation::FrameValidationError::none,
+		"well-formed unsupported frequency profile decodes");
+	engine.process(input);
+	expect(sink.count == 2U &&
+		sink.records[1U].words[Record::frequency_millihz_word] == 0U &&
+		(sink.records[1U].words[Record::reason_word] &
+			Protocol::reason_unsupported_profile) != 0U,
+		"unsupported profile emits auditable invalid record");
+
+	const auto value = health.snapshot();
+	expect(value.frequency_completed == 2U && value.frequency_valid == 1U &&
+		value.frequency_invalid == 1U &&
+		value.frequency_last_sequence == 41U,
+		"frequency validity health telemetry");
+}
+
+void test_frequency_10s_gap_placeholders()
+{
+	using Record = aggregation::Frequency10sRecord;
+	aggregation::Frequency10sFrameDecoder decoder;
+	aggregation::Frequency10sInputView input{};
+	aggregation::AggregationHealth health;
+	CapturingRecordSink sink;
+	aggregation::Frequency10sEngine engine(sink, health, true);
+	expect(engine.initialize(), "frequency gap engine initialization");
+	auto frame = make_frequency_10s_frame(10U);
+	expect(decoder.decode(frame, input) ==
+		aggregation::FrameValidationError::none, "frequency gap seed decode");
+	engine.process(input);
+	frame = make_frequency_10s_frame(12U);
+	expect(decoder.decode(frame, input) ==
+		aggregation::FrameValidationError::none, "frequency gap tail decode");
+	engine.process(input);
+	expect(sink.count == 3U && sink.records[1U].sequence == 11U &&
+		(sink.records[1U].words[Record::reason_word] &
+			Record::reason_transport_gap) != 0U &&
+		sink.records[1U].words[Record::frequency_millihz_word] == 0U,
+		"missing interval becomes an explicit invalid placeholder");
+	expect((sink.records[2U].words[Record::reason_word] &
+		Record::reason_transport_gap) != 0U,
+		"first recovered interval remains visibly discontinuous");
+	const auto value = health.snapshot();
+	expect(value.frequency_transport_gaps == 1U &&
+		value.frequency_placeholders == 1U &&
+		value.frequency_completed == 3U,
+		"frequency gap health telemetry");
 }
 
 aggregation::AggregationFrame make_harmonic_frame(
@@ -858,6 +1073,10 @@ void test_health()
 	health.record_ring_overflow();
 	health.record_fifo_error(0x55AAU);
 	health.record_length_error(12U);
+	health.record_frequency_completed(77U, true);
+	health.record_frequency_completed(78U, false);
+	health.record_frequency_transport_gap(3U);
+	health.record_frequency_placeholder();
 
 	const auto value = health.snapshot();
 	expect(value.transport_available && value.transport_initialized,
@@ -878,6 +1097,12 @@ void test_health()
 		"deterministic dropped-sequence telemetry");
 	expect(value.last_fifo_error == 0x55AAU && value.last_frame_length == 12U,
 		"last-error context");
+	expect(value.frequency_completed == 2U && value.frequency_valid == 1U &&
+		value.frequency_invalid == 1U &&
+		value.frequency_transport_gaps == 3U &&
+		value.frequency_placeholders == 1U &&
+		value.frequency_last_sequence == 78U,
+		"frequency health counters");
 }
 
 void test_ring_pressure_telemetry()
@@ -3025,6 +3250,9 @@ int main()
 	test_crc32c();
 	test_valid_frame();
 	test_invalid_frames();
+	test_frequency_10s_frame_decoder();
+	test_frequency_10s_engine();
+	test_frequency_10s_gap_placeholders();
 	test_harmonic_frame_decoder();
 	test_harmonic_integer_sqrt_is_exact();
 	test_harmonic_engine_emits_complete_three_second_family();

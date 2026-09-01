@@ -5,6 +5,8 @@
 #include "aggregation_frame_ring.hpp"
 #include "aggregation_health.hpp"
 #include "flicker_engine.hpp"
+#include "frequency_10s_engine.hpp"
+#include "frequency_10s_frame_decoder.hpp"
 #include "harmonic_aggregation_engine.hpp"
 #include "harmonic_frame_decoder.hpp"
 #include "mains_signal_engine.hpp"
@@ -41,6 +43,8 @@ public:
 		const VoltageSampleFrameDecoder &voltage_sample_decoder,
 		FlickerEngine &flicker_engine,
 		MainsSignalEngine &mains_signal_engine,
+		const Frequency10sFrameDecoder &frequency_decoder,
+		Frequency10sEngine &frequency_engine,
 		AggregationHealth &health) noexcept;
 
 	bool initialize(TaskHandle_t input_task,
@@ -63,6 +67,8 @@ private:
 	const VoltageSampleFrameDecoder &voltage_sample_decoder_;
 	FlickerEngine &flicker_engine_;
 	MainsSignalEngine &mains_signal_engine_;
+	const Frequency10sFrameDecoder &frequency_decoder_;
+	Frequency10sEngine &frequency_engine_;
 	AggregationHealth &health_;
 	/* Largest HRM1 packets cannot live on the 8 KiB worker stacks. */
 	AggregationFrame input_frame_{};
