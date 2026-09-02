@@ -45,6 +45,8 @@ for source in \
 	"$source_dir/aggregation_record_ring.cpp" \
 	"$source_dir/crc32c.cpp" \
 	"$source_dir/flicker_engine.cpp" \
+	"$source_dir/frequency_10s_engine.cpp" \
+	"$source_dir/frequency_10s_frame_decoder.cpp" \
 	"$source_dir/mains_signal_engine.cpp" \
 	"$source_dir/voltage_sample_frame_decoder.cpp" \
 	"$source_dir/harmonic_frame_decoder.cpp" \

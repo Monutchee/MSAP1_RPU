@@ -18,6 +18,8 @@
 #include "aggregation/harmonic_aggregation_engine.hpp"
 #include "aggregation/harmonic_frame_decoder.hpp"
 #include "aggregation/flicker_engine.hpp"
+#include "aggregation/frequency_10s_engine.hpp"
+#include "aggregation/frequency_10s_frame_decoder.hpp"
 #include "aggregation/mains_signal_engine.hpp"
 #include "aggregation/pq_event_frame_decoder.hpp"
 #include "aggregation/pq_event_lifecycle_engine.hpp"
@@ -50,6 +52,7 @@ static msap1::aggregation::AggregationFrameDecoder aggregation_decoder;
 static msap1::aggregation::HarmonicFrameDecoder harmonic_decoder;
 static msap1::aggregation::PqEventFrameDecoder pq_event_decoder;
 static msap1::aggregation::VoltageSampleFrameDecoder voltage_sample_decoder;
+static msap1::aggregation::Frequency10sFrameDecoder frequency_decoder;
 static msap1::aggregation::AggregationRecordRing aggregation_output_ring;
 static msap1::aggregation::AggregationOutputService aggregation_output(
 	aggregation_transport, aggregation_output_ring, aggregation_health);
@@ -64,11 +67,16 @@ static msap1::aggregation::FlickerEngine flicker_engine(
 	aggregation_output, aggregation_health);
 static msap1::aggregation::MainsSignalEngine mains_signal_engine(
 	aggregation_output, aggregation_health);
+static msap1::aggregation::Frequency10sEngine frequency_engine(
+	aggregation_output, aggregation_health,
+	aggregation_output_mode ==
+		msap1::aggregation::AggregationOutputMode::emit);
 static msap1::aggregation::AggregationShadowService aggregation_shadow(
 	aggregation_transport, aggregation_ring, aggregation_decoder,
 	aggregation_engine, harmonic_decoder, harmonic_engine, pq_event_decoder,
 	pq_event_engine, voltage_sample_decoder, flicker_engine,
-	mains_signal_engine, aggregation_health);
+	mains_signal_engine, frequency_decoder, frequency_engine,
+	aggregation_health);
 static msap1::aggregation::AggregationRuntime aggregation_runtime(
 	aggregation_shadow, aggregation_output, aggregation_health);
 static R5c1Service service(msap1::CoreConfig::current(), aggregation_health,

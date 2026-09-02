@@ -63,6 +63,8 @@ set(USER_COMPILE_SOURCES
 "MainApp/aggregation/harmonic_aggregation_engine.cpp"
 "MainApp/aggregation/harmonic_frame_decoder.cpp"
 "MainApp/aggregation/flicker_engine.cpp"
+"MainApp/aggregation/frequency_10s_engine.cpp"
+"MainApp/aggregation/frequency_10s_frame_decoder.cpp"
 "MainApp/aggregation/mains_signal_engine.cpp"
 "MainApp/aggregation/voltage_sample_frame_decoder.cpp"
 "MainApp/aggregation/pq_event_frame_decoder.cpp"

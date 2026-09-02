@@ -50,6 +50,12 @@ struct AggregationHealthSnapshot final {
 	std::uint32_t aggregate_completed{};
 	std::uint32_t ten_minute_completed{};
 	std::uint32_t two_hour_completed{};
+	std::uint32_t frequency_completed{};
+	std::uint32_t frequency_valid{};
+	std::uint32_t frequency_invalid{};
+	std::uint32_t frequency_transport_gaps{};
+	std::uint32_t frequency_placeholders{};
+	std::uint32_t frequency_last_sequence{};
 	std::uint32_t last_sequence{};
 	std::uint32_t expected_sequence{};
 	std::uint32_t last_fifo_error{};
@@ -110,6 +116,10 @@ public:
 	void record_aggregate_completed() noexcept;
 	void record_ten_minute_completed() noexcept;
 	void record_two_hour_completed() noexcept;
+	void record_frequency_completed(std::uint32_t sequence,
+		bool valid) noexcept;
+	void record_frequency_transport_gap(std::uint32_t count) noexcept;
+	void record_frequency_placeholder() noexcept;
 	void observe_software_ring(std::uint32_t used,
 		std::uint32_t capacity) noexcept;
 	void observe_hardware_fifo(std::uint32_t occupancy_words) noexcept;
@@ -156,6 +166,12 @@ private:
 	std::uint32_t aggregate_completed_{};
 	std::uint32_t ten_minute_completed_{};
 	std::uint32_t two_hour_completed_{};
+	std::uint32_t frequency_completed_{};
+	std::uint32_t frequency_valid_{};
+	std::uint32_t frequency_invalid_{};
+	std::uint32_t frequency_transport_gaps_{};
+	std::uint32_t frequency_placeholders_{};
+	std::uint32_t frequency_last_sequence_{};
 	std::uint32_t last_sequence_{};
 	std::uint32_t expected_sequence_{};
 	std::uint32_t last_fifo_error_{};

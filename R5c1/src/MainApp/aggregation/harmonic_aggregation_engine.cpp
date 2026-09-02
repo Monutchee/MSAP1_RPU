@@ -722,17 +722,16 @@ bool HarmonicAggregationEngine::accept_sequence(
 		expected_sequence);
 	if (delta < 0)
 		return false;
-	/* A qualified crossing is represented by one accepted ADC frame.  At a
-	 * nominal 10/12-cycle boundary, interpolation/noise may select the frame
-	 * immediately before or after the ideal crossing even though the
-	 * conditioner retains the exact nominal L/25 spectral lattice.  Accept
-	 * only that one-frame endpoint quantization; a larger displacement or a
-	 * sequence gap remains a real discontinuity. */
-	const bool adjacent_sample = input.first_sample == expected_first_sample_ ||
-		(expected_first_sample_ != 0U &&
-		 input.first_sample == expected_first_sample_ - 1U) ||
-		(expected_first_sample_ != std::numeric_limits<std::uint64_t>::max() &&
-		 input.first_sample == expected_first_sample_ + 1U);
+	/* The conditioner retains the exact nominal L/25 spectral lattice, while
+	 * the two independently quantized source-block endpoints may move the next
+	 * first sample by two accepted ADC frames.  Normalize only that bounded
+	 * displacement; a larger displacement or sequence gap remains a real
+	 * discontinuity. */
+	constexpr std::uint64_t endpoint_quantization_frames = 2U;
+	const auto sample_delta = input.first_sample >= expected_first_sample_
+		? input.first_sample - expected_first_sample_
+		: expected_first_sample_ - input.first_sample;
+	const bool adjacent_sample = sample_delta <= endpoint_quantization_frames;
 	if (delta > 0 || !adjacent_sample)
 		discontinuity_pending_ = true;
 	last_input_sequence_ = input.sequence;
