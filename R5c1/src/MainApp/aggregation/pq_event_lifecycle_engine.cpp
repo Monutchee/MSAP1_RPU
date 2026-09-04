@@ -129,6 +129,7 @@ bool PqEventLifecycleEngine::initialize() noexcept
 	previous_half_cycle_voltage_valid_.fill(0U);
 	one_cycle_ago_voltage_.fill(0U);
 	one_cycle_ago_voltage_valid_.fill(0U);
+	rvc_baseline_ready_.fill(0U);
 	output_sequence_ = 0U;
 	last_input_sequence_ = 0U;
 	event_counter_ = 0U;
@@ -277,6 +278,7 @@ void PqEventLifecycleEngine::apply_matching_configuration(
 	have_active_configuration_ = true;
 	previous_half_cycle_voltage_valid_.fill(0U);
 	one_cycle_ago_voltage_valid_.fill(0U);
+	rvc_baseline_ready_.fill(0U);
 	first_after_discontinuity_ = true;
 }
 
@@ -399,6 +401,17 @@ void PqEventLifecycleEngine::process_state(std::size_t type, std::size_t slot,
 {
 	auto &state = state_[type][slot];
 	const auto evaluation = evaluate(type, slot, profile, input);
+	/* RVC is a transition between steady states. The first usable
+	 * one-cycle delta after a reset can still span RMS-window startup
+	 * settling, so it may establish readiness only when it is already
+	 * inside the configured recovery band. Do not emit the comparison that
+	 * arms the detector itself. */
+	if (type == MSAP1_M18_EVENT_RAPID_VOLTAGE_CHANGE &&
+	    rvc_baseline_ready_[slot] == 0U) {
+		if (evaluation.valid && evaluation.recovered)
+			rvc_baseline_ready_[slot] = 1U;
+		return;
+	}
 	if (!state.active) {
 		if (evaluation.valid && evaluation.start)
 			start_state(state, type, profile, evaluation, input);
@@ -457,6 +470,7 @@ void PqEventLifecycleEngine::process(const PqEventInputView &input) noexcept
 		abort_all(input);
 		previous_half_cycle_voltage_valid_.fill(0U);
 		one_cycle_ago_voltage_valid_.fill(0U);
+		rvc_baseline_ready_.fill(0U);
 	}
 
 	for (std::size_t type = 0U; type < event_types; ++type) {

@@ -93,6 +93,12 @@ private:
 	std::array<std::uint8_t, phases> previous_half_cycle_voltage_valid_{};
 	std::array<std::uint32_t, phases> one_cycle_ago_voltage_{};
 	std::array<std::uint8_t, phases> one_cycle_ago_voltage_valid_{};
+	/* A one-cycle comparison is not yet a trustworthy RVC baseline just
+	 * because both overlapping RMS values exist. After startup, APPLY, or a
+	 * discontinuity, require one comparison inside the recovery band before
+	 * arming each phase. This prevents the RMS-window settling ramp from
+	 * becoming a synthetic RVC lifecycle. */
+	std::array<std::uint8_t, phases> rvc_baseline_ready_{};
 	std::uint32_t output_sequence_{};
 	std::uint32_t last_input_sequence_{};
 	std::uint64_t event_counter_{};
