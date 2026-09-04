@@ -3166,25 +3166,35 @@ void test_rapid_voltage_change_uses_one_cycle_delta()
 			{5000000U, 5000000U, 5000000U}, status));
 	};
 
-	/* A physical 5 % step traverses two overlapping Urms(1/2) updates:
-	 * nominal -> half-settled -> settled. Comparing adjacent updates would see
-	 * only 2.5 % twice and miss the configured 3 % RVC threshold. */
-	process(1U, 2132U, 120000000U, 1U << 2U);
-	process(2U, 3199U, 117000000U);
-	process(3U, 4265U, 114000000U);
+	/* The first usable one-cycle comparisons can span capture/RMS startup.
+	 * A monotonic ramp through nominal must establish a steady baseline
+	 * without creating the three synthetic RVCs seen on target startup. */
+	process(1U, 2132U, 90000000U, 1U << 2U);
+	process(2U, 3199U, 105000000U);
+	process(3U, 4265U, 120000000U);
+	process(4U, 5332U, 120000000U);
+	process(5U, 6399U, 120000000U);
+	expect(sink.count == 0U,
+		"RVC startup ramp is suppressed until a steady baseline exists");
+
+	/* Once armed, a physical 5 % step traverses two overlapping Urms(1/2)
+	 * updates: nominal -> half-settled -> settled. Comparing adjacent updates
+	 * would see only 2.5 % twice and miss the configured 3 % threshold. */
+	process(6U, 7465U, 117000000U);
+	process(7U, 8532U, 114000000U);
 	expect(sink.count == 1U &&
 		(sink.records[0U].words[13U] & 0x3U) == start_lifecycle &&
 		((sink.records[0U].words[13U] >> 4U) & 0xfU) == rvc_type &&
 		((sink.records[0U].words[13U] >> 16U) & 0xffU) == 1U,
 		"one-cycle 5 percent step emits an RVC START");
-	process(4U, 5332U, 114000000U);
+	process(8U, 9599U, 114000000U);
 	expect(sink.count == 2U &&
 		(sink.records[1U].words[13U] & 0x3U) == end_lifecycle,
 		"settled RVC emits END at the inclusive hysteresis boundary");
 
-	process(5U, 6399U, 117000000U);
-	process(6U, 7465U, 120000000U);
-	process(7U, 8532U, 120000000U);
+	process(9U, 10665U, 117000000U);
+	process(10U, 11732U, 120000000U);
+	process(11U, 12799U, 120000000U);
 	expect(sink.count == 4U &&
 		(sink.records[2U].words[13U] & 0x3U) == start_lifecycle &&
 		(sink.records[3U].words[13U] & 0x3U) == end_lifecycle &&
